@@ -3,6 +3,7 @@ package com.km.messaging
 import com.km.auth.AuthChallenge
 import com.km.auth.AuthOk
 import com.km.auth.AuthSession
+import com.km.auth.AuthSessionState
 import com.km.auth.Clock
 import com.km.auth.TranscriptBuilder
 import com.km.crypto.Ed25519
@@ -173,6 +174,77 @@ class RelayDeTransporte(
 }
 
 /* ==================================================================== *
+ * EL MISMO RELAY OPACO, CON UN CONTADOR DE APERTURAS DE BINDING.
+ * ==================================================================== *
+ *
+ * ## POR QUE UN DOBLE NUEVO Y NO UN CAMBIO EN `RelayDeTransporte`
+ *
+ * Porque `RelayDeTransporte` es opaco POR ESTRUCTURA —su unico estado
+ * observable son `ByteArray` verbatim— y esa opacidad es justo lo que `MIG-07`
+ * mide. Anadirle un contador la dejaria de ser opaca: un doble que registra
+ * INVOCACIONES DE INTERFAZ ya no es el mismo instrumento, y su verde pasaria a
+ * deber algo que antes no le debia. Este doble es el relay opaco con una
+ * ENVOLTURA encima: delega todo y lo unico que anade es el contador, asi que
+ * `MIG-07` sigue midiendo lo que mediaba y los dos conviven en el archivo.
+ *
+ * ## POR QUE EL CONTADOR DEL MEDIO, Y NO OTRO INSTRUMENTO
+ *
+ * Porque `onCreateBinding` del MEDIO es el unico punto de `km-core` donde
+ * "abrir un binding" es observable sin instrumentar produccion, y es el unico
+ * donde HEREDAR y REABRIR se distinguen. Los otros tres sitios candidatos de
+ * instrumentacion son estructuralmente ciegos:
+ *
+ *  - el `TransportEstablishment` del ganador: lo que se contaria ahi es SU
+ *    PROPIA fase `createBinding`, la de su propia ronda. Contar ahi no ve una
+ *    reapertura hecha por la cadena DESPUES de conceder la autoridad, que es
+ *    justo cuando ocurre `M7`.
+ *  - el `PeerTransportManager`: su invariante 3 rechaza una segunda peticion
+ *    ANTES de tocar el medio (ver `createBinding`), asi que ahi no se ve NADA.
+ *  - la identidad del binding del manager: no se sustituye al migrar, y
+ *    comparar objetos no distingue "otro binding" de "el mismo abierto otra
+ *    vez". Por eso `MIG-10` puede ser verde con la migracion rota.
+ *
+ * El contador del medio ve las tres cosas y solo anade instrumentacion al
+ * doble. No es que elija un discriminante por comodidad: es el unico sitio
+ * donde la frontera "heredar / reabrir" queda marcada en el sistema.
+ * ==================================================================== */
+
+class RelayQueCuentaReaperturas(
+    override val name: String = "Relay",
+    /** El relay opaco de dentro. Este doble solo le anade el contador. */
+    val opaco: RelayDeTransporte = RelayDeTransporte(name),
+) : TransportBackend by opaco {
+
+    /** Cuantas veces se le ha pedido ABRIR un binding a ESTE medio. */
+    @Volatile var reaperturas: Int = 0
+        private set
+
+    /** Contra quien, en orden. Para que un rojo diga CONTRA QUIEN. */
+    val destinos = CopyOnWriteArrayList<IdentityId>()
+
+    /**
+     * La UNICA operacion que este doble cuenta.
+     *
+     * No consulta el estado ni decide nada: HEREDAR no aparece por aqui, y esa
+     * es la gracia. La ausencia de una segunda llamada es la afirmacion.
+     */
+    override fun onCreateBinding(
+        localIdentity: IdentityId,
+        remotePeerId: IdentityId,
+    ): TransportResult<Unit> {
+        reaperturas++
+        destinos.add(remotePeerId)
+        return TransportResult.Success(Unit)
+    }
+
+    /** Los payloads del relay opaco, VERBATIM. */
+    val recibidos: List<ByteArray> get() = opaco.recibidos.toList()
+
+    /** Lo que el relay ha recibido, VERBATIM. */
+    fun entregar(indice: Int = 0): ByteArray = opaco.entregar(indice)
+}
+
+/* ==================================================================== *
  * UN ESTABLECIMIENTO QUE EXPLOTA.
  * ==================================================================== *
  *
@@ -241,6 +313,72 @@ class EstablecimientoQueExplota(
     override fun abort() {
         abortos++
         if (abortExplota) throw IllegalStateException("$transportName no se puede cerrar")
+        state = EstablishmentState.CLOSED
+    }
+}
+
+/* ==================================================================== *
+ * UN ESTABLECIMIENTO QUE ABRE EL BINDING EN EL MEDIO.
+ * ==================================================================== *
+ *
+ * ## POR QUE HACE FALTA CUANDO YA HAY TRES ESTABLECIMIENTOS PROGRAMABLES
+ *
+ * Porque `ScriptableEstablishment` NO toca el medio: registra fases y ya esta.
+ * Es un testigo DE FASES, no de lo que le pasa al backend. Para contar
+ * aperturas de binding en el medio hace falta un establecimiento que se
+ * comporte como [com.km.node.RealRelayEstablishment], que en su fase
+ * `createBinding` llama a `transport.onCreateBinding(...)` de verdad.
+ *
+ * ## POR QUE ES IMPORTANTE QUE EL SI LO HAGA
+ *
+ * Porque el numero que se mide tiene que SER el numero de la produccion. Con
+ * un establecimiento que no abre nada en el medio, el contador del relay valdria
+ * CERO y "cero" seria una propiedad del DOBLE, no del sistema: en produccion
+ * el medio ganador abre su binding en su propia ronda, y ese uno NO es una
+ * reatacion. Fijando aqui ese uno, cualquier SEGUNDA apertura queda sola en la
+ * columna, y es exactamente lo que hace la mutacion `M7`.
+ *
+ * No hay [awaitReadyOutcome] aqui a proposito: este doble no existe para
+ * fallar de forma honesta, esa es la especialidad de los otros dos.
+ * ==================================================================== */
+
+class EstablecimientoQueAbreEnElMedio(
+    override val transportName: String,
+    private val backend: TransportBackend,
+) : TransportEstablishment {
+
+    override var state: EstablishmentState = EstablishmentState.CREATED
+        private set
+
+    /** Las fases recorridas, en orden. Para que el rojo diga donde fallo. */
+    val fases = CopyOnWriteArrayList<String>()
+
+    override fun initialize(): TransportResult<Unit> {
+        fases.add("initialize")
+        return TransportResult.Success(Unit)
+    }
+
+    /** Como `RealRelayEstablishment`: la apertura se la PIDE al medio. */
+    override fun createBinding(localIdentity: IdentityId, remotePeerId: IdentityId): TransportResult<Unit> {
+        fases.add("createBinding")
+        val r = backend.onCreateBinding(localIdentity, remotePeerId)
+        if (r is TransportResult.Failure) state = EstablishmentState.FAILED
+        return r
+    }
+
+    override fun negotiate(): TransportResult<Unit> {
+        fases.add("negotiate")
+        state = EstablishmentState.NEGOTIATING
+        return TransportResult.Success(Unit)
+    }
+
+    override fun awaitReady(timeoutMs: Long): TransportResult<Unit> {
+        fases.add("awaitReady")
+        state = EstablishmentState.READY
+        return TransportResult.Success(Unit)
+    }
+
+    override fun abort() {
         state = EstablishmentState.CLOSED
     }
 }
@@ -2098,5 +2236,229 @@ class TransportMigrationTest {
         // `onTransportBytes`, que es justo el camino que la bandeja compartida NO
         // usa. Por eso el pendiente de la bandeja es invisible para la sesion.
         assertEquals(0, e.par.session.drainOutbound().size, "la sesion no ha entregado nada nuevo: el pendiente no le ha llegado")
+    }
+
+    // ===================================================================
+    // KILOMETRO 12 — P-5: EL MEDIO NUEVO HEREDA, NO SE REABRE
+    // ===================================================================
+
+    @Test
+    @DisplayName("MIG-12 al conceder la autoridad el medio ganador hereda el contexto: no se le reabre el binding")
+    fun `MIG-12 el medio ganador hereda el contexto autenticado`() {
+        // -----------------------------------------------------------------
+        // EL GUION, Y POR QUE ESTA PRUEBA NO USA `escena()`
+        // -----------------------------------------------------------------
+        //
+        // Porque `escena()` monta su cadena con `RelayDeTransporte`, y aqui hace
+        // falta un medio que CUENTE las aperturas de binding. Anadir el contador
+        // al relay opaco lo volveria interpretable —y su opacidad es lo que
+        // `MIG-07` mide—, asi que el extremo se monta aqui con el MISMO guion
+        // criptografico y los MISMOS helpers de contexto del archivo (`idDe`,
+        // `contexto`, `conectar`, `diferencia`, `clonDe`, `cifra`). No se toca
+        // ningun doble existente: se anaden dos al lado.
+        val guion = GuionDeMigracion()
+        guion.dosEpochs()
+
+        val kpAlice = ed25519.generateKeyPair()
+        val idAlice = idDe(kpAlice)
+        val kpBob = ed25519.generateKeyPair()
+        val idBob = idDe(kpBob)
+
+        // El contexto autenticado, de verdad: `contexto()` corre KM-0002 entero y
+        // devuelve un `PeerContext` cuya `authSession` esta AUTHENTICATED. El
+        // guion de P-5 empieza ahi, no en un `PeerContext` de mentira.
+        val ctxAlice = contexto(kpAlice, idAlice, kpBob, idBob)
+        val ctxBob = contexto(kpBob, idBob, kpAlice, idAlice)
+
+        val p2p = ScriptableTransportBackend("P2P")
+        val relay = RelayQueCuentaReaperturas("Relay")
+        val cadena = TransportChain(listOf(p2p, relay))
+        val manager = PeerTransportManager(transportBackend = cadena, now = { 0L })
+        val sesion = SecureMessagingSession(idAlice, ctxAlice, guion.alice, manager)
+
+        // BOB, el extremo que descifra. Su cadena no se mide: lo que se mide lo
+        // hace ALICE, y a BOB solo se le pide que abra lo que salio por el medio
+        // nuevo. Es el mismo montaje que el del resto del archivo.
+        val managerBob = PeerTransportManager(
+            transportBackend = TransportChain(listOf(ScriptableTransportBackend("P2P"), RelayDeTransporte("Relay"))),
+            now = { 0L },
+        )
+        val sesionBob = SecureMessagingSession(idBob, ctxBob, guion.bob, managerBob)
+
+        // El UNICO binding de la historia, abierto por el UNICO camino que exige
+        // un `PeerContext` AUTHENTICADO: el manager. Sin establecimiento todavia,
+        // `foldAll` lo enruta al PRIMARIO, que es P2P — y por eso el contador del
+        // medio NUEVO arranca en cero de verdad, no por convenience del guion.
+        manager.createBinding(idAlice, ctxAlice).getOrThrow()
+        managerBob.createBinding(idBob, ctxBob).getOrThrow()
+        conectar(sesion, manager, ctxAlice)
+        conectar(sesionBob, managerBob, ctxBob)
+
+        /** Aperturas de binding que ha pedido el MEDIO, por el contador propio. */
+        fun aperturasDe(b: ScriptableTransportBackend) = b.establishmentOps.count { it == "onCreateBinding" }
+
+        val p2pConElBindingDelManager = aperturasDe(p2p)
+        assertEquals(
+            1, p2pConElBindingDelManager,
+            "el binding lo abre el manager con el PeerContext AUTHENTICADO, y lo enruta al primario",
+        )
+        assertEquals(
+            0, relay.reaperturas,
+            "sanidad: todavia no se ha establecido por Relay, asi que su contador esta en cero de verdad " +
+                "y una cuenta de 1 mas abajo tendra que ser del establecimiento",
+        )
+
+        /** Una ronda de establecimiento por la cadena. */
+        fun ronda(fabrica: (TransportBackend) -> TransportEstablishment) =
+            cadena.establish(idAlice, idBob, factory = fabrica)
+
+        // --- 1. P2P ESTABLECE Y GANA: el medio activo inicial. ---
+        val primera = ronda { EstablecimientoQueAbreEnElMedio(it.name, it) }
+        assertTrue(primera is EstablishmentResult.Ready, "primera ronda: $primera")
+        assertEquals("P2P", primera.activeTransport, "P2P gana y es el medio activo")
+
+        // Se REGISTRA y no se afirma todavia. La calibracion del contador se
+        // comprueba mas abajo, DESPUES de P-5, y el orden es deliberado: si el
+        // contador no moviera, el fallo tiene que decir "el medio ganador se ha
+        // reabierto" y no "una cuenta de mas en el medio que pierde". Un rojo que
+        // culpa a quien no es la parte migrada no localiza el defecto.
+        val p2pTrasSuRonda = aperturasDe(p2p)
+
+        // --- 2. P2P MUERE Y LA CADENA CONCEDE LA AUTORIDAD A UN MEDIO NUEVO. ---
+        //
+        // La foto se toma AHORA, antes de migrar. Una foto posterior compararia
+        // el estado consigo mismo, que es el falso control de `KM52V2-06`.
+        val fotoAntes = guion.aliceSession.snapshot()
+        assertTrue(
+            guion.aliceSession.receiveChainCount() >= 1,
+            "no-vacuedad: el guion ha girado la epoca y ALICE tiene cadena de recepcion: el estado que se " +
+                "compara despues no es el de una sesion recien creada",
+        )
+        val control = clonDe(guion.aliceSession, guion)
+
+        p2p.failWithTransport(TransportError.BINDING_CLOSED, "el enlace cayo: su canal ya no escribe")
+        val migracion = ronda { b ->
+            if (b.name == "P2P") EstablecimientoQueExplota("P2P", "negotiate") else EstablecimientoQueAbreEnElMedio(b.name, b)
+        }
+        assertTrue(migracion is EstablishmentResult.Ready, "la migracion tiene que ocurrir: $migracion")
+        assertEquals("Relay", migracion.activeTransport, "gana Relay")
+        assertFalse(cadena.isActive("P2P"), "y P2P pierde la autoridad EN LA MISMA ronda")
+
+        // --- 3. P-5: EL MEDIO NUEVO HEREDA EL CONTEXTO, NO SE REABRE. ---
+        //
+        // UNO, y no cero: uno es el binding que su PROPIA ronda de establecimiento
+        // le abrio, que es lo que hace `RealRelayEstablishment` en produccion. Lo
+        // que no puede haber es un SEGUNDO, porque abrirlo otra vez es dejar de
+        // heredar: el medio volveria a arrancar de cero sobre un `PeerContext`
+        // autenticado que ya existe, y eso es una reatacion encubierta.
+        assertEquals(
+            1, relay.reaperturas,
+            "P-5 roto: al conceder la autoridad, el medio ganador se ha REABIERTO en vez de HEREDAR el " +
+                "contexto ya autenticado. onCreateBinding se le ha pedido ${relay.reaperturas} veces " +
+                "(contra ${relay.destinos.map { it.value.take(8) }}); solo puede pedirselo su propia ronda de " +
+                "establecimiento. Una segunda apertura no migra: REATA, y deja al medio nuevo creyendo que " +
+                "empieza de cero un contexto que ya estaba autenticado",
+        )
+        assertEquals(
+            listOf(idBob), relay.destinos,
+            "y la unica apertura es contra el par autenticado, no contra otro: reabrir no es reautenticar a " +
+                "alguien distinto",
+        )
+        assertEquals(
+            p2pTrasSuRonda, aperturasDe(p2p),
+            "y el medio que pierde la autoridad no se ha tocado EN LA RONDA DE MIGRACION: perder no es " +
+                "reabrir, y delatan el medio nuevo ni el viejo",
+        )
+        // Y el instrumento NO es un testigo muerto: en la primera ronda, la del
+        // medio que despues pierde, el contador SI se movio. Sin esto, "el medio
+        // ganador no se ha reabierto" tambien lo daria un contador que no cuenta.
+        assertEquals(
+            p2pConElBindingDelManager + 1, p2pTrasSuRonda,
+            "el contador mueve: la ronda de P2P le abrio su binding al medio una vez mas de las del manager",
+        )
+
+        // --- 4. POR QUE EL NUMERO ES UNO, Y NO DOS. ---
+        //
+        // No es una Convencion del doble: es el invariante 3 de
+        // `PeerTransportManager`. El camino autenticado no puede abrir un segundo
+        // binding, y rechaza la peticion ANTES de tocar el medio. Si una segunda
+        // apertura aparece, no ha pasado por ahi.
+        val segundoBinding = manager.createBinding(idAlice, ctxAlice)
+        assertTrue(
+            segundoBinding is TransportResult.Failure,
+            "abrir otro binding con el mismo PeerContext autenticado no puede tener exito: $segundoBinding",
+        )
+        assertEquals(
+            TransportError.BINDING_ALREADY_EXISTS, (segundoBinding as TransportResult.Failure).error,
+            "es el invariante 3 del manager: un solo binding por par, y abrirlo exige un PeerContext AUTHENTICADO",
+        )
+        assertEquals(
+            1, relay.reaperturas,
+            "y el rechazo NO ha llegado al medio: el contador mide a la cadena, no a la prueba",
+        )
+        assertEquals(p2pTrasSuRonda, aperturasDe(p2p), "ni al otro medio: el rechazo tampoco lo toca")
+
+        // --- 5. LO QUE SE HEREDA, DICHO SIN CRIPTONOMIAS. ---
+        assertTrue(
+            sesion.peerContext === ctxAlice,
+            "la sesion sigue sobre el MISMO PeerContext: migrar no fabrica un contexto nuevo",
+        )
+        assertTrue(
+            sesion.peerContext.authSession === ctxAlice.authSession,
+            "y sobre la MISMA sesion de autenticacion, no sobre una reautenticacion",
+        )
+        assertEquals(
+            AuthSessionState.AUTHENTICATED, sesion.peerContext.authSession.state,
+            "que sigue AUTHENTICATED: heredar el contexto es heredar un contexto autenticado",
+        )
+        val binding = manager.getBinding(idAlice, idBob)
+        assertNotNull(binding, "el binding sigue vivo")
+        assertTrue(
+            binding.peerContext === ctxAlice,
+            "y es el MISMO PeerContext autenticado el que lleva: la migracion no abre otro binding",
+        )
+
+        // --- 6. Y EL ESTADO CRIPTOGRAFICO, QUE ES LO QUE P-5 HABLA. ---
+        //
+        // Campo a campo, con el escalar DH PRIVADO incluido: es la mitad que
+        // decide si la sesion migrada puede seguir con la conversacion, y la que
+        // `stateFingerprint()` no ve (por que lo dice `MIG-08`).
+        assertNull(
+            diferencia(fotoAntes, guion.aliceSession.snapshot()),
+            "la migracion no ha movido el estado criptografico: el medio nuevo se monta sobre el que ya habia",
+        )
+        // Y el instrumento de bytes: el frame siguiente es IDENTICO al que daria
+        // una sesion que nunca se movio. El testigo se produce UNA vez y se
+        // reutiliza: `cifra` consume estado, y un testigo que se recalcula
+        // compararia el control consigo mismo en su segunda llamada.
+        val carga = "el mensaje que cruza sin reatarse".toByteArray()
+        val frameDelControl = cifra(control, guion, carga)
+        assertContentEquals(
+            frameDelControl, cifra(guion.aliceSession, guion, carga),
+            "el frame siguiente sale IDENTICO byte a byte: la sesion continua donde estaba",
+        )
+        // Con el contraejemplo, para que la coincidencia de arriba no sea tautologia.
+        val otra = GuionDeMigracion(semilla = "P5")
+        otra.dosEpochs()
+        assertFalse(
+            cifra(otra.aliceSession, otra, carga).contentEquals(frameDelControl),
+            "otra sesion produce OTRO frame: por eso la coincidencia significa algo",
+        )
+
+        // --- 7. Y EL MENSAJE CRUZA, DE PRINCIPIO A FIN, POR EL MEDIO NUEVO. ---
+        assertTrue(sesion.send(carga) is SendResult.Ok, "la sesion envia por el medio nuevo")
+        assertEquals(1, relay.recibidos.size, "y Relay ha recibido UN frame")
+        assertEquals(
+            SecureFrameSpec.CIPHERTEXT_OFFSET + carga.size + SecureFrameSpec.TAG_LENGTH,
+            relay.recibidos.last().size,
+            "con el header COMPLETO como AAD: si no, los bytes serian bytes sin sentido",
+        )
+        sesionBob.onTransportBytes(relay.entregar())
+        val entregado = sesionBob.drainOutbound()
+        assertEquals(1, entregado.size, "BOB abre lo que salio por el medio nuevo")
+        assertContentEquals(
+            carga, entregado.single(),
+            "y es el texto original: el estado se hereda de verdad, no se reconstruye",
+        )
     }
 }
