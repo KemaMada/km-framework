@@ -1,0 +1,81 @@
+km-framework
+Copyright (c) 2026 KemaMada
+
+This product is licensed under the MIT License. See the LICENSE file for the
+full text.
+
+MIT License does not include an express patent grant. See CHANGELOG.md for the
+reasoning behind that decision, and CONTRIBUTING.md for what it means for
+contributors.
+
+--------------------------------------------------------------------------------
+
+THIRD-PARTY SOFTWARE
+
+km-framework is distributed as source and as built artifacts. It links against
+third-party software that is neither relicensed nor modified by this project.
+Each component remains under its own license, reproduced or referenced in
+THIRD-PARTY-LICENSES/. The attribution below is a summary; the authoritative
+version, with the evidence each license claim rests on, is
+THIRD-PARTY-LICENSES/README.md.
+
+  kotlin-stdlib, kotlin-test
+    Kotlin Programming Language Contributors
+    Implementation-Vendor declared by the artifact: JetBrains
+    Licensed under the Apache License, Version 2.0
+    https://github.com/JetBrains/kotlin
+    License not declared in the artifact; see THIRD-PARTY-LICENSES/README.md
+
+  jackson-module-kotlin, jackson-databind, jackson-core, jackson-annotations
+    Copyright 2007-, Tatu Saloranta (tatu.saloranta@iki.fi)
+    Developed by the Jackson project and supported by FasterXML.com
+    Licensed under the Apache License, Version 2.0
+    Declared by each artifact: Bundle-License:
+    https://www.apache.org/licenses/LICENSE-2.0.txt
+    https://github.com/FasterXML/jackson-module-kotlin
+    THIRD-PARTY-LICENSES/jackson-LICENSE
+    THIRD-PARTY-LICENSES/jackson-NOTICE
+
+  Bouncy Castle, artifact bcprov-jdk18on
+    Copyright (c) 2000-2026 The Legion of the Bouncy Castle Inc.
+    (https://www.bouncycastle.org)
+    Licensed under the MIT License
+    POM declares "Bouncy Castle Licence":
+    https://www.bouncycastle.org/licence.html
+    THIRD-PARTY-LICENSES/bouncy-castle-1.86-LICENSE.md
+
+  eddsa, artifact net.i2p.crypto:eddsa
+    EdDSA in Java. No copyright holder is declared by the artifact.
+    Licensed under CC0 1.0 Universal (public domain dedication)
+    Declared by the artifact: Bundle-License:
+    https://creativecommons.org/publicdomain/zero/1.0/
+    https://github.com/str4d/eddsa
+
+  webrtc-java, artifact dev.onvoid.webrtc:webrtc-java
+    Licensed under the Apache License, Version 2.0
+    Declared by the parent POM dev.onvoid.webrtc:webrtc-java-parent
+    https://github.com/devopvoid/webrtc-java
+
+  libwebrtc, native code inside the classified webrtc-java artifacts
+    Copyright (c) 2011, The WebRTC project authors. All rights reserved.
+    Licensed under the BSD 3-Clause License
+    Ships an express, conditional Google patent grant
+    THIRD-PARTY-LICENSES/webrtc-native-LICENSE.md
+    THIRD-PARTY-LICENSES/webrtc-native-PATENTS
+
+  JUnit 5, artifact org.junit.jupiter:junit-jupiter (test scope only)
+    Implementation-Vendor declared by the artifact: junit.org
+    Licensed under the Eclipse Public License 2.0
+    https://github.com/junit-team/junit5
+    License not declared in the artifact; see THIRD-PARTY-LICENSES/README.md
+
+The Apache License, Version 2.0 text is reproduced at
+THIRD-PARTY-LICENSES/Apache-2.0.txt. The CC0 1.0 and EPL-2.0 texts are not
+vendored here, because the corresponding artifacts do not embed them; they are
+linked from THIRD-PARTY-LICENSES/README.md.
+
+--------------------------------------------------------------------------------
+
+The WebRTC native code is a third-party component that km-framework does not
+modify, and whose express patent grant is worth noting: it is precisely the
+kind of license this project decided not to adopt for itself. See CHANGELOG.md.
