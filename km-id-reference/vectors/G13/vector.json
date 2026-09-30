@@ -1,0 +1,12 @@
+{
+  "derived": "38627 55971 56409 46254 55494 03292 07001 79057 83506 02049 84503 84409",
+  "description": "Representa el ESTADO ACTUAL del roster, separado de la identidad. Cambia al anadir, retirar o revocar un dispositivo, mientras G12 permanece igual. Permite expresar \"la identidad es la misma, pero el conjunto de dispositivos cambio\".",
+  "expected": "VALID",
+  "id": "G13",
+  "inputs": {
+    "roster": "G04/canonical.cbor"
+  },
+  "rule": "render60(SHA-256(UTF8(\"KM-ID-ROSTER-CODE\") || KCE(signableRoster))[0:25])",
+  "sameAs": "G12 permanece identico entre G04 y G05; este codigo NO",
+  "title": "rosterVerificationCode"
+}

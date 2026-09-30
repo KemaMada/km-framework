@@ -1,0 +1,12 @@
+{
+  "derived": "60409 73550 99839 07622 71506 20154 75329 02841 98140 63370 18157 67778",
+  "description": "60 digitos decimales en 12 bloques de 5. 10^60 ~ 2^199.3157, de modo que 25 bytes (200 bits) cubren el espacio. Es un CODIGO DE COMPARACION, no un secreto ni una credencial, y no autentica a una persona.",
+  "expected": "VALID",
+  "id": "G12",
+  "inputs": {
+    "identityId": "d460c110016f450330ed6a78c3af94211bf59c77726151b2a3005b006a3e7a77"
+  },
+  "rule": "render60(SHA-256(UTF8(\"KM-ID-SAFETY-NUMBER\") || identityId)[0:25])",
+  "stable": "mientras IdentityRoot no rote; anadir un dispositivo NO lo invalida",
+  "title": "identitySafetyNumber"
+}

@@ -1,0 +1,19 @@
+{
+  "artifacts": {
+    "canonical.cbor": {
+      "length": 127,
+      "sha256": "b8dc3558cee5761aead183825f5963f2fb8d76618148bf9b450bde821b9b89e8"
+    },
+    "second.cbor": {
+      "length": 127,
+      "sha256": "2ff672e75b0537b61067b975fcf1d953a939be34aa9547a935046a09689ab205"
+    }
+  },
+  "consumption": "AVAILABLE -> RESERVED -> CONSUMED, irreversible; el consumo atomico por opkId se especifica en KM-DISC-0001",
+  "derived": "a563646f63706b6d2e6f6e6554696d655072656b6579656b657949641903e86776657273696f6e016864657669636549645820335af73b75ed865a8eefb43b0a661addc084dc604159620e15e372d355d0954e697075626c69634b657958208c14030c55917de3ce125caeb98ef05218b9530c7be486929360f84554d7a0f8",
+  "description": "La OPK NO lleva firma propia, deliberadamente: hereda la autenticidad de la firma de la raiz que envuelve el ContactBundle. Así el verificador no verifica N firmas adicionales y la garantia es \"o el bundle entero es valido, o no sirve\".",
+  "expected": "VALID",
+  "id": "G09",
+  "signature": null,
+  "title": "OneTimePrekey (sin firma propia)"
+}

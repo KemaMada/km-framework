@@ -1,0 +1,3 @@
+challenge.cbor: VALID
+response.cbor: VALID
+authorizing_roster.cbor: VALID

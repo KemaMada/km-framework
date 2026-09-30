@@ -1,0 +1,26 @@
+{
+  "artifacts": {
+    "authorizing_roster.cbor": {
+      "length": 634,
+      "sha256": "95a5df0c4cef754d0c9520844d8e48d3a9d3b754c511edaa5dd9b922e73ab9b9"
+    },
+    "challenge.cbor": {
+      "length": 317,
+      "sha256": "1aa427adad9944b802212dc55af355a34c4449084fc2ad23382baf66368ce83a"
+    },
+    "response.cbor": {
+      "length": 348,
+      "sha256": "4aa9f822e00136299951136638f8424122c7f740e758cda1c87e30c3c4de26c0"
+    }
+  },
+  "authorization": "roster #2 (G05) contiene al PC y esta firmado por la raiz",
+  "description": "NIVEL 1 canal fisico: el QR transporta el challenge. NIVEL 2 prueba de posesion: el PC firma el nonce. NIVEL 3 autorizacion: el movil firma un roster nuevo que incluye al PC, y el PC lo verifica. El challenge NO autoriza a nadie por si solo.",
+  "expected": "challenge.cbor: VALID\nresponse.cbor: VALID\nauthorizing_roster.cbor: VALID",
+  "id": "G11",
+  "inputs": {
+    "linkSecret": "64f35cf538f6d56fae8f319b5a1c64f38c9d8b4afb5dd8c2f4ba1fad3d51f7c1",
+    "nonce": "b4d08076141ddc369cff2c216824824ad4e9e6faec6abc9a6067467d095f86fa"
+  },
+  "linkSecretRole": "liga este intercambio a ESTA instancia de QR; NO es un sustituto de autorizacion criptografica",
+  "title": "Device-link: challenge y response"
+}

@@ -1,0 +1,2 @@
+canonical.cbor: VALID
+forged.cbor: INVALID_NEW_ROOT_SIGNATURE

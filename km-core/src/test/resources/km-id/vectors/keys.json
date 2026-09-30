@@ -1,0 +1,21 @@
+{
+  "note": "Semillas deterministas. Necesarias para que otra implementacion reproduzca EXACTAMENTE las mismas firmas.",
+  "seedDerivation": "SHA-256(UTF8(\"KM-ID-0001/\" || label)",
+  "seeds": {
+    "alice.mobile.agr": "de7eb9103c4e164b3fec16c7c4b85d6eafa29d4efa413e7ba3953a2b23985069",
+    "alice.mobile.opk.1000": "8c14030c55917de3ce125caeb98ef05218b9530c7be486929360f84554d7a0f8",
+    "alice.mobile.opk.1001": "cbe0f4e2a45fab085d67dac6a707612fbf1bbfe433cad8c8a236ee6cb6bb6b15",
+    "alice.mobile.sign": "6c8fbb5c38e8f20ec4d4fad803096b46147738f0c336305f0fea0e54a15351bc",
+    "alice.mobile.spk": "59535e0855de2d3d3b39a02b7939d14018409519853618833c06bf52e6b503a7",
+    "alice.pc.agr": "dba382e825e1ad61ad8acfa81300b055128de9f503ff76da8c4186aa9b519a18",
+    "alice.pc.sign": "0825a08b35d2e3c941e45849e3bfbb5b87c685d5beb0cd4f42add68baa5ccac7",
+    "alice.pc.spk": "33776359ba436abccaee59bfc1abcb2bc36f69c7a37bc1c0db73251c8f8d51ba",
+    "bob.mobile.agr": "38f8f74e86e335dec9557928dab32575d490138ab608c473efa08896fab7221b",
+    "bob.mobile.sign": "be76dca149c643814c3dc90308f3b290232a73b2f259fb349acecdd94d97b716",
+    "linksecret.1": "64f35cf538f6d56fae8f319b5a1c64f38c9d8b4afb5dd8c2f4ba1fad3d51f7c1",
+    "node.identity": "3a812951bf6746fb6680f30aa27c3665bc4389d7c78adb9b0c07370e7b57fc5d",
+    "nonce.link.1": "b4d08076141ddc369cff2c216824824ad4e9e6faec6abc9a6067467d095f86fa",
+    "root.alice.v1": "2701fca9d08a61146adde3b67f8b53e6d89ff6ac07689f15775f62c45976a81b",
+    "root.alice.v2": "ea3839be2059f502d15979c6637f103b79b340cf814242f1ce78b5db45f5492f"
+  }
+}

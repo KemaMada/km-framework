@@ -1,0 +1,12 @@
+{
+  "derived": "629e6aa086da0b8093fcce8384360e787bdb102f678d8faa85ba9db303b7756e",
+  "description": "SHA-256(\"KM-NODE-NODE\" || nodeIdentityPublicKey). El nodo es un objeto distinto de la identidad y del dispositivo; el prefijo de dominio impide que los tres identificadores puedan colisionar.",
+  "expected": "VALID",
+  "id": "G03",
+  "inputs": {
+    "nodeIdentityPublicKey": "d0306ab2a6e0a2a4f5a3ff102b645151da9f880ea5a60899c3992158918b71b7"
+  },
+  "rule": "SHA-256(UTF8(\"KM-NODE-NODE\") || key)",
+  "seedLabel": "node.identity",
+  "title": "nodeId derivation"
+}

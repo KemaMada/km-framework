@@ -1,0 +1,12 @@
+{
+  "derived": "d460c110016f450330ed6a78c3af94211bf59c77726151b2a3005b006a3e7a77",
+  "description": "SHA-256(\"KM-ID-IDENTITY\" || identityRootPublicKey). Entrada: clave publica Ed25519 de la raiz de identidad. Salida: 32 bytes.",
+  "expected": "VALID",
+  "id": "G01",
+  "inputs": {
+    "identityRootPublicKey": "25a0456721acc835be21a704a75fedc6ac8ab6cb659bbb91e81af4f24da1790e"
+  },
+  "rule": "SHA-256(UTF8(\"KM-ID-IDENTITY\") || key)",
+  "seedLabel": "root.alice.v1",
+  "title": "identityId derivation"
+}

@@ -1,0 +1,24 @@
+{
+  "artifacts": {
+    "challenge.json": {
+      "length": 168,
+      "sha256": "e465e82c5b881a5747463a37b4242aed733ba21483ec30e2b4b389a9bb9af7fa"
+    },
+    "transcript.bin": {
+      "length": 152,
+      "sha256": "37fea1886e0102b65b8e3eda62a17c75ffde74c8ebae07e7a28f5369769c9d45"
+    }
+  },
+  "description": "Challenge emitido por el Responder (d5fccc09836e6a78...) para el Initiator (7add69bd30b028ce...). El transcript mide exactamente 152 bytes: 16 (nonce) + 8 (uint64 timestamp) + 64 (responderIdentityId) + 64 (identityId).",
+  "expected": "VALID",
+  "id": "G14",
+  "inputs": {
+    "identityId": "7add69bd30b028ce2c7838680066069d2709b47a01cc480034a8f9677c22237f",
+    "nonce": "6faf91447b51d9a2d14c84d665494f2a",
+    "responderIdentityId": "d5fccc09836e6a78aac2eaccb4f04011197515177f3db102017d6ee39feb764b",
+    "timestamp": "1721827200000"
+  },
+  "title": "AUTH_CHALLENGE + 152-byte transcript",
+  "transcriptLength": 152,
+  "transcriptSha256": "37fea1886e0102b65b8e3eda62a17c75ffde74c8ebae07e7a28f5369769c9d45"
+}

@@ -1,0 +1,27 @@
+{
+  "artifacts": {
+    "canonical.cbor": {
+      "length": 284,
+      "sha256": "8edb7c8a12bdd875ac0fe1f788633e2d824a8ce7062748f937a1a51e5f939336"
+    },
+    "forged.cbor": {
+      "length": 206,
+      "sha256": "2b31ac6fa68e8901f1f2cbef48d8239dffb844ddad08c47ea74b5e329e67da38"
+    },
+    "signable.cbor": {
+      "length": 128,
+      "sha256": "e3e37c205c662da1a028d4ccdf74b0cec01808a61b822d8676978127277d9c88"
+    }
+  },
+  "consequence": "sequence se reinicia en 1 para la identidad nueva; el reinicio solo es aceptable porque la rotacion es bilateral",
+  "description": "Certificado de transicion entre dos raices. Ambas firmas cubren el mismo Signable. El fixture `forged.cbor` demuestra el caso que la firma bilateral existe para detectar: un atacante con la raiz antigua robada puede firmar, pero NO puede producir la contrafirma de una raiz nueva legitima.",
+  "expected": "canonical.cbor: VALID\nforged.cbor: INVALID_NEW_ROOT_SIGNATURE",
+  "id": "G07",
+  "inputs": {
+    "newRoot": "53d3d7c252addb5a6c8b3240b53d7dc0f31f0486550546535eb213f9b2db2fc5",
+    "oldRoot": "25a0456721acc835be21a704a75fedc6ac8ab6cb659bbb91e81af4f24da1790e"
+  },
+  "newRootSign": "0ebda828b5914f09f48ad7f1f992c06f92c7e7af8df37d257ecbaa05c231a2a31c13e54e78073b8e74db1095eca14e5fe5f7b5d552061ce79f9f761387d5b50a",
+  "oldRootSign": "01d97a533a9859b704889d2383d4b924a26b61071aa3c056c27198e8b9c038ce8f7098be917771c1de6293d79766aa7410e1d4fe5aa1ddf6b131c439206e3b0b",
+  "title": "IdentityRotation bilateral"
+}

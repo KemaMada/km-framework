@@ -1,0 +1,27 @@
+{
+  "artifacts": {
+    "response.json": {
+      "length": 267,
+      "sha256": "5d83532686e6400a2679e1921e66e4c5669b3f4e27047478b1fb4e27f3ada10e"
+    },
+    "transcript.bin": {
+      "length": 152,
+      "sha256": "37fea1886e0102b65b8e3eda62a17c75ffde74c8ebae07e7a28f5369769c9d45"
+    }
+  },
+  "description": "Respuesta del Initiator al challenge del Responder. Contiene identityId, la clave publica Ed25519 del dispositivo, y la firma sobre el transcript de 152 bytes. La verificacion debe pasar V1 (identity), V2 (device) y V3 (signature).",
+  "expected": "VALID",
+  "id": "G15",
+  "inputs": {
+    "identityId": "7add69bd30b028ce2c7838680066069d2709b47a01cc480034a8f9677c22237f",
+    "nonce": "6faf91447b51d9a2d14c84d665494f2a",
+    "publicKey": "d0ba2676cd1f95744519014a931a8757fa9e7a456714acd3eb408dd1476cfd03",
+    "responderIdentityId": "d5fccc09836e6a78aac2eaccb4f04011197515177f3db102017d6ee39feb764b",
+    "timestamp": "1721827200000"
+  },
+  "publicKeyHex": "d0ba2676cd1f95744519014a931a8757fa9e7a456714acd3eb408dd1476cfd03",
+  "signature": "DSJUY7nhrNbzGilssixonPro9pAjRSU7qkOImX7tqSZ-PYMvtM9Sx7ymUvpB-RpOnKfXYdmdjVHqo8Fb2TU7Dg",
+  "title": "AUTH_RESPONSE + identity + device + signature",
+  "transcriptLength": 152,
+  "transcriptSha256": "37fea1886e0102b65b8e3eda62a17c75ffde74c8ebae07e7a28f5369769c9d45"
+}

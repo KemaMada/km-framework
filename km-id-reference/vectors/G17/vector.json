@@ -1,0 +1,30 @@
+{
+  "artifacts": {
+    "challenge.json": {
+      "length": 168,
+      "sha256": "e465e82c5b881a5747463a37b4242aed733ba21483ec30e2b4b389a9bb9af7fa"
+    },
+    "response.json": {
+      "length": 267,
+      "sha256": "5d83532686e6400a2679e1921e66e4c5669b3f4e27047478b1fb4e27f3ada10e"
+    },
+    "transcript.bin": {
+      "length": 152,
+      "sha256": "37fea1886e0102b65b8e3eda62a17c75ffde74c8ebae07e7a28f5369769c9d45"
+    }
+  },
+  "challengeTranscriptSha256": "37fea1886e0102b65b8e3eda62a17c75ffde74c8ebae07e7a28f5369769c9d45",
+  "description": "Escenario completo del intercambio de autenticacion: el challenge se emite, el initiator construye el response, y el transcript de 152 bytes es el mismo en ambos extremos.",
+  "expected": "VALID",
+  "id": "G17",
+  "inputs": {
+    "initiatorIdentityId": "7add69bd30b028ce2c7838680066069d2709b47a01cc480034a8f9677c22237f",
+    "initiatorPublicKey": "d0ba2676cd1f95744519014a931a8757fa9e7a456714acd3eb408dd1476cfd03",
+    "nonce": "6faf91447b51d9a2d14c84d665494f2a",
+    "responderIdentityId": "d5fccc09836e6a78aac2eaccb4f04011197515177f3db102017d6ee39feb764b",
+    "responderPublicKey": "983a38210e9b440d9a8474697863dffbbfbd4f55de9cdf2125713cda866e9af3",
+    "timestamp": "1721827200000"
+  },
+  "responseSignature": "DSJUY7nhrNbzGilssixonPro9pAjRSU7qkOImX7tqSZ-PYMvtM9Sx7ymUvpB-RpOnKfXYdmdjVHqo8Fb2TU7Dg",
+  "title": "Flujo completo: Challenge -> Response"
+}

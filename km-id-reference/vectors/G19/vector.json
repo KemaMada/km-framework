@@ -1,0 +1,34 @@
+{
+  "artifacts": {
+    "auth_ok.json": {
+      "length": 270,
+      "sha256": "8ac23a61f9c387390d5fef184b1ad54ddce33de2420bd9d86ca8bfdb763152cf"
+    },
+    "challenge.json": {
+      "length": 168,
+      "sha256": "e465e82c5b881a5747463a37b4242aed733ba21483ec30e2b4b389a9bb9af7fa"
+    },
+    "response.json": {
+      "length": 267,
+      "sha256": "5d83532686e6400a2679e1921e66e4c5669b3f4e27047478b1fb4e27f3ada10e"
+    },
+    "verification.json": {
+      "length": 1484,
+      "sha256": "f4f75f1069b40c787fb9d8ffd1619b9dcdde9cbd75a421830cb094cdb08e112c"
+    }
+  },
+  "base64urlInitiatorKey": "0Lomds0flXRFGQFKkxqHV_qeekVnFKzT60CN0Uds_QM",
+  "base64urlResponderKey": "mDo4IQ6bRA2ahHRpeGPf-7-9T1XenN8hJXE82oZumvM",
+  "description": "Conjunto completo de artefactos wire con todos los campos JSON y sus verificaciones criptograficas. Los campos Base64URL cumplen RFC 4648 seccion 5: sin padding, URL-safe.",
+  "expected": "VALID",
+  "id": "G19",
+  "inputs": {
+    "initiatorPublicKey": "d0ba2676cd1f95744519014a931a8757fa9e7a456714acd3eb408dd1476cfd03",
+    "nonce": "6faf91447b51d9a2d14c84d665494f2a",
+    "responderPublicKey": "983a38210e9b440d9a8474697863dffbbfbd4f55de9cdf2125713cda866e9af3",
+    "serverNonce": "218a1e9e51a455ad768a147d6834c788",
+    "sessionId": "b2aeff36f46a697d3287794e39ac64ed1dd3e7d0",
+    "timestamp": "1721827200000"
+  },
+  "title": "JSON wire + Base64URL + verificacion criptografica"
+}

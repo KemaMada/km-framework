@@ -1,0 +1,26 @@
+{
+  "artifacts": {
+    "auth_ok.json": {
+      "length": 270,
+      "sha256": "8ac23a61f9c387390d5fef184b1ad54ddce33de2420bd9d86ca8bfdb763152cf"
+    },
+    "transcript.bin": {
+      "length": 120,
+      "sha256": "65c41b28e499c6d7a179e5b0f3b4d0c81150dfa904f0eb37c55d226207e4099c"
+    }
+  },
+  "description": "Confirmacion del Responder. El transcript mide exactamente 120 bytes: 40 (sessionId) + 16 (serverNonce) + 64 (initiatorIdentityId). La firma usa la clave del Responder.",
+  "expected": "VALID",
+  "id": "G16",
+  "inputs": {
+    "initiatorIdentityId": "7add69bd30b028ce2c7838680066069d2709b47a01cc480034a8f9677c22237f",
+    "responderPublicKey": "983a38210e9b440d9a8474697863dffbbfbd4f55de9cdf2125713cda866e9af3",
+    "serverNonce": "218a1e9e51a455ad768a147d6834c788",
+    "sessionId": "b2aeff36f46a697d3287794e39ac64ed1dd3e7d0"
+  },
+  "responderKeyHex": "983a38210e9b440d9a8474697863dffbbfbd4f55de9cdf2125713cda866e9af3",
+  "signature": "ZCH9OweNslm5IR8swOgaGPlca_QbLPgi8WG092Z0iIJpKImfKOd6jWZ9UObGovbYvhNRfRPzS4a4N8UzXTrmDw",
+  "title": "AUTH_OK + 120-byte server transcript",
+  "transcriptLength": 120,
+  "transcriptSha256": "65c41b28e499c6d7a179e5b0f3b4d0c81150dfa904f0eb37c55d226207e4099c"
+}

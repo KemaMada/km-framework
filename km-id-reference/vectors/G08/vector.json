@@ -1,0 +1,20 @@
+{
+  "artifacts": {
+    "canonical.cbor": {
+      "length": 239,
+      "sha256": "551cf6d71be4821bbd1b3fde064483fc679573664eea82a84e68d5e4ec567d6b"
+    },
+    "signable.cbor": {
+      "length": 163,
+      "sha256": "40e67d15d91d2e6659495ae2dac5f81368a629e889f9d60c3dd473d98ece0951"
+    }
+  },
+  "derived": "a863646f636f6b6d2e7369676e65645072656b6579656b65794964182a6776657273696f6e016864657669636549645820335af73b75ed865a8eefb43b0a661addc084dc604159620e15e372d355d0954e696372656174656441741b00000199c82cc000696578706972657341741b0000019a62ab8800697075626c69634b6579582059535e0855de2d3d3b39a02b7939d14018409519853618833c06bf52e6b503a7697369676e617475726558408cea8eb47f0042c089da27165e6a9e06bc0ea9a1a081ec9009f85239c44668d26f9080aa0c3bedb78a319b8c13d1a56711de33211105b4299e556ff33622a80e",
+  "description": "Firmado por la clave de FIRMA DEL DISPOSITIVO, no por la raiz. La cadena de autoridad es IdentityRoot -> DeviceRoster -> DeviceSigningKey -> SignedPrekey. deviceId DEBE coincidir con el subjectDeviceId del bundle.",
+  "expected": "VALID",
+  "id": "G08",
+  "signature": "8cea8eb47f0042c089da27165e6a9e06bc0ea9a1a081ec9009f85239c44668d26f9080aa0c3bedb78a319b8c13d1a56711de33211105b4299e556ff33622a80e",
+  "signingKey": "seed alice.mobile.sign",
+  "title": "SignedPrekey",
+  "verify": "Ed25519.Verify(roster[subject].signingKey, signable.cbor, signature)"
+}

@@ -1,0 +1,2 @@
+canonical.cbor: VALID
+tampered.cbor: INVALID_SIGNATURE

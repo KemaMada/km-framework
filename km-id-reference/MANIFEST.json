@@ -1,0 +1,432 @@
+{
+  "constants": {
+    "CURRENT_VERSION": 1,
+    "DOC_CONTACT_BUNDLE": "km.contactBundle",
+    "DOC_LINK_CHALLENGE": "km.deviceLinkChallenge",
+    "DOC_LINK_RESPONSE": "km.deviceLinkResponse",
+    "DOC_ONETIME_PREKEY": "km.oneTimePrekey",
+    "DOC_ROSTER": "km.deviceRoster",
+    "DOC_ROTATION": "km.identityRotation",
+    "DOC_SIGNED_PREKEY": "km.signedPrekey",
+    "DS_CONTACT_BUNDLE": "KM-CONTACT-BUNDLE",
+    "DS_DEVICE": "KM-ID-DEVICE",
+    "DS_DEVICE_LINK": "KM-DEVICE-LINK",
+    "DS_IDENTITY": "KM-ID-IDENTITY",
+    "DS_NODE": "KM-NODE-NODE",
+    "DS_PREKEY_ONETIME": "KM-PREKEY-ONETIME",
+    "DS_PREKEY_SIGNED": "KM-PREKEY-SIGNED",
+    "DS_ROSTER": "KM-ID-ROSTER",
+    "DS_ROSTER_CODE": "KM-ID-ROSTER-CODE",
+    "DS_ROSTER_GENESIS": "KM-ID-ROSTER-GENESIS",
+    "DS_ROTATION": "KM-ID-ROTATION",
+    "DS_SAFETY_NUMBER": "KM-ID-SAFETY-NUMBER",
+    "ENDPOINT_ONION": 1,
+    "ENDPOINT_RELAY": 3,
+    "ENDPOINT_UDP": 2,
+    "HASH_BYTES": 32,
+    "KCE_FRAMER_MAX_DEPTH": 4,
+    "KCE_MAX_ARRAY_ITEMS": 256,
+    "KCE_MAX_DEPTH": 8,
+    "KCE_MAX_DOCUMENT_BYTES": 65536,
+    "KCE_MAX_MAP_ITEMS": 64,
+    "KCE_MAX_TEXT_BYTES": 1024,
+    "KIND_CONTACT": 1,
+    "KIND_DEVICE_LINK": 2,
+    "MAX_CAPABILITIES_UINT": 4294967295,
+    "MAX_DEVICES": 64,
+    "MAX_ENDPOINTS": 16,
+    "MAX_ENDPOINT_VALUE_BYTES": 256,
+    "MAX_NAME_BYTES": 64,
+    "MAX_ONE_TIME_PREKEYS": 128,
+    "PUBKEY_BYTES": 32,
+    "SAFETY_NUMBER_DIGITS": 60,
+    "SAFETY_NUMBER_GROUPS": 12,
+    "SAFETY_NUMBER_GROUP_SIZE": 5,
+    "SAFETY_NUMBER_SOURCE_BYTES": 25,
+    "SAMPLE_CREATED_AT": 1760000000000,
+    "SAMPLE_LINK_EXPIRES_AT": 1760000060000,
+    "SAMPLE_SPK_VALIDITY_MS": 2592000000,
+    "SIG_BYTES": 64,
+    "STATUS_ACTIVE": 1,
+    "STATUS_REVOKED": 2
+  },
+  "generatedBy": "km-id-reference/generate.py",
+  "invalid": [
+    {
+      "docType": "DeviceRoster",
+      "expected": "DUPLICATE_MAP_KEY",
+      "file": "invalid/duplicate-key.cbor",
+      "length": 479,
+      "note": "La clave `doc` aparece dos veces. Un mapa CBOR con claves duplicadas tiene interpretacion ambigua, asi que KCE lo trata como error, no como algo a resolver.",
+      "sha256": "bc6e890637efba3a807c089132e5ef1cab49a8ad6a0179abe9b5689840d0882f"
+    },
+    {
+      "docType": "DeviceRoster",
+      "expected": "UNKNOWN_FIELD",
+      "file": "invalid/unknown-field.cbor",
+      "length": 473,
+      "note": "Documento KCE-perfecto con un campo que el esquema no define. Como la firma cubre la estructura ENTERA, no es posible 'ignorar campos desconocidos': se rechaza. Anadir un campo obliga a subir `version`.",
+      "sha256": "6b3480cff83d0ef46aa4deafc4b13846673fecde5f6432305e83afd5357e51a7"
+    },
+    {
+      "docType": "DeviceRoster",
+      "expected": "INVALID_SIGNATURE",
+      "file": "invalid/bad-signature.cbor",
+      "length": 459,
+      "note": "KCE y esquema validos; solo un byte de la firma esta alterado. Se localiza el bloque de la firma explicitamente, porque el ultimo byte del documento no pertenece necesariamente a ella: KCE ordena por bytes codificados y el prefijo de longitud domina.",
+      "sha256": "83b56c20a989f991d3b596178a78a230142af4d63a0000b0a8f1da56dc96477f"
+    },
+    {
+      "docType": "ContactBundle",
+      "expected": "SUBJECT_BINDING_MISMATCH",
+      "file": "invalid/wrong-device-binding.cbor",
+      "length": 1694,
+      "note": "El bundle dice que pertenece al movil (subjectDeviceId) pero lleva la clave de firma del PC. Se comprueba el binding ANTES que la firma del bundle, que tambien fallaria; el error primario es el binding.",
+      "sha256": "cf1e936878eb23f3e37249243c167ff0a05ac610e54608cbbcf5b68a83637858"
+    },
+    {
+      "docType": "DeviceRoster",
+      "expected": "PREVIOUS_MISMATCH",
+      "file": "invalid/wrong-previous.cbor",
+      "length": 634,
+      "note": "Roster #2 con el enlace calculado sobre OTRA identidad, y RE-FIRMADO con la raiz correcta. Asi el unico defecto es la cadena: la firma es valida.",
+      "sha256": "d4aca7adcaf09979383496614cd6b8c81be88dac37666578289631117c0bb33b"
+    },
+    {
+      "docType": "DeviceRoster",
+      "expected": "UNSUPPORTED_VERSION",
+      "file": "invalid/wrong-version.cbor",
+      "length": 459,
+      "note": "Documento bien formado y bien firmado que declara version 2. Debe reportarse como version no soportada, NO como encoding invalido: por eso el despacho de version precede a la validacion KCE.",
+      "sha256": "4541f122773fa1fba1ea01c7dfa23bd36822eff8729e0a3b9216352a38585cf7"
+    },
+    {
+      "docType": "DeviceRoster",
+      "expected": "KCE_ROUNDTRIP_MISMATCH",
+      "file": "invalid/non-canonical-order.cbor",
+      "length": 459,
+      "note": "Mapa con las mismas claves y valores en orden inverso al canonico. Es CBOR valido y decodifica bien, pero NO es KCE: por eso se valida el round-trip byte a byte en lugar de confiar en la decodificacion.",
+      "sha256": "771f9f1f8e797e922e6849d4d92d53c4cc8d3e2b4fb37fad32542cba7a57ea76"
+    },
+    {
+      "docType": "DeviceRoster",
+      "expected": "INDEFINITE_LENGTH",
+      "file": "invalid/indefinite-length.cbor",
+      "length": 460,
+      "note": "Mapa de longitud indefinida. KCE exige longitudes definitivas: un receptor no debe poder aceptar una representacion cuyos limites no conoce.",
+      "sha256": "140cadaaea7de1b3c4dbca330e7a9501c8d617344a965ec0415f8ba2e916bc4f"
+    },
+    {
+      "docType": "DeviceRoster",
+      "expected": "FLOAT_FORBIDDEN",
+      "file": "invalid/float.cbor",
+      "length": 459,
+      "note": "`createdAt` codificado como float de doble precision en lugar de uint. Los flotantes estan prohibidos en KCE porque su representacion no es canonica de forma fiable entre lenguajes.",
+      "sha256": "762bd3955a2986a4a45c0d964cce72113f4881b7eb62ff494350acc7cd3196bb"
+    },
+    {
+      "docType": "DeviceRoster",
+      "expected": "TEXT_NOT_NFC",
+      "file": "invalid/non-nfc-text.cbor",
+      "length": 294,
+      "note": "El nombre del dispositivo usa forma de descomposicion Unicode. Sin NFC obligatorio, dos implementaciones firman bytes distintos para el mismo texto.",
+      "sha256": "b688ab27f9a8bd60d62cda22e9fa54049e554006bb486799563c9ca730cc84ef"
+    },
+    {
+      "docType": "DeviceRoster",
+      "expected": "TAGS_FORBIDDEN",
+      "file": "invalid/cbor-tag.cbor",
+      "length": 461,
+      "note": "Documento con etiqueta CBOR 32. KCE las prohibe salvo las definidas explicitamente por KM, para evitar dos representaciones semanticamente equivalentes.",
+      "sha256": "b77a2803bb9421324a4a24391012a4a123d0e45ddb693beb4c994cdcfbd87566"
+    },
+    {
+      "docType": "DeviceRoster",
+      "expected": "NULL_FORBIDDEN",
+      "file": "invalid/null-field.cbor",
+      "length": 465,
+      "note": "`name` presente pero con valor null. Los campos opcionales se OMITEN, nunca se nulan: asi ausente y ausente significan lo mismo en cualquier implementacion.",
+      "sha256": "6748f997d2275ce2cd533aa6fdd8a87c0ba374c01d69d845e242e46e89a581e1"
+    },
+    {
+      "docType": "DeviceRoster",
+      "expected": "REVOCATION_FIELD_MISMATCH",
+      "file": "invalid/revoked-without-timestamp.cbor",
+      "length": 459,
+      "note": "Dispositivo marcado REVOKED sin revokedAt, y correctamente firmado por la raiz. La dependencia es normativa: revokedAt esta presente si y solo si status == REVOKED.",
+      "sha256": "ef5a46cf79f9204ea49e0b90fc7d62d91d1959acdc4e39f7e6fd346126a4fdfe"
+    }
+  ],
+  "note": "Los vectores se CALCULAN ejecutando la implementacion de referencia. Si un valor fuese incorrecto, el error estaria en el codigo y no disfrazado de constante normativa en el RFC.",
+  "seedDerivation": "SHA-256(UTF8(\"KM-ID-0001/\" || label)",
+  "seeds": {
+    "alice.mobile.agr": "de7eb9103c4e164b3fec16c7c4b85d6eafa29d4efa413e7ba3953a2b23985069",
+    "alice.mobile.opk.1000": "8c14030c55917de3ce125caeb98ef05218b9530c7be486929360f84554d7a0f8",
+    "alice.mobile.opk.1001": "cbe0f4e2a45fab085d67dac6a707612fbf1bbfe433cad8c8a236ee6cb6bb6b15",
+    "alice.mobile.sign": "6c8fbb5c38e8f20ec4d4fad803096b46147738f0c336305f0fea0e54a15351bc",
+    "alice.mobile.spk": "59535e0855de2d3d3b39a02b7939d14018409519853618833c06bf52e6b503a7",
+    "alice.pc.agr": "dba382e825e1ad61ad8acfa81300b055128de9f503ff76da8c4186aa9b519a18",
+    "alice.pc.sign": "0825a08b35d2e3c941e45849e3bfbb5b87c685d5beb0cd4f42add68baa5ccac7",
+    "alice.pc.spk": "33776359ba436abccaee59bfc1abcb2bc36f69c7a37bc1c0db73251c8f8d51ba",
+    "bob.mobile.agr": "38f8f74e86e335dec9557928dab32575d490138ab608c473efa08896fab7221b",
+    "bob.mobile.sign": "be76dca149c643814c3dc90308f3b290232a73b2f259fb349acecdd94d97b716",
+    "linksecret.1": "64f35cf538f6d56fae8f319b5a1c64f38c9d8b4afb5dd8c2f4ba1fad3d51f7c1",
+    "node.identity": "3a812951bf6746fb6680f30aa27c3665bc4389d7c78adb9b0c07370e7b57fc5d",
+    "nonce.link.1": "b4d08076141ddc369cff2c216824824ad4e9e6faec6abc9a6067467d095f86fa",
+    "root.alice.v1": "2701fca9d08a61146adde3b67f8b53e6d89ff6ac07689f15775f62c45976a81b",
+    "root.alice.v2": "ea3839be2059f502d15979c6637f103b79b340cf814242f1ce78b5db45f5492f"
+  },
+  "spec": "KM-ID-0001",
+  "vectors": [
+    {
+      "derived": "d460c110016f450330ed6a78c3af94211bf59c77726151b2a3005b006a3e7a77",
+      "description": "SHA-256(\"KM-ID-IDENTITY\" || identityRootPublicKey). Entrada: clave publica Ed25519 de la raiz de identidad. Salida: 32 bytes.",
+      "expected": "VALID",
+      "id": "G01",
+      "inputs": {
+        "identityRootPublicKey": "25a0456721acc835be21a704a75fedc6ac8ab6cb659bbb91e81af4f24da1790e"
+      },
+      "rule": "SHA-256(UTF8(\"KM-ID-IDENTITY\") || key)",
+      "seedLabel": "root.alice.v1",
+      "title": "identityId derivation"
+    },
+    {
+      "derived": "335af73b75ed865a8eefb43b0a661addc084dc604159620e15e372d355d0954e",
+      "description": "SHA-256(\"KM-ID-DEVICE\" || deviceSigningPublicKey). La clave de ACUERDO X25519 no participa: deviceId se ancla a la clave de FIRMA, que es la que autoriza al dispositivo.",
+      "expected": "VALID",
+      "id": "G02",
+      "inputs": {
+        "deviceSigningPublicKey": "00c274481e296d1da346f8cf57695c9f6dbe278d0a9e54f942845e1b40c6f711"
+      },
+      "rule": "SHA-256(UTF8(\"KM-ID-DEVICE\") || key)",
+      "seedLabel": "alice.mobile.sign",
+      "title": "deviceId derivation"
+    },
+    {
+      "derived": "629e6aa086da0b8093fcce8384360e787bdb102f678d8faa85ba9db303b7756e",
+      "description": "SHA-256(\"KM-NODE-NODE\" || nodeIdentityPublicKey). El nodo es un objeto distinto de la identidad y del dispositivo; el prefijo de dominio impide que los tres identificadores puedan colisionar.",
+      "expected": "VALID",
+      "id": "G03",
+      "inputs": {
+        "nodeIdentityPublicKey": "d0306ab2a6e0a2a4f5a3ff102b645151da9f880ea5a60899c3992158918b71b7"
+      },
+      "rule": "SHA-256(UTF8(\"KM-NODE-NODE\") || key)",
+      "seedLabel": "node.identity",
+      "title": "nodeId derivation"
+    },
+    {
+      "artifacts": {
+        "canonical.cbor": {
+          "length": 459,
+          "sha256": "00c5128701740cfa1200a83c2d0692419fdc7c2df41afac2917d1f9b3ac51095"
+        },
+        "signable.cbor": {
+          "length": 383,
+          "sha256": "081357756ace6011e3fe340a95f1422646bd1669a9147e0d33cc834e44d70b71"
+        }
+      },
+      "derived": "a963646f636f6b6d2e646576696365526f73746572676465766963657381a6646e616d656d416c6963652d416e64726f6964667374617475730167616464656441741b00000199c82cc0006864657669636549645820335af73b75ed865a8eefb43b0a661addc084dc604159620e15e372d355d0954e6a7369676e696e674b6579582000c274481e296d1da346f8cf57695c9f6dbe278d0a9e54f942845e1b40c6f7116c61677265656d656e744b65795820de7eb9103c4e164b3fec16c7c4b85d6eafa29d4efa413e7ba3953a2b239850696776657273696f6e016870726576696f757358204d28da389fad668050171f4abb481b5e571ae4119b7a589441aaf5e0076d5c8b6873657175656e636501696372656174656441741b00000199c82cc000697369676e617475726558403607160827c6cfe3364ea1ef5965821a339ee783a1b1b198cf58eaef178d7de958d3e500a0334cf0f37b81953917755ad2b75c5c03d90a94b6d1bdcfdced5d066a6964656e7469747949645820d460c110016f450330ed6a78c3af94211bf59c77726151b2a3005b006a3e7a776c6964656e74697479526f6f74582025a0456721acc835be21a704a75fedc6ac8ab6cb659bbb91e81af4f24da1790e",
+      "description": "Roster inicial de una identidad, con un unico dispositivo. previous esta anclado a la identidad: SHA-256(\"KM-ID-ROSTER-GENESIS\" || identityRoot). Firmado con la raiz Ed25519.",
+      "expected": "VALID",
+      "id": "G04",
+      "inputs": {
+        "deviceSigningKey": "00c274481e296d1da346f8cf57695c9f6dbe278d0a9e54f942845e1b40c6f711",
+        "identityRoot": "25a0456721acc835be21a704a75fedc6ac8ab6cb659bbb91e81af4f24da1790e",
+        "seed(device)": "6c8fbb5c38e8f20ec4d4fad803096b46147738f0c336305f0fea0e54a15351bc",
+        "seed(root)": "2701fca9d08a61146adde3b67f8b53e6d89ff6ac07689f15775f62c45976a81b"
+      },
+      "signature": "3607160827c6cfe3364ea1ef5965821a339ee783a1b1b198cf58eaef178d7de958d3e500a0334cf0f37b81953917755ad2b75c5c03d90a94b6d1bdcfdced5d06",
+      "signingKey": "seed root.alice.v1",
+      "title": "DeviceRoster genesis (sequence = 1)",
+      "verify": "Ed25519.Verify(identityRoot, signable.cbor, signature)"
+    },
+    {
+      "artifacts": {
+        "canonical.cbor": {
+          "length": 634,
+          "sha256": "95a5df0c4cef754d0c9520844d8e48d3a9d3b754c511edaa5dd9b922e73ab9b9"
+        },
+        "signable.cbor": {
+          "length": 558,
+          "sha256": "604edd6b396849a30e14868a2b39d54384a6f3b836e8f64d91312f0ad6f8e694"
+        }
+      },
+      "chain": "previous = SHA-256(G04/canonical.cbor)",
+      "dependsOn": "G04",
+      "derived": "a963646f636f6b6d2e646576696365526f73746572676465766963657382a6646e616d656d416c6963652d416e64726f6964667374617475730167616464656441741b00000199c82cc0006864657669636549645820335af73b75ed865a8eefb43b0a661addc084dc604159620e15e372d355d0954e6a7369676e696e674b6579582000c274481e296d1da346f8cf57695c9f6dbe278d0a9e54f942845e1b40c6f7116c61677265656d656e744b65795820de7eb9103c4e164b3fec16c7c4b85d6eafa29d4efa413e7ba3953a2b23985069a6646e616d6568416c6963652d5043667374617475730167616464656441741b00000199c82cc000686465766963654964582045b01d14774912e6e86c1d5b538d9868c87a6fac951b2abffc284c9e1f0df0f16a7369676e696e674b65795820b5644aa4c4204d974fe595764728ea7428f0f119d0ce7d18d39cb56a80d01c2f6c61677265656d656e744b65795820dba382e825e1ad61ad8acfa81300b055128de9f503ff76da8c4186aa9b519a186776657273696f6e016870726576696f7573582000c5128701740cfa1200a83c2d0692419fdc7c2df41afac2917d1f9b3ac510956873657175656e636502696372656174656441741b00000199c82cc000697369676e61747572655840939462d983475cde4543b1fd30a21fcff44cdc80e85a294a91c2e76e910ec65daac3f2e8d756fd50153aff4705460a48fefed29faef2b63e311f4cb67ab9410b6a6964656e7469747949645820d460c110016f450330ed6a78c3af94211bf59c77726151b2a3005b006a3e7a776c6964656e74697479526f6f74582025a0456721acc835be21a704a75fedc6ac8ab6cb659bbb91e81af4f24da1790e",
+      "description": "Anade el dispositivo PC. previous = SHA-256(KCE(roster#1 COMPLETO, incluida su firma)). Verificarlo exige el roster #1, que se incluye como dependencia declarada.",
+      "expected": "VALID",
+      "id": "G05",
+      "invariant": "deviceId == SHA-256(\"KM-ID-DEVICE\" || signingKey) en cada entrada",
+      "signature": "939462d983475cde4543b1fd30a21fcff44cdc80e85a294a91c2e76e910ec65daac3f2e8d756fd50153aff4705460a48fefed29faef2b63e311f4cb67ab9410b",
+      "title": "DeviceRoster sequence = 2 (cadena)"
+    },
+    {
+      "artifacts": {
+        "canonical.cbor": {
+          "length": 459,
+          "sha256": "00c5128701740cfa1200a83c2d0692419fdc7c2df41afac2917d1f9b3ac51095"
+        },
+        "signable.cbor": {
+          "length": 383,
+          "sha256": "081357756ace6011e3fe340a95f1422646bd1669a9147e0d33cc834e44d70b71"
+        },
+        "tampered.cbor": {
+          "length": 459,
+          "sha256": "83b56c20a989f991d3b596178a78a230142af4d63a0000b0a8f1da56dc96477f"
+        }
+      },
+      "description": "El mismo documento con la firma intacta debe verificar, y el mismo documento con el ultimo byte de la firma alterado debe rechazarse. Aisla el error criptografico de todos los demas.",
+      "expected": "canonical.cbor: VALID\ntampered.cbor: INVALID_SIGNATURE",
+      "id": "G06",
+      "mutation": "se invierte el bit 0 del ultimo byte (dentro de la firma)",
+      "note": "KCE y esquema siguen siendo validos: el fallo es puramente criptografico",
+      "signature": "3607160827c6cfe3364ea1ef5965821a339ee783a1b1b198cf58eaef178d7de958d3e500a0334cf0f37b81953917755ad2b75c5c03d90a94b6d1bdcfdced5d06",
+      "title": "Firma de roster: valida y manipulada"
+    },
+    {
+      "artifacts": {
+        "canonical.cbor": {
+          "length": 284,
+          "sha256": "8edb7c8a12bdd875ac0fe1f788633e2d824a8ce7062748f937a1a51e5f939336"
+        },
+        "forged.cbor": {
+          "length": 206,
+          "sha256": "2b31ac6fa68e8901f1f2cbef48d8239dffb844ddad08c47ea74b5e329e67da38"
+        },
+        "signable.cbor": {
+          "length": 128,
+          "sha256": "e3e37c205c662da1a028d4ccdf74b0cec01808a61b822d8676978127277d9c88"
+        }
+      },
+      "consequence": "sequence se reinicia en 1 para la identidad nueva; el reinicio solo es aceptable porque la rotacion es bilateral",
+      "description": "Certificado de transicion entre dos raices. Ambas firmas cubren el mismo Signable. El fixture `forged.cbor` demuestra el caso que la firma bilateral existe para detectar: un atacante con la raiz antigua robada puede firmar, pero NO puede producir la contrafirma de una raiz nueva legitima.",
+      "expected": "canonical.cbor: VALID\nforged.cbor: INVALID_NEW_ROOT_SIGNATURE",
+      "id": "G07",
+      "inputs": {
+        "newRoot": "53d3d7c252addb5a6c8b3240b53d7dc0f31f0486550546535eb213f9b2db2fc5",
+        "oldRoot": "25a0456721acc835be21a704a75fedc6ac8ab6cb659bbb91e81af4f24da1790e"
+      },
+      "newRootSign": "0ebda828b5914f09f48ad7f1f992c06f92c7e7af8df37d257ecbaa05c231a2a31c13e54e78073b8e74db1095eca14e5fe5f7b5d552061ce79f9f761387d5b50a",
+      "oldRootSign": "01d97a533a9859b704889d2383d4b924a26b61071aa3c056c27198e8b9c038ce8f7098be917771c1de6293d79766aa7410e1d4fe5aa1ddf6b131c439206e3b0b",
+      "title": "IdentityRotation bilateral"
+    },
+    {
+      "artifacts": {
+        "canonical.cbor": {
+          "length": 239,
+          "sha256": "551cf6d71be4821bbd1b3fde064483fc679573664eea82a84e68d5e4ec567d6b"
+        },
+        "signable.cbor": {
+          "length": 163,
+          "sha256": "40e67d15d91d2e6659495ae2dac5f81368a629e889f9d60c3dd473d98ece0951"
+        }
+      },
+      "derived": "a863646f636f6b6d2e7369676e65645072656b6579656b65794964182a6776657273696f6e016864657669636549645820335af73b75ed865a8eefb43b0a661addc084dc604159620e15e372d355d0954e696372656174656441741b00000199c82cc000696578706972657341741b0000019a62ab8800697075626c69634b6579582059535e0855de2d3d3b39a02b7939d14018409519853618833c06bf52e6b503a7697369676e617475726558408cea8eb47f0042c089da27165e6a9e06bc0ea9a1a081ec9009f85239c44668d26f9080aa0c3bedb78a319b8c13d1a56711de33211105b4299e556ff33622a80e",
+      "description": "Firmado por la clave de FIRMA DEL DISPOSITIVO, no por la raiz. La cadena de autoridad es IdentityRoot -> DeviceRoster -> DeviceSigningKey -> SignedPrekey. deviceId DEBE coincidir con el subjectDeviceId del bundle.",
+      "expected": "VALID",
+      "id": "G08",
+      "signature": "8cea8eb47f0042c089da27165e6a9e06bc0ea9a1a081ec9009f85239c44668d26f9080aa0c3bedb78a319b8c13d1a56711de33211105b4299e556ff33622a80e",
+      "signingKey": "seed alice.mobile.sign",
+      "title": "SignedPrekey",
+      "verify": "Ed25519.Verify(roster[subject].signingKey, signable.cbor, signature)"
+    },
+    {
+      "artifacts": {
+        "canonical.cbor": {
+          "length": 127,
+          "sha256": "b8dc3558cee5761aead183825f5963f2fb8d76618148bf9b450bde821b9b89e8"
+        },
+        "second.cbor": {
+          "length": 127,
+          "sha256": "2ff672e75b0537b61067b975fcf1d953a939be34aa9547a935046a09689ab205"
+        }
+      },
+      "consumption": "AVAILABLE -> RESERVED -> CONSUMED, irreversible; el consumo atomico por opkId se especifica en KM-DISC-0001",
+      "derived": "a563646f63706b6d2e6f6e6554696d655072656b6579656b657949641903e86776657273696f6e016864657669636549645820335af73b75ed865a8eefb43b0a661addc084dc604159620e15e372d355d0954e697075626c69634b657958208c14030c55917de3ce125caeb98ef05218b9530c7be486929360f84554d7a0f8",
+      "description": "La OPK NO lleva firma propia, deliberadamente: hereda la autenticidad de la firma de la raiz que envuelve el ContactBundle. Así el verificador no verifica N firmas adicionales y la garantia es \"o el bundle entero es valido, o no sirve\".",
+      "expected": "VALID",
+      "id": "G09",
+      "signature": null,
+      "title": "OneTimePrekey (sin firma propia)"
+    },
+    {
+      "artifacts": {
+        "contact.cbor": {
+          "length": 1694,
+          "sha256": "1aefbd1c0a5074816db274b85f93ca6775c01aa254bddf09578bf6028eb53a50"
+        },
+        "device_link.cbor": {
+          "length": 1438,
+          "sha256": "d9cdc4706aa2beae84236175494930f3a282c146fd29bde7ef4991c056326c94"
+        }
+      },
+      "chainNotVerifiable": "el bundle embebe un unico snapshot: si su sequence > 1 el enlace al anterior NO es verificable aqui; la autoridad es la firma",
+      "contactSignature": "1955950d804ffdb75033dd51a69a7c64d5aa67162ce61b28ae07de113fb4e37aa277ff5cce4948d29cd8cd34f4edac1e8d86f6b84868ab658aec30b40cb28207",
+      "description": "El bundle es el MISMO objeto en `.kmc` y en QR: no existen dos protocolos. `kind` distingue CONTACT de DEVICE_LINK sin cambiar el modelo criptografico. El bundle DEVICE_LINK embibe el roster ANTERIOR a dar de alta al nuevo dispositivo, e incluye linkSecret.",
+      "deviceLinkSignature": "99ee155425509e63186988da84fe1293c61e6662446378aa653073e3b86cb8174db18b294506cc51cfab2e6a982c63e81b0b60dde5e9069bbc5b8191028c2307",
+      "endpointsAreSigned": "un atacante que modifique un endpoint invalida la firma",
+      "expected": "contact.cbor: VALID\ndevice_link.cbor: VALID",
+      "id": "G10",
+      "invariants": [
+        "subjectDeviceId == roster entry deviceId",
+        "subjectSigningKey == roster entry signingKey",
+        "subjectAgreementKey == roster entry agreementKey",
+        "deviceId(subjectSigningKey) == subjectDeviceId",
+        "signedPrekey.deviceId == subjectDeviceId",
+        "oneTimePrekeys[i].deviceId == subjectDeviceId"
+      ],
+      "title": "ContactBundle: CONTACT y DEVICE_LINK"
+    },
+    {
+      "artifacts": {
+        "authorizing_roster.cbor": {
+          "length": 634,
+          "sha256": "95a5df0c4cef754d0c9520844d8e48d3a9d3b754c511edaa5dd9b922e73ab9b9"
+        },
+        "challenge.cbor": {
+          "length": 317,
+          "sha256": "1aa427adad9944b802212dc55af355a34c4449084fc2ad23382baf66368ce83a"
+        },
+        "response.cbor": {
+          "length": 348,
+          "sha256": "4aa9f822e00136299951136638f8424122c7f740e758cda1c87e30c3c4de26c0"
+        }
+      },
+      "authorization": "roster #2 (G05) contiene al PC y esta firmado por la raiz",
+      "description": "NIVEL 1 canal fisico: el QR transporta el challenge. NIVEL 2 prueba de posesion: el PC firma el nonce. NIVEL 3 autorizacion: el movil firma un roster nuevo que incluye al PC, y el PC lo verifica. El challenge NO autoriza a nadie por si solo.",
+      "expected": "challenge.cbor: VALID\nresponse.cbor: VALID\nauthorizing_roster.cbor: VALID",
+      "id": "G11",
+      "inputs": {
+        "linkSecret": "64f35cf538f6d56fae8f319b5a1c64f38c9d8b4afb5dd8c2f4ba1fad3d51f7c1",
+        "nonce": "b4d08076141ddc369cff2c216824824ad4e9e6faec6abc9a6067467d095f86fa"
+      },
+      "linkSecretRole": "liga este intercambio a ESTA instancia de QR; NO es un sustituto de autorizacion criptografica",
+      "title": "Device-link: challenge y response"
+    },
+    {
+      "derived": "60409 73550 99839 07622 71506 20154 75329 02841 98140 63370 18157 67778",
+      "description": "60 digitos decimales en 12 bloques de 5. 10^60 ~ 2^199.3157, de modo que 25 bytes (200 bits) cubren el espacio. Es un CODIGO DE COMPARACION, no un secreto ni una credencial, y no autentica a una persona.",
+      "expected": "VALID",
+      "id": "G12",
+      "inputs": {
+        "identityId": "d460c110016f450330ed6a78c3af94211bf59c77726151b2a3005b006a3e7a77"
+      },
+      "rule": "render60(SHA-256(UTF8(\"KM-ID-SAFETY-NUMBER\") || identityId)[0:25])",
+      "stable": "mientras IdentityRoot no rote; anadir un dispositivo NO lo invalida",
+      "title": "identitySafetyNumber"
+    },
+    {
+      "derived": "38627 55971 56409 46254 55494 03292 07001 79057 83506 02049 84503 84409",
+      "description": "Representa el ESTADO ACTUAL del roster, separado de la identidad. Cambia al anadir, retirar o revocar un dispositivo, mientras G12 permanece igual. Permite expresar \"la identidad es la misma, pero el conjunto de dispositivos cambio\".",
+      "expected": "VALID",
+      "id": "G13",
+      "inputs": {
+        "roster": "G04/canonical.cbor"
+      },
+      "rule": "render60(SHA-256(UTF8(\"KM-ID-ROSTER-CODE\") || KCE(signableRoster))[0:25])",
+      "sameAs": "G12 permanece identico entre G04 y G05; este codigo NO",
+      "title": "rosterVerificationCode"
+    }
+  ]
+}

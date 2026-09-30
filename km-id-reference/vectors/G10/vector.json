@@ -1,0 +1,28 @@
+{
+  "artifacts": {
+    "contact.cbor": {
+      "length": 1694,
+      "sha256": "1aefbd1c0a5074816db274b85f93ca6775c01aa254bddf09578bf6028eb53a50"
+    },
+    "device_link.cbor": {
+      "length": 1438,
+      "sha256": "d9cdc4706aa2beae84236175494930f3a282c146fd29bde7ef4991c056326c94"
+    }
+  },
+  "chainNotVerifiable": "el bundle embebe un unico snapshot: si su sequence > 1 el enlace al anterior NO es verificable aqui; la autoridad es la firma",
+  "contactSignature": "1955950d804ffdb75033dd51a69a7c64d5aa67162ce61b28ae07de113fb4e37aa277ff5cce4948d29cd8cd34f4edac1e8d86f6b84868ab658aec30b40cb28207",
+  "description": "El bundle es el MISMO objeto en `.kmc` y en QR: no existen dos protocolos. `kind` distingue CONTACT de DEVICE_LINK sin cambiar el modelo criptografico. El bundle DEVICE_LINK embibe el roster ANTERIOR a dar de alta al nuevo dispositivo, e incluye linkSecret.",
+  "deviceLinkSignature": "99ee155425509e63186988da84fe1293c61e6662446378aa653073e3b86cb8174db18b294506cc51cfab2e6a982c63e81b0b60dde5e9069bbc5b8191028c2307",
+  "endpointsAreSigned": "un atacante que modifique un endpoint invalida la firma",
+  "expected": "contact.cbor: VALID\ndevice_link.cbor: VALID",
+  "id": "G10",
+  "invariants": [
+    "subjectDeviceId == roster entry deviceId",
+    "subjectSigningKey == roster entry signingKey",
+    "subjectAgreementKey == roster entry agreementKey",
+    "deviceId(subjectSigningKey) == subjectDeviceId",
+    "signedPrekey.deviceId == subjectDeviceId",
+    "oneTimePrekeys[i].deviceId == subjectDeviceId"
+  ],
+  "title": "ContactBundle: CONTACT y DEVICE_LINK"
+}

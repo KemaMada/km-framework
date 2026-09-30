@@ -1,0 +1,1 @@
+nodeIdentityPublicKey = d0306ab2a6e0a2a4f5a3ff102b645151da9f880ea5a60899c3992158918b71b7

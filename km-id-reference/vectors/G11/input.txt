@@ -1,0 +1,2 @@
+linkSecret = 64f35cf538f6d56fae8f319b5a1c64f38c9d8b4afb5dd8c2f4ba1fad3d51f7c1
+nonce = b4d08076141ddc369cff2c216824824ad4e9e6faec6abc9a6067467d095f86fa

@@ -1,0 +1,2 @@
+contact.cbor: VALID
+device_link.cbor: VALID

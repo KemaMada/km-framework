@@ -1,0 +1,23 @@
+{
+  "artifacts": {
+    "canonical.cbor": {
+      "length": 459,
+      "sha256": "00c5128701740cfa1200a83c2d0692419fdc7c2df41afac2917d1f9b3ac51095"
+    },
+    "signable.cbor": {
+      "length": 383,
+      "sha256": "081357756ace6011e3fe340a95f1422646bd1669a9147e0d33cc834e44d70b71"
+    },
+    "tampered.cbor": {
+      "length": 459,
+      "sha256": "83b56c20a989f991d3b596178a78a230142af4d63a0000b0a8f1da56dc96477f"
+    }
+  },
+  "description": "El mismo documento con la firma intacta debe verificar, y el mismo documento con el ultimo byte de la firma alterado debe rechazarse. Aisla el error criptografico de todos los demas.",
+  "expected": "canonical.cbor: VALID\ntampered.cbor: INVALID_SIGNATURE",
+  "id": "G06",
+  "mutation": "se invierte el bit 0 del ultimo byte (dentro de la firma)",
+  "note": "KCE y esquema siguen siendo validos: el fallo es puramente criptografico",
+  "signature": "3607160827c6cfe3364ea1ef5965821a339ee783a1b1b198cf58eaef178d7de958d3e500a0334cf0f37b81953917755ad2b75c5c03d90a94b6d1bdcfdced5d06",
+  "title": "Firma de roster: valida y manipulada"
+}
