@@ -6,7 +6,7 @@
 | **Título** | Session Bootstrap (X3DH) |
 | **Estado** | Draft (Frozen) |
 | **Versión** | 0.3 |
-| **Nota** | Congelado. §13 resuelto. **Aún sin implementación**. |
+| **Nota** | Congelado. §13 resuelto. **Implementado** en `com.km.x3dh.X3dh` (motor X3DH v1, KM-0006 v0.3), con `initiate()`/`respond()` y tests en `X3dhTest` y `AgreementKeyContentionTest`. |
 | **Autor** | KeyMessage Project |
 | **Última actualización** | 2026-09-28 |
 | **Depende de** | KM-0001 (identidad), KM-0002 (autenticación), KM-0004 (SecureFrame), KM-0005 (nodo) |
@@ -354,3 +354,4 @@ dispositivo no bastaría para invalidar el material de acuerdo.
 | 0.1 | 2026-09-28 | Especificación inicial del bootstrap. Sin implementación. |
 | 0.2 | 2026-09-28 | §13 congelado: `IK` device-scoped. Sin cambios en el resto. |
 | 0.3 | 2026-09-28 | §7.3: requisito de `IK_A` del receptor vía ContactExchange. §7.2 era irrealizable sin esto. |
+| 0.3 | 2026-09-30 | Sin cambios en la especificación. Se corrige la cabecera, que decía «Aún sin implementación»: el motor X3DH v1 ya existe en `com.km.x3dh.X3dh` con sus tests. La especificación no cambió, la nota estaba desfasada. |

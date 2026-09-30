@@ -63,6 +63,30 @@ libwebrtc, así que:
 - Es lento y dependiente del entorno. Si un test de `km-webrtc` falla solo en tu
   máquina, dilo en el PR en vez de borrarlo.
 
+#### Tests con inestabilidad conocida
+
+Estos tests han fallado de forma intermitente. **No son estables por diseño, y
+tampoco son prueba de "esto no puede ser una regresión"**: un fallo puntual es
+evidencia de que hay temporización detrás, no una demostración de que jamás
+pueda indicar un defecto real. Si uno falla, hay que investigarlo.
+
+| Test | Qué mide |
+|------|----------|
+| `N10-02` | Datos de conexión cerrada no llegan a `downstream()` |
+| `N10-05` | Mensaje de DataChannel obsoleto se descarta |
+| `N12-16` | Cierre de un binding no afecta al otro peer |
+| `N3-03` | Estado de conexión reportado por el transporte |
+| `R13-04` | SDP offer atraviesa el relay y llega al answerer |
+
+`N10-02` se añadió a esta lista el 2026-09-30, tras el renombrado de paquetes a
+`com.km`. La evidencia que hay es esta: falló **una vez en siete observaciones**
+(1 fallo en la primera corrida completa post-renombrado, 0 en tres corridas
+completas posteriores y 0 en tres corridas aisladas). No es uno de los tests que
+ya se sabían inestables, y el renombrado no tiene acoplamiento con el ciclo de
+vida de ICE. La clasificación de "flaky" es la mejor lectura de esa evidencia, no
+una conclusión lógica: no se ha probado que `N10-02` no pueda ser jamás una
+regresión, y no debe tratarse como si se hubiera probado.
+
 ### Antes de abrir un PR
 
 ```sh
