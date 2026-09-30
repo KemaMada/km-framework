@@ -2,6 +2,8 @@
 .gradle
 .kotlin
 **/build/
+**/__pycache__/
+*.pyc
 /local.properties
 /.idea/caches
 /.idea/libraries

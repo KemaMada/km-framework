@@ -26,6 +26,12 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import org.junit.jupiter.api.Assumptions.assumeTrue
 
+/** Un hueco observado que no esta: lo que el vigilante no puede tolerar. */
+private const val AUSENTE = -1L
+
+/** Lo que el vigilante ve de los dos huecos del medio en UN instante. */
+private data class Muestra(val confirmada: Long, val pendiente: Long, val temporal: Boolean)
+
 /**
  * 3Q.5.3 FASE 3 — EL MEDIO FÍSICO: `FileTransmitUnitStore`.
  *
@@ -1375,8 +1381,544 @@ class FileTransmitUnitStoreTest {
     }
 
     // ===================================================================
+    // MEDIO-14 — LA DISCIPLINA DE PUBLICACION, MEDIDA Y NO DECLARADA
+    // ===================================================================
+
+    /**
+     * MEDIO-14 — Por que esta prueba y no MEDIO-12.
+     *
+     * MEDIO-12 busca TOKENS: comprueba que en el codigo aparece `force(`,
+     * `ATOMIC_MOVE`, `PENDIENTE_TMP`. Eso es una alarma de humo, y una alarma
+     * de humo se apaga sola: `sync()` tiene su propio `force(true)`, asi que
+     * **borrar el `force(true)` del canal de escritura NO quita el token** y
+     * MEDIO-12 no se enteraria. Lo mismo con `PENDIENTE_TMP`: si el medio
+     * escribiera dentro del hueco sin temporal, el token seguiria nombrando la
+     * constante en la comprobacion de danio.
+     *
+     * Esta prueba mide el cuerpo de cada operacion en vez de la presencia de una
+     * palabra:
+     *
+     * - **A** el canal se abre SOBRE EL TEMPORAL, y el hueco pendiente solo
+     *   aparece como destino de un `Files.move`;
+     * - **B** el `force(true)` del canal esta ANTES del renombrado, y hay uno
+     *   para el fichero y otro para el directorio;
+     * - **C** hay exactamente DOS `Files.move`, los dos `ATOMIC_MOVE`, y no hay
+     *   ni una sola copia ni un borrado del hueco confirmado.
+     *
+     * ## LO QUE ESTA PRUEBA NO PUEDE HACER
+     *
+     * Nada de aqui se ve desde fuera del proceso: si el fichero se perdiera al
+     * apagar la maquina, solo un corte real lo diria, y por eso MEDIO-03 y
+     * MEDIO-04 usan un hijo que muere de verdad. Lo de aqui es que el codigo de
+     * produccion siga siendo el que produce los estados que aquellos miden.
+     */
+    @Test
+    @DisplayName("MEDIO-14 el canal escribe en el TEMPORAL, el force va antes del renombrado, y hay dos renombrados")
+    fun `MEDIO-14 la disciplina medida`() {
+        val fuente = File("src/main/kotlin/com/keymessage/core/transmit/FileTransmitUnitStore.kt")
+        assertTrue(fuente.exists(), "no se encuentra $fuente desde ${File(".").absolutePath}")
+        val codigo = codigoDe(fuente)
+        assertTrue(codigo.size >= 40, "el arnes tiene que encontrar el cuerpo del medio, no un esqueleto")
+
+        val escritura = cuerpoDe(codigo, "fun writeAhead")
+        val promocion = cuerpoDe(codigo, "fun commit()")
+        assertTrue(escritura.isNotEmpty(), "no se encuentra el cuerpo de `writeAhead` en el medio")
+        assertTrue(promocion.isNotEmpty(), "no se encuentra el cuerpo de `commit` en el medio")
+
+        // --- A. EL CANAL SE ABRE SOBRE EL TEMPORAL, NO SOBRE EL HUECO ---------
+        //
+        // Se mide el ARGUMENTO del `FileChannel.open`, no la constante: el
+        // nombre `PENDIENTE_TMP` contiene la palabra `PENDIENTE`, asi que mirar
+        // la palabra daria el mismo veredicto para el temporal y para el hueco.
+        val iAbro = escritura.indexOfFirst { it.second.contains("FileChannel.open") }
+        assertTrue(iAbro >= 0, "writeAhead tiene que escribir por un canal, para poder sincronizar")
+        val ventanaDelCanal = escritura
+            .drop(iAbro)
+            .takeWhile { !it.second.contains(").use") }
+            .map { it.second }
+        assertTrue(ventanaDelCanal.isNotEmpty(), "el `FileChannel.open` tiene que decir sobre que se escribe")
+        val destino = ventanaDelCanal.joinToString("\n")
+        assertFalse(
+            sinTemporal(destino).contains("PENDIENTE"),
+            "writeAhead no puede abrir el canal sobre el hueco pendiente: lo que se publica tiene que escribirse " +
+                "en el TEMPORAL, porque un corte a mitad de escritura en el hueco deja una unidad a medias.\n" +
+                "El canal se abre sobre:\n$destino",
+        )
+        assertTrue(destino.contains(".toPath()"), "el canal se abre sobre una ruta: $destino")
+        assertEquals(
+            1, escritura.count { it.second.contains("Files.move(") },
+            "publicar lo pendiente es UN renombrado del temporal sobre el hueco",
+        )
+        assertTrue(
+            escritura.any { it.second.contains("PENDIENTE_TMP") && it.second.contains("File(dir") },
+            "y el temporal tiene que existir de verdad: se construye en el propio metodo",
+        )
+
+        // --- B. EL `force` DEL CANAL ESTA ANTES DEL RENOMBRADO ----------------
+        val iForce = escritura.indexOfFirst { it.second.contains("force(true)") }
+        val iMove = escritura.indexOfFirst { it.second.contains("Files.move(") }
+        assertTrue(iForce >= 0, "el fichero se tiene que sincronizar antes de renombrarlo: `force(true)`")
+        assertTrue(
+            iForce < iMove,
+            "el `force(true)` del canal tiene que preceder al renombrado: si se sincroniza despues, el renombrado " +
+                "puede salir a disco con el contenido sin sincronizar.\n" +
+                "force en la linea ${escritura[iForce].first}, renombrado en la linea ${escritura[iMove].first}",
+        )
+        assertTrue(
+            escritura.drop(iMove).any { it.second.contains("sync(") },
+            "y despues del renombrado hay que sincronizar el DIRECTORIO, o el nombre no sobrevive a un corte",
+        )
+        val iMovePromocion = promocion.indexOfFirst { it.second.contains("Files.move(") }
+        assertTrue(
+            iMovePromocion >= 0,
+            "el commit tiene que promover con un renombrado: no hay ningun `Files.move` en su cuerpo.\n" +
+                promocion.joinToString("\n") { "  ${it.first}: ${it.second.trim()}" },
+        )
+        assertTrue(
+            promocion.drop(iMovePromocion).any { it.second.contains("sync(") },
+            "la promocion tambien sincroniza el directorio despues de renombrar",
+        )
+        assertTrue(
+            codigo.count { it.second.contains("force(true)") } >= 2,
+            "hay dos cosas que sincronizar —el fichero y el DIRECTORIO— y las dos se sincronizan. " +
+                "Aparece `force(true)` ${codigo.count { it.second.contains("force(true)") }} veces",
+        )
+
+        // --- C. DOS RENOMBRADOS, NINGUNA COPIA, NINGUN BORRADO ---------------
+        val movimientos = codigo.filter { it.second.contains("Files.move(") }
+        assertEquals(
+            2, movimientos.size,
+            "hay DOS publicaciones —el temporal al hueco pendiente y la promocion— y las dos se hacen con un " +
+                "renombrado. Movimientos:\n" + movimientos.joinToString("\n") { "  ${it.first}: ${it.second.trim()}" },
+        )
+        for ((n, l) in movimientos) {
+            val bloque = codigo.filter { it.first >= n }.take(6).joinToString("\n") { it.second }
+            assertTrue(bloque.contains("ATOMIC_MOVE"), "el renombrado de la linea $n tiene que ser ATOMICO")
+            assertTrue(bloque.contains("REPLACE_EXISTING"), "el renombrado de la linea $n tiene que SUSTITUIR")
+        }
+        assertEquals(
+            2, codigo.count { it.second.contains("ATOMIC_MOVE") },
+            "los DOS renombrados son atomicos: un `rename` no atomico degrada a copia, que es el defecto",
+        )
+        for (prohibido in listOf(
+            "Files.copy(", "copyTo(", "writeBytes(", "FileOutputStream", "outputStream",
+            "RandomAccessFile", "appendText", "renameTo", "moveTo",
+        )) {
+            val donde = codigo.filter { it.second.contains(prohibido) }
+            assertTrue(
+                donde.isEmpty(),
+                "el medio no puede escribir de ninguna otra manera que un temporal y un renombrado: aparece " +
+                    "'$prohibido'\n" + donde.joinToString("\n") { "  ${it.first}: ${it.second.trim()}" },
+            )
+        }
+        assertTrue(
+            promocion.none { it.second.contains("delete") },
+            "la promocion no borra NADA: ni el hueco confirmado (seria perder la unica copia al instalarla) ni el " +
+                "pendiente antes de renombrarlo (dejaria una ventana sin ninguna unidad)",
+        )
+        assertTrue(
+            codigo.none { it.second.contains("AtomicMoveNotSupportedException") },
+            "y no degrada a copia cuando `rename` no esta soportado: un ATOMIC_MOVE que no se puede hacer es un " +
+                "FALLO del medio, no una excusa",
+        )
+    }
+
+    // ===================================================================
+    // MEDIO-15 — EL MEDIO NO ACEPTA UNA LECTURA PARCIAL
+    // ===================================================================
+
+    /**
+     * MEDIO-15 — La lectura completa, para todos los tamanos.
+     *
+     * `readBack` y `readCommitted` devuelven lo que hay en el hueco. Una lectura
+     * que acepte "lo que ha(proto) leido" devuelve una unidad a medias donde
+     * antes habia una entera, y esa unidad a medias la veria el codec como una
+     * unidad danada: un fallo fisico convertido en un rechazo nuevo.
+     *
+     * La prueba recorre tamanos que atraviesan CADA frontera de buffer que un
+     * `read()` pueda tener —0, 1, el BLOCK_SIZE del canal, la pagina del
+     * sistema de ficheros, `MAX_VALUE` de un `Int`, y cuatro MiB por encima de
+     * todo eso— y exige DOS cosas: que lo que vuelve sea byte a byte lo que se
+     * escribio, y que el FICHERO MIDA lo que se escribio. La segunda es la que
+     * no se puede_falsear con un `readBytes()` que devuelve lo que le pthread.
+     */
+    @Test
+    @DisplayName("MEDIO-15 ningun tamano se lee a medias: 4 MiB vuelven byte a byte y el hueco mide lo escrito")
+    fun `MEDIO-15 ninguna lectura parcial`() {
+        val d = dir("lectura-parcial")
+        val store = FileTransmitUnitStore(d)
+
+        val tamanos = listOf(
+            0, 1, 2, 63, 64, 65,
+            511, 512, 513,
+            4_095, 4_096, 4_097,
+            65_535, 65_536, 65_537,
+            1_048_576,
+            4_194_304,
+        )
+        for (n in tamanos) {
+            // Contenido NO constante: una lectura parcial que conserve la
+            // longitud se veria igual que la entera con un relleno de ceros.
+            val blob = ByteArray(n) { ((it * 131 + 17) % 251).toByte() }
+            store.writeAhead(blob)
+            assertEquals(
+                n.toLong(), File(d, FileTransmitUnitStore.PENDIENTE).length(),
+                "el hueco pendiente mide EXACTAMENTE los $n B escritos, ni uno mas ni uno menos",
+            )
+            assertContentEquals(blob, store.readBack(), "readBack devuelve los $n B enteros")
+            store.commit()
+            assertEquals(
+                n.toLong(), File(d, FileTransmitUnitStore.CONFIRMADA).length(),
+                "el hueco confirmado mide EXACTAMENTE los $n B escritos",
+            )
+            assertContentEquals(blob, store.readCommitted(), "readCommitted devuelve los $n B enteros")
+            assertContentEquals(blob, store.readBack(), "y readBack sigue viendo lo mismo, entero")
+            assertEquals(
+                1, d.listFiles().orEmpty().size,
+                "el medio se queda con un solo fichero tras promover $n B: ${d.listFiles()?.toList()}",
+            )
+        }
+
+        // --- Y UN HUECO LARGO NO PUEDE DEJAR COLA AL ESCRIBIR UNO CORTO -----
+        //
+        // La otra mitad de "leer entero": escribir encima. Un medio que
+        // ANADIERA en vez de sustituir dejaria una unidad que es la antigua con
+        // un prefijo nuevo, y eso ni el tamano ni el checksum lo detectan.
+        val d2 = dir("sin-cola")
+        val store2 = FileTransmitUnitStore(d2)
+        store2.writeAhead(ByteArray(1_048_576) { 0x41 })
+        val corto = ByteArray(37) { ((it * 7 + 3) % 251).toByte() }
+        store2.writeAhead(corto)
+        assertEquals(37L, File(d2, FileTransmitUnitStore.PENDIENTE).length(), "el hueco mide lo nuevo, no lo nuevo mas lo viejo")
+        assertContentEquals(corto, store2.readBack(), "y lo pendiente es EXACTAMENTE lo corto")
+        store2.commit()
+        assertEquals(37L, File(d2, FileTransmitUnitStore.CONFIRMADA).length(), "la promocion tampoco deja cola")
+        assertContentEquals(corto, store2.readCommitted(), "y lo confirmado es EXACTAMENTE lo corto")
+    }
+
+    // ===================================================================
+    // MEDIO-16 — LO CONFIRMADO NUNCA ES UNA UNIDAD A MEDIAS, NI DESAPARECE
+    // ===================================================================
+
+    /**
+     * MEDIO-16 — La ventana de la promocion, vista desde FUERA.
+     *
+     * MEDIO-13-C mira el resultado (el inodo) y MEDIO-13-E mira el fallo antes
+     * del reemplazo. Esta mira **durante**, y lo hace con un segundo hilo que
+     * se pasa la vida mirando los dos huecos mientras el primero promueve.
+     *
+     * ## LA PROPIEDAD QUE SE MIDE
+     *
+     * En todo instante observable de una promocion, lo que el medio puede
+     * devolver como unidad tiene que ser la unidad ANTERIOR COMPLETA o la NUEVA
+     * COMPLETA. Nunca una mezcla, y nunca "no hay ninguna". Con un renombrado
+     * los dos nombres se intercambian de golpe; con una copia seguida de un
+     * borrado hay un intervalo en el que el hueco confirmado esta truncado o a
+     * medio rellenar, y un `readCommitted()` en ese instante devuelve una
+     * unidad que no existe —que es un estado NUEVO, y la invariante de la fase
+     * lo prohibe—.
+     *
+     * ## POR QUE ESTA MEDICION NO ES UNA CARRERA QUE SE PUEDA DAR POR BUENA
+     *
+     * Porque lleva su propio **control**, y el control es la parte importante:
+     * el mismo vigilante se pasa por una COPIA seguida de un BORRADO —que es
+     * exactamente lo que hace un medio que no renombra— y se EXIGE que la vea.
+     * Si el vigilante no ve esa ventana, esta prueba FALLA diciendo que el
+     * vigilante no mide nada. No puede pasar en silencio por no haber mirado.
+     */
+    @Test
+    @DisplayName("MEDIO-16 durante la promocion lo confirmado es siempre una unidad entera, y el control se ve")
+    fun `MEDIO-16 durante la promocion`() {
+        val VIEJA = 3 shl 20      // 3 MiB
+        val NUEVA = 8 shl 20      // 8 MiB, y DISTINTA: si fueran iguales,
+        //                              un parcial no se distinguiría de un entero
+        val ITERACIONES = 3
+
+        assertNotEquals(VIEJA, NUEVA, "la unidad anterior y la nueva tienen longitudes distintas o esto no mide nada")
+
+        // --- 0. EL CLASIFICADOR VE UN ESTADO A MEDIAS, ANTES DE MEDIR NADA ----
+        //
+        // Se comprueba lo primero lo mas simple: dado un hueco confirmado a
+        // medias, el clasificador tiene que llamarlo malo. Un clasificador que
+        // no se dispara con un ejemplo muerto no puede decir que no ha visto
+        // nada en la medicion de verdad.
+        val clasificador = Vigilante(VIEJA.toLong(), NUEVA.toLong())
+        assertFalse(
+            clasificador.esAceptable(Muestra(7_000_000L, AUSENTE, false)),
+            "un hueco confirmado a medias NO es una unidad: el clasificador tiene que rechazarlo",
+        )
+        assertFalse(
+            clasificador.esAceptable(Muestra(AUSENTE, AUSENTE, false)),
+            "y si no hay ninguna unidad, tampoco: el clasificador tiene que rechazar la ventana sin ninguna",
+        )
+        assertTrue(
+            clasificador.esAceptable(Muestra(VIEJA.toLong(), NUEVA.toLong(), false)),
+            "el estado de partida —anterior en el confirmado y nueva en el pendiente— es aceptable",
+        )
+        assertTrue(
+            clasificador.esAceptable(Muestra(NUEVA.toLong(), AUSENTE, false)),
+            "y el estado final —la nueva en el confirmado— tambien",
+        )
+        assertTrue(
+            clasificador.esAceptable(Muestra(AUSENTE, NUEVA.toLong(), false)),
+            "un instante sin confirmado PERO con la unidad nueva entera en el pendiente es aceptable: lo " +
+                "unico que se ha perdido de vista es un nombre, y la unidad esta a salvo",
+        )
+
+        // --- 1. LA PROMOCION REAL: NINGUN INSTANTE A MEDIAS -------------------
+        for (i in 1..ITERACIONES) {
+            val d = dir("promocion-real-$i")
+            val vieja = ByteArray(VIEJA) { ((it * 31 + 11) % 253).toByte() }
+            val nueva = ByteArray(NUEVA) { ((it * 131 + 17) % 251).toByte() }
+            FileTransmitUnitStore(d).apply {
+                writeAhead(vieja); commit(); writeAhead(nueva)
+            }
+            assertEquals(
+                vieja.size.toLong(), File(d, FileTransmitUnitStore.CONFIRMADA).length(), "medio preparado"
+            )
+            assertEquals(nueva.size.toLong(), File(d, FileTransmitUnitStore.PENDIENTE).length(), "medio preparado")
+
+            val v = Vigilante(VIEJA.toLong(), NUEVA.toLong())
+            v.observar("promocion real #$i", muestreoDe(d)) { FileTransmitUnitStore(d).commit() }
+            assertEquals(
+                0, v.malas,
+                "durante la promocion real, lo que hay en el hueco confirmado tiene que ser SIEMPRE la unidad " +
+                    "anterior entera o la nueva entera, nunca un estado intermedio:\n  " + v.primerInforme(),
+            )
+            // El umbral aqui es BAJO a proposito: con un renombrado la ventana
+            // es instantanea y el vigilante da pocas vueltas, y eso es
+            // justamente lo que se quiere. Lo que demuestra que el vigilante
+            // TIENE ventana es el CONTROL de la seccion 2, no el numero de
+            // vueltas de aqui: medir ventanas que no existen casi no cuesta.
+            assertEquals(
+                0, v.confirmadasAusentes,
+                "el hueco CONFIRMADO no puede desaparecer NUNCA durante una promocion: un `rename` de POSIX " +
+                    "deja siempre uno de los dos inodos. Un solo instante sin unidad confirmada es la ventana " +
+                    "que la invariante de la fase prohibe:\n  " + v.primerInforme(),
+            )
+            assertTrue(
+                v.vueltas >= 3L,
+                "el vigilante tiene que haber mirado al menos unas cuantas veces, no cero: ${v.vueltas} vueltas",
+            )
+            assertEquals(NUEVA.toLong(), File(d, FileTransmitUnitStore.CONFIRMADA).length(), "y al final manda la nueva")
+        }
+
+        // --- 2. EL CONTROL: UNA COPIA SEGUIDA DE UN BORRADO SI SE VE ---------
+        //
+        // Es la mitad que hace fiable la mitad de arriba. Si aquí no sale
+        // ni una muestra mala, el vigilante no tiene ventana, y entonces la
+        // seccion 1 no ha medido NADA —por mas verde que salga.
+        // Este control es lo que hace que la seccion 1 signifique algo.
+        val controles = mutableListOf<Long>()
+        for (i in 1..ITERACIONES) {
+            val d = dir("promocion-control-$i")
+            val vieja = ByteArray(VIEJA) { ((it * 31 + 11) % 253).toByte() }
+            val nueva = ByteArray(NUEVA) { ((it * 131 + 17) % 251).toByte() }
+            FileTransmitUnitStore(d).apply { writeAhead(vieja); commit(); writeAhead(nueva) }
+
+            val v = Vigilante(VIEJA.toLong(), NUEVA.toLong())
+            v.observar("control copia+borrado #$i", muestreoDe(d)) {
+                Files.copy(
+                    File(d, FileTransmitUnitStore.PENDIENTE).toPath(),
+                    File(d, FileTransmitUnitStore.CONFIRMADA).toPath(),
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                )
+                Files.delete(File(d, FileTransmitUnitStore.PENDIENTE).toPath())
+            }
+            assertTrue(
+                v.malas > 0,
+                "EL CONTROL NO HA DISPARADO: una COPIA seguida de un BORRADO tiene que dejar el hueco confirmado a " +
+                    "medias en algun instante, y el vigilante no lo ha visto. Sin esto, la seccion 1 de esta misma " +
+                    "prueba no mide nada y su verde no vale para nada:\n  " + v.primerInforme(),
+            )
+            controles.addAll(listOf(v.malas.toLong(), v.vueltas))
+        }
+
+        // --- 3. Y EL FALLO ENTRE EL REEMPLAZO Y LA ELIMINACION ---------------
+        //
+        // Se CONSTRUYE a mano el estado que deja un medio que copia y borra si el
+        // borrado no llega: el hueco confirmado ya tiene la nueva y el
+        // pendiente sigue ahi con la MISMA unidad, todavia por borrar. Es el
+        // unico estado en el que la unidad anterior desaparece sin que el
+        // renombrado haya instalado nada. Lo que se exige es que el medio lo
+        // resuelva sin mezclar y sin perder, y que el reintento lo cierre por
+        // renombrado.
+        val d = dir("entre-reemplazo-y-borrado")
+        val nueva = bytesDe(guion())
+        val vieja = bytesDe(guionAvanzado(), indice = 4, ordinal = 2uL, n = 2)
+        assertFalse(vieja.contentEquals(nueva), "las dos unidades son DISTINTAS o esto no mide nada")
+        val store = FileTransmitUnitStore(d)
+        store.writeAhead(vieja)
+        store.commit()
+        store.writeAhead(nueva)
+        Files.copy(
+            File(d, FileTransmitUnitStore.PENDIENTE).toPath(),
+            File(d, FileTransmitUnitStore.CONFIRMADA).toPath(),
+            java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+        )
+        val inodoDelPendiente = inodoDe(File(d, FileTransmitUnitStore.PENDIENTE))
+        assertNotEquals(
+            inodoDelPendiente, inodoDe(File(d, FileTransmitUnitStore.CONFIRMADA)),
+            "el estado del que se parte es el de una COPIA: dos ficheros, dos inodos. Si fueran el mismo, esta " +
+                "seccion estaria midiendo un renombrado y no el fallo que dice medir",
+        )
+        assertTrue(store.hasPending(), "y lo pendiente sigue ahi: el borrado no llego")
+        assertContentEquals(nueva, store.readCommitted(), "lo confirmado es la unidad NUEVA, entera")
+        assertContentEquals(nueva, store.readBack(), "y lo pendiente es la MISMA unidad, no una mezcla")
+
+        // La recuperacion resuelve ese estado sin inventar nada: lo confirmado
+        // manda, y es la unidad nueva completa.
+        val g2 = guion()
+        g2.dosEpochs()
+        val r = recuperarSobre(FileTransmitUnitStore(d), g2, "entre reemplazo y borrado")
+        val registro = assertNotNull(r.j.restaurar(), "lo confirmado se recupera")
+        assertEquals(mensajeId(1), registro.messageId, "con el envío de la unidad NUEVA, no una mezcla")
+        assertEquals(1, r.j.ledger.tamanho(), "y UN registro, no dos: el estado duplicado no se registra dos veces")
+
+        // Y el reintento cierra el estado por RENOMBRADO: el hueco confirmado
+        // pasa a ser el MISMO fichero que estaba pendiente. Un medio que copiara
+        // en vez de renombrar dejaria aqui OTRO inodo, y este es el punto donde
+        // se distingue "se sustituyo" de "se copio y se borro".
+        store.commit()
+        assertContentEquals(nueva, store.readCommitted(), "el reintento deja la unidad nueva confirmada")
+        assertEquals(
+            inodoDelPendiente, inodoDe(File(d, FileTransmitUnitStore.CONFIRMADA)),
+            "por RENOMBRADO del fichero pendiente, no por una copia: es el mismo fichero",
+        )
+        assertFalse(store.hasPending(), "y no queda nada pendiente")
+
+        // Queda por escrito, en el informe, HOW sensitive ha sido el vigilante:
+        // cuantas muestras malas y cuantas vueltas vio el CONTROL.
+        println(
+            "MEDIO-16 :: el vigilante vio ${controles.sum() / 2} muestras malas y ${controles.sum()} vueltas " +
+                "en ${controles.size / 2} controles de copia+borrado",
+        )
+    }
+
+    // ===================================================================
     // UTILIDADES DE APOYO
     // ===================================================================
+
+    /**
+     * Un vigilante que mira los dos huecos mientras otro hilo promueve.
+     *
+     * No guarda las muestras —solo un contador y la primera mala— para que
+     * mirar millones de veces no se convierta en el problema.
+     */
+    private class Vigilante(private val larga: Long, private val corta: Long) {
+        var vueltas = 0L
+            private set
+        var malas = 0
+            private set
+
+        /**
+         * Instantes en los que el hueco CONFIRMADO **no existia**.
+         *
+         * Se cuenta aparte porque es el dato que separa "el vigilante ha
+         * montado dos lecturas y le ha dado tiempo al mediO a avanzar" de
+         * "el medio ha dejado un instante sin unidad confirmada". Un
+         * `rename` de POSIX no puede desaparecer: o esta el inodo viejo o
+         * esta el nuevo, siempre. Asi que un solo instante sin confirmado es
+         * ya un defecto, sin ambigüedad posible.
+         */
+        var confirmadasAusentes = 0
+            private set
+        private var primeraMala: Muestra? = null
+
+        /**
+         * Un estado es aceptable si lo que hay en el hueco CONFIRMADO es la
+         * unidad anterior entera o la nueva entera, o si no hay ninguno y lo
+         * pendiente es la nueva entera.
+         *
+         * La segunda clausula es la que hace que el corte del `unlink` de una
+         * copia no se confunda con perdida: lo pendiente sigue entero.
+         */
+        fun esAceptable(m: Muestra): Boolean {
+            if (m.confirmada == larga || m.confirmada == corta) return true
+            return m.confirmada == AUSENTE && m.pendiente == corta
+        }
+
+        fun observar(donde: String, muestrear: () -> Muestra, operacion: () -> Unit) {
+            var fallo: Throwable? = null
+            val fin = java.util.concurrent.CountDownLatch(1)
+            val hilo = Thread({
+                try {
+                    operacion()
+                } catch (e: Throwable) {
+                    fallo = e
+                } finally {
+                    fin.countDown()
+                }
+            }, "promocion-$donde")
+            hilo.isDaemon = true
+            hilo.start()
+            while (fin.count > 0L) {
+                val m = muestrear()
+                if (m.confirmada == AUSENTE) confirmadasAusentes++
+                if (!esAceptable(m)) {
+                    if (malas == 0) primeraMala = m
+                    malas++
+                }
+                vueltas++
+            }
+            hilo.join(10_000)
+            fallo?.let { throw AssertionError("la operacion observada en '$donde' fallo: $it", it) }
+        }
+
+        fun primerInforme(): String =
+            "$vueltas vueltas, $malas muestras malas, $confirmadasAusentes instantes SIN hueco confirmado; " +
+                "la primera mala fue $primeraMala"
+    }
+
+    /** Una mirada a los dos huecos del medio, tal y como estan AHORA. */
+    private fun muestreoDe(d: File): () -> Muestra = {
+        Muestra(
+            leerTamanoDe(File(d, FileTransmitUnitStore.CONFIRMADA)),
+            leerTamanoDe(File(d, FileTransmitUnitStore.PENDIENTE)),
+            elTemporal(d).exists(),
+        )
+    }
+
+    /** El tamano de un hueco en este instante, o [AUSENTE] si no esta. */
+    private fun leerTamanoDe(f: File): Long = try {
+        Files.readAttributes(f.toPath(), BasicFileAttributes::class.java).size()
+    } catch (e: java.nio.file.NoSuchFileException) {
+        AUSENTE
+    } catch (e: java.nio.file.FileSystemException) {
+        AUSENTE
+    }
+
+    /**
+     * El cuerpo de una operacion: desde su cabecera hasta donde se cierran sus
+     * llaves.
+     *
+     * Se mide POR OPERACION y no por palabra clave en todo el fichero porque
+     * el punto de esta prueba es justo ese: que lo que se publica con un
+     * renombrado no se pueda comprobar mirando el fichero entero.
+     */
+    private fun cuerpoDe(codigo: List<Pair<Int, String>>, cabecera: String): List<Pair<Int, String>> {
+        val inicio = codigo.indexOfFirst { it.second.contains(cabecera) }
+        if (inicio < 0) return emptyList()
+        var profundidad = 0
+        var abierta = false
+        val cuerpo = mutableListOf<Pair<Int, String>>()
+        for ((n, l) in codigo.subList(inicio, codigo.size)) {
+            val sinTextos = l.replace(Regex("\\\"[^\\\"]*\\\""), "\\\"\\\"")
+            for (c in sinTextos) {
+                if (c == '{') {
+                    profundidad++
+                    abierta = true
+                }
+                if (c == '}') profundidad--
+            }
+            cuerpo += n to l
+            if (abierta && profundidad <= 0) return cuerpo
+        }
+        return cuerpo
+    }
+
+    /** [texto] sin el nombre del temporal: `PENDIENTE` sin su sufijo. */
+    private fun sinTemporal(texto: String): String = texto.replace(FileTransmitUnitStore.PENDIENTE_TMP, "")
 
     /**
      * La identidad del FICHERO en el disco: lo que un `rename` conserva y una
