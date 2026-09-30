@@ -14,7 +14,7 @@ import os
 import subprocess
 import sys
 
-FICHERO = "km-core/src/main/kotlin/com/keymessage/core/transmit/FileTransmitUnitStore.kt"
+FICHERO = "km-core/src/main/kotlin/com/km/transmit/FileTransmitUnitStore.kt"
 
 
 def leer():

@@ -20,8 +20,8 @@ imposible por construcción:
   5. Se registra el `exit` real de Gradle y el número de tests de la corrida.
 
 Uso:
-    tools/mutprobe.py --label baseline --pattern 'com.keymessage.core.transmit.FileTransmitUnitStoreTest'
-    tools/mutprobe.py --label mut1 --pattern 'com.keymessage.core.transmit.FileTransmitUnitStoreTest' \
+    tools/mutprobe.py --label baseline --pattern 'com.km.transmit.FileTransmitUnitStoreTest'
+    tools/mutprobe.py --label mut1 --pattern 'com.km.transmit.FileTransmitUnitStoreTest' \
         --mutate tools/mutaciones/m1_escribir_en_el_hueco.py
 """
 
