@@ -26,7 +26,8 @@ THIRD-PARTY-LICENSES/README.md.
     https://github.com/JetBrains/kotlin
     License not declared in the artifact; see THIRD-PARTY-LICENSES/README.md
 
-  jackson-module-kotlin, jackson-databind, jackson-core, jackson-annotations
+  jackson-module-kotlin, jackson-databind, jackson-core, jackson-annotations,
+  jackson-datatype-jsr310
     Copyright 2007-, Tatu Saloranta (tatu.saloranta@iki.fi)
     Developed by the Jackson project and supported by FasterXML.com
     Licensed under the Apache License, Version 2.0
@@ -51,6 +52,34 @@ THIRD-PARTY-LICENSES/README.md.
     https://creativecommons.org/publicdomain/zero/1.0/
     https://github.com/str4d/eddsa
 
+  Java-WebSocket, artifact org.java-websocket:Java-WebSocket
+    Copyright (c) 2010-2020 Nathan Rajlich
+    Licensed under the MIT License
+    Declared in two independent places: the artifact manifest
+    (Bundle-License: "MIT License") and the POM on Maven Central
+    (name: MIT License). The jar does not embed the license text, so it is
+    reproduced from the upstream tag v1.5.6.
+    https://github.com/TooTallNate/Java-WebSocket
+    THIRD-PARTY-LICENSES/java-websocket-LICENSE
+
+  Java-WebSocket is MIT, the same license as km-framework. The choice of it
+  over a copyleft WebSocket library was deliberate, and it is worth stating
+  why: there is no linked-library-versus-derived-work question to interpret,
+  because there is no copyleft to trigger it. Only the attribution obligation
+  remains, and it is discharged above.
+  logback, artifact ch.qos.logback:logback-classic
+    Licensed under the Eclipse Public License 1.0 / Apache License 2.0
+    (dual licensed)
+    https://github.com/qos-ch/logback
+    License not declared in the artifact; see THIRD-PARTY-LICENSES/README.md
+
+  slf4j-api, artifact org.slf4j:slf4j-api
+    Copyright (c) 2004-2022 QOS.ch
+    Licensed under the MIT License
+    Transitive dependency of Java-WebSocket, which requires [2.0,3)
+    https://www.slf4j.org
+    License not declared in the artifact; see THIRD-PARTY-LICENSES/README.md
+
   webrtc-java, artifact dev.onvoid.webrtc:webrtc-java
     Licensed under the Apache License, Version 2.0
     Declared by the parent POM dev.onvoid.webrtc:webrtc-java-parent
@@ -70,9 +99,10 @@ THIRD-PARTY-LICENSES/README.md.
     License not declared in the artifact; see THIRD-PARTY-LICENSES/README.md
 
 The Apache License, Version 2.0 text is reproduced at
-THIRD-PARTY-LICENSES/Apache-2.0.txt. The CC0 1.0 and EPL-2.0 texts are not
-vendored here, because the corresponding artifacts do not embed them; they are
-linked from THIRD-PARTY-LICENSES/README.md.
+THIRD-PARTY-LICENSES/Apache-2.0.txt, as is the MIT text of Java-WebSocket at
+THIRD-PARTY-LICENSES/java-websocket-LICENSE. The CC0 1.0, EPL-1.0 and EPL-2.0
+texts are not vendored here, because the corresponding artifacts do not embed
+them; they are linked from THIRD-PARTY-LICENSES/README.md.
 
 --------------------------------------------------------------------------------
 

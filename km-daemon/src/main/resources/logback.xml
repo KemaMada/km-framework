@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Logging minimo del km-daemon.
+
+  ConsoleAppender y nivel INFO: un daemon corre en un VPS, y su salida va al
+  gestor de procesos (systemd, PM2, docker). No hay fichero de log porque la
+  retencion y la rotacion las decide quien lo despliegue, no este modulo.
+
+  Java-WebSocket habla por slf4j, asi que sus lineas salen por aqui tambien.
+  `org.java_websocket` a WARN: es una biblioteca fina y su INFO no aporta.
+-->
+<configuration>
+    <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] %logger{28} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <logger name="org.java_websocket" level="WARN"/>
+
+    <root level="INFO">
+        <appender-ref ref="STDOUT"/>
+    </root>
+</configuration>

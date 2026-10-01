@@ -10,6 +10,7 @@
 /.idea/modules.xml
 /.idea/workspace.xml
 /.idea/navEditor.xml
+/.idea/vcs.xml
 /.idea/assetWizardSettings.xml
 .DS_Store
 /build
@@ -19,3 +20,10 @@
 local.properties
 keymessage-release.jks
 /app/
+
+# Par Ed25519 del rele. Contiene la semilla PRIVADA en claro y NUNCA debe
+# entrar en el repositorio: versionarlo publica la identidad del relé y
+# permite firmar AUTH_OK en su nombre. Se genera en el primer arranque.
+km-daemon.identity
+*.identity
+km-daemon.conf.json

@@ -1,7 +1,7 @@
 # Dependencias de terceros
 
-Este directorio documenta el software de terceros que `km-core` y `km-webrtc`
-enlazan o embeben, y su licencia.
+Este directorio documenta el software de terceros que `km-core`, `km-daemon` y
+`km-webrtc` enlazan o embeben, y su licencia.
 
 `km-framework` está bajo MIT (ver [`LICENSE`](../LICENSE)). Ninguna dependencia
 de terceros se relicensifica ni se modifica: cada componente conserva su propia
@@ -66,6 +66,57 @@ solo de las interfaces propias `X25519`, `Kdf`, `Aead` y `Hash`. Está
 deliberado: permite cambiar de proveedor de primitivas sin tocar nada más, y
 reduce la superficie de la biblioteca de terceros.
 
+## Dependencias de `km-daemon`
+
+`km-daemon` depende **solo** de `km-core`. No de `km-webrtc`, ni del cliente
+Android. La frontera va en un solo sentido: el relé mueve bytes y
+señalización, no participa en la negociación WebRTC, así que arrastrar
+`webrtc-java` traería ~25 MB de libwebrtc nativo al VPS sin que nada lo use.
+
+| Dependencia | Versión declarada | Dónde se declara | Licencia | Evidencia | Para qué se usa |
+|-------------|-------------------|------------------|----------|-----------|-----------------|
+| `org.java-websocket:Java-WebSocket` | **1.5.6** | Cadena literal en `km-daemon/build.gradle.kts` (no está en el catálogo) | **MIT** | **Verificada en dos sitios independientes.** (1) Manifiesto del jar: `Bundle-License: "MIT License";link="https://github.com/TooTallNate/Java-WebSocket/blob/master/LICENSE"`. (2) POM en Maven Central: `<license><name>MIT License</name><url>.../blob/master/LICENSE</url></license>`. (3) El jar **no** incrusta `META-INF/LICENSE`, por eso se reproduce el texto del tag `v1.5.6` en `java-websocket-LICENSE`. | Servidor WebSocket (RFC 6455) del lado del relé. |
+| `com.fasterxml.jackson.module:jackson-module-kotlin` | **2.15.2** | Cadena literal en `km-daemon/build.gradle.kts` | **Apache-2.0** | **Verificada en el artefacto.** Igual que la fila equivalente de `km-core`. | Re-declarada: `km-core` la expone como `implementation`, que no se filtra al classpath de quien la consume. |
+| `com.fasterxml.jackson.datatype:jackson-datatype-jsr310` | **2.15.2** | Cadena literal en `km-daemon/build.gradle.kts` | **Apache-2.0** | **No verificada aquí.** No hay POM en la caché local; es un módulo del mismo proyecto Jackson, que ya está verificado por sus otros artefactos. | Tipos `java.time`. **Declarada pero no ejercitada**: el MVP serializa tiempos como `int64` de milisegundos (§9.2, §10), no como `java.time`. |
+| `ch.qos.logback:logback-classic` | **1.4.14** | Cadena literal en `km-daemon/build.gradle.kts` | **EPL-1.0 / Apache-2.0** (doble licencia) | **No verificada aquí.** No hay POM en la caché local. | Implementación de slf4j; `logback.xml` en `src/main/resources`. |
+| `org.slf4j:slf4j-api` | resuelta transitivamente (Java-WebSocket pide `[2.0,3)`) | Arrastrada por `Java-WebSocket` | **MIT** | **No verificada aquí.** No hay POM en la caché local. | Fachada de logging. |
+| `org.jetbrains.kotlin:kotlin-stdlib` | resuelta a **2.2.10** | `implementation(kotlin("stdlib"))` | **Apache-2.0** (no verificada aquí) | Igual que en `km-core`. | Runtime de Kotlin. |
+| `org.junit.jupiter:junit-jupiter` | **5.10.0** | `testImplementation` | **EPL-2.0** (no verificada aquí) | Igual que en `km-core`. | Test scope. |
+
+### Java-WebSocket es MIT, no LGPL
+
+Conviene dejarlo escrito, porque lo contrario se ha dado por supuesto.
+
+**Java-WebSocket es MIT**, y se ha verificado en dos fuentes independientes
+antes de elegirlo:
+
+1. El manifiesto del propio jar declara
+   `Bundle-License: "MIT License"`.
+2. El POM en Maven Central declara `<name>MIT License</name>`.
+
+Además, se comprobó el `LICENSE` del tag `v1.5.6` en el repositorio upstream
+y coincide. No hay ambigüedad que resolver: **la licencia real del artefacto
+es MIT, la misma que km-framework**.
+
+Que sea MIT importa por una razón distinta a la de la atribución: **no hay
+ninguna cuestión de copyleft que analizar**. Una LGPL obligaría a justificar
+si el uso es de biblioteca enlazada o de obra derivada; con MIT, esa
+discusión no se da. La conclusión de compatibilidad con la licencia de
+km-framework es directa, no una interpretación.
+
+Lo que sí exige MIT es la **atribución**, y por eso el texto está reproducido
+literalmente en `java-websocket-LICENSE`. Como el jar no lo incrusta, se ha
+tomado del tag `v1.5.6` del upstream, que es la versión exacta declarada en
+el build.
+
+### Sobre `jackson-datatype-jsr310`
+
+Se declara y se registra en el `ObjectMapper` del codec, pero **el MVP no la
+ejercita**: los tiempos del dialecto son `int64` de milisegundos, no
+`java.time`. Está por coherencia de perfil de dependencias, no porque el
+código la necesite hoy. Se dice aquí para que nadie la lea como una
+dependencia en uso.
+
 ## Dependencias de `km-webrtc`
 
 `km-webrtc` depende de `km-core` y arrastra **código nativo**.
@@ -109,6 +160,7 @@ decisión consciente del proyecto, no un descuido. Ver el
 |---------|--------------|
 | `Apache-2.0.txt` | Texto canónico de Apache-2.0, extraído del `META-INF/LICENSE` de `org.apache.httpcomponents:httpcore:4.4.16` de la caché local (11358 bytes, el texto estándar íntegro, con su apéndice). |
 | `bouncy-castle-1.86-LICENSE.md` | **Copia literal** de `META-INF/LICENSE.md` dentro de `bcprov-jdk18on-1.86.jar`. |
+| `java-websocket-LICENSE` | **Copia literal** del `LICENSE` del tag `v1.5.6` de `TooTallNate/Java-WebSocket`. El jar **no** incrusta `META-INF/LICENSE`, así que el texto sale del repositorio upstream, no del artefacto. |
 | `webrtc-native-LICENSE.md` | **Copia literal** de `META-INF/licenses/webrtc/LICENSE.md` dentro de `webrtc-java-0.19.0-linux-x86_64.jar`. 130 KB: es el fichero de licencias tal cual lo publica el proyecto WebRTC, que incluye las licencias de sus propias dependencias. |
 | `webrtc-native-PATENTS` | **Copia literal** de `META-INF/licenses/webrtc/PATENTS` del mismo jar. |
 | `jackson-LICENSE` | **Copia literal** de `META-INF/LICENSE` de `jackson-module-kotlin-2.15.2.jar`. |
@@ -121,10 +173,17 @@ enlazan a su fuente oficial en su lugar:
 - CC0 1.0: <https://creativecommons.org/publicdomain/zero/1.0/legalcode>
 - EPL-2.0: <https://www.eclipse.org/legal/epl-2.0/>
 
+Igual que para `eddsa` y JUnit, **no se incluye el texto de logback**
+(EPL-1.0 / Apache-2.0) ni el de `jackson-datatype-jsr310` (Apache-2.0): no hay
+copia local del POM en la caché de este entorno. El texto canónico de
+Apache-2.0 ya está en `Apache-2.0.txt`, y logback se enlaza a
+<https://www.eclipse.org/legal/epl-1.0/> y
+<https://www.apache.org/licenses/LICENSE-2.0>.
+
 ## En el catálogo pero no en los módulos publicables
 
-`gradle/libs.versions.toml` declara bastante más de lo que `km-core` y
-`km-webrtc` usan. Lo que sigue pertenece al cliente Android, que se ha extraído a
+`gradle/libs.versions.toml` declara bastante más de lo que `km-core`,
+`km-daemon` y `km-webrtc` usan. Lo que sigue pertenece al cliente Android, que se ha extraído a
 `km-android`, y **no forma parte de km-framework**:
 
 `io.github.webrtc-sdk:android:125.6422.07`, `androidx.core:core-ktx`,
@@ -140,8 +199,8 @@ segundo.
 
 ## Procedimiento para actualizar esta tabla
 
-1. `./gradlew :km-core:dependencies :km-webrtc:dependencies` para ver el grafo
-   resuelto de verdad.
+1. `./gradlew :km-core:dependencies :km-daemon:dependencies :km-webrtc:dependencies`
+   para ver el grafo resuelto de verdad.
 2. Para cada artefacto nuevo, mira su `.pom` en Maven Central y su manifiesto.
 3. Extrae la licencia del artefacto con
    `unzip -p <jar> META-INF/LICENSE` y guárdala **literal** si existe.

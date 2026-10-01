@@ -24,4 +24,5 @@ dependencyResolutionManagement {
 
 rootProject.name = "KeyMessage"
 include(":km-core")
+include(":km-daemon")
 include(":km-webrtc")
