@@ -19,10 +19,16 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        // `km-desktop` consume `com.km:km-core` como artefacto publicado, no
+        // como `project(":km-core")`: es un CONSUMIDOR del framework y aloja
+        // ninguna logica de protocolo. Por eso necesita mavenLocal, que el
+        // POM de km-core publica via `publishToMavenLocal`.
+        mavenLocal()
     }
 }
 
 rootProject.name = "KeyMessage"
 include(":km-core")
 include(":km-daemon")
+include(":km-desktop")
 include(":km-webrtc")
