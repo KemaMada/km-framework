@@ -13,12 +13,23 @@ km-framework   =  protocolo + criptografía + transporte
 un cliente     =  km-framework  +  interfaz de usuario  +  almacenamiento
 ```
 
-Los dos módulos publicables son:
+Los cuatro módulos del repositorio son:
 
 | Módulo | Qué es | Dependencias |
 |--------|--------|--------------|
 | `km-core` | Identidad, autenticación, negociación, X3DH, Double Ratchet, SecureFrame, persistencia. | Sin Android. Sin WebRTC. |
 | `km-webrtc` | Transporte WebRTC: establecimiento de `PeerConnection`, señalización contra el relé, detección de plataforma nativa. | `km-core` + `webrtc-java` (JNI + libwebrtc nativo). |
+| `km-daemon` | El lado del **relé**: aplicación headless que habla KM-WIRE-RELAY sobre WebSocket. Es el proceso que actúa de nodo de señalización y de relay. | `km-core` + Java-WebSocket. |
+| `km-desktop` | Cliente **TUI** de escritorio: Kotlin/JVM, un solo binario, sin GUI. Es el que se instala clonando este repositorio. | `km-core` como artefacto publicado. |
+
+**`km-desktop` vive dentro de este repositorio**, en `km-desktop/`. No hay un
+repositorio de GitHub aparte para él: se clona **este** repo y se compila el
+módulo. Ver [`km-desktop/README.md`](km-desktop/README.md).
+
+El cliente Android es lo único que vive en otro repositorio
+([`KemaMada/km-android`](https://github.com/KemaMada/km-android)); ver su
+[`README.md`](https://github.com/KemaMada/km-android) para los requisitos
+propios.
 
 ---
 
@@ -29,7 +40,9 @@ Los dos módulos publicables son:
 - **No es un servidor de relé para producción.** `com.km.node.RelayServer` es una
   implementación en proceso usada por las pruebas y los tests de integración. No
   tiene autenticación de operador, ni limitación de tasa global, ni persistencia
-  entre reinicios, ni métricas.
+  entre reinicios, ni métricas. El proceso de relé que sí habla el cable es
+  `km-daemon` (ver [`km-daemon/README.md`](km-daemon/README.md)), y arrastra
+  estas mismas carencias.
 - **No está auditado.** No ha pasado ninguna revisión de seguridad externa,
   ni certificación, ni evaluación formal de los algoritmos. Ver
   [Estado del proyecto](#estado-del-proyecto).
@@ -86,12 +99,12 @@ de `com.km.negotiation.Km7Types`, todavía no está.
 
 ```
   ┌──────────────────────────────────────────────────────────────┐
-  │                    Consumidores (externos)                   │
+  │                    Consumidores                              │
   │                                                              │
-  │   km-desktop (TUI)      km-android (Compose)     tu cliente  │
-  │   Linux + Windows       repo propio              propio     │
-  │   NO EXISTE TODAVÍA ─┐   separado                 │         │
-  └──────────────────────┼─────────────────────────────┼─────────┘
+  │   km-desktop (TUI)   km-android (Compose)     tu cliente     │
+  │   Linux + Windows    repo propio               propio        │
+  │   ESTE repositorio   separado                 separado       │
+  └──────────────────────┼─────────────────────────┼─────────────┘
                          │                             │
                          ▼                             ▼
   ┌──────────────────────────────────────────────────────────────┐
@@ -119,6 +132,9 @@ de `com.km.negotiation.Km7Types`, todavía no está.
   │  model      · Message, Ack, IdentityId, NodeIdentity…       │
   │  api        · KeyMessageCore (fachada)                       │
   ├──────────────────────────────────────────────────────────────┤
+  │  km-daemon   ·  el relé como proceso: KM-WIRE-RELAY sobre    │
+  │                WebSocket, auth, camino de datos, señalización│
+  ├──────────────────────────────────────────────────────────────┤
   │  km-id-reference/  ·  oráculo Python de KM-ID-0001          │
   │                      (normativo; vectores congelados)         │
   └──────────────────────────────────────────────────────────────┘
@@ -130,6 +146,14 @@ de `com.km.negotiation.Km7Types`, todavía no está.
 `km-core` no depende de `km-webrtc`: la dependencia va en el sentido contrario.
 `km-core` no tiene dependencia alguna de Android ni de `dev.onvoid`, y compila
 para un toolchain JVM 11.
+
+`km-daemon` depende **solo** de `km-core`, y en un solo sentido: arrastrar
+`km-webrtc` al proceso del relé traería ~25 MB de libwebrtc nativo que el relé
+no usa. `km-desktop`, en cambio, consume `km-core` como **artefacto publicado**
+(`com.km:km-core:0.1.0-SNAPSHOT` resuelto desde `mavenLocal()`), no como
+`project(":km-core")`: es un consumidor del framework, no una parte de él. Por eso
+el primer paso de cualquier build de `km-desktop` es
+`:km-core:publishToMavenLocal`.
 
 ---
 
@@ -184,33 +208,140 @@ Esto **no** existe en el código, aunque tenga RFC en `docs/rfc/`:
 | Fragmentación de `SecureFrame` | El propio código lo dice: cargas mayores de 65535 bytes "requieren fragmentacion (incremento posterior)". |
 | Transports distintos de relé y WebRTC | `TransportBackend` es la extensión; solo hay relé real y un backend falso. |
 | Persistencia durable de mensajes | `com.km.storage` solo tiene implementaciones **en memoria** (`InMemoryMessageStore`, `InMemoryOfflineQueue`, `InMemoryRelayStore`, `InMemoryDuplicateStore`). Lo que sí es durable es la unidad criptográfica, en `com.km.transmit`. |
-| Publicación de artefactos | No hay plugin `maven-publish` aplicado, ni `group`/`version` declarados. Ver [Cómo consumirlo](#cómo-consumirlo). |
+| Publicación de artefactos | Solo `km-core`, y **solo a `mavenLocal()`**. Ni Maven Central ni releases firmadas. `km-webrtc`, `km-daemon` y `km-desktop` no publican. Ver [Cómo consumirlo](#cómo-consumirlo). |
 | CI | No hay workflows. No existe directorio `.github/`. Los tests se ejecutan en local. |
 
 ---
 
 ## Requisitos
 
-| Requisito | Versión | Fuente |
-|-----------|---------|--------|
-| JDK para compilar | **11** | `jvmToolchain(11)` y `sourceCompatibility/targetCompatibility = 11` en ambos módulos. |
-| JDK para ejecutar Gradle | 11 o superior | El build usa `foojay-resolver-convention`, que descarga el toolchain 11 si falta. |
-| Gradle | **9.5.0** | `gradle/wrapper/gradle-wrapper.properties`. Se usa el wrapper: no hace falta instalarlo. |
-| Python (opcional) | 3.x | Solo para `km-id-reference/` y el andamiaje de mutaciones de `tools/`. |
+Lo mínimo para clonar este repositorio y construir el cliente de escritorio.
 
-`gradle.properties` fija `org.gradle.java.home`. Si apunta a un JDK que no
-existe en tu máquina, ajústalo o bórralo; no es un requisito del proyecto.
+### Para ejecutar Gradle
+
+| Requisito | Versión | Cómo se selecciona |
+|-----------|---------|--------------------|
+| JDK para **ejecutar** Gradle | **27** | `JAVA_HOME`, o `-Dorg.gradle.java.home=<ruta>` en la invocación. |
+| Gradle | **9.5.0** | `gradle/wrapper/gradle-wrapper.properties`. **Solo el wrapper**: `./gradlew`. No hay que instalar nada. |
+| Espacio libre | **~5 GB** | Cachés de Gradle (`~/.gradle`) + salidas de build (`*/build/`). |
+| Red de salida | HTTPS | `services.gradle.org` (el wrapper descarga la distribución), Maven Central y Google Maven. |
+
+```sh
+# Opción A: exportar el JDK una vez por terminal
+export JAVA_HOME=/usr/lib/jvm/java-27-openjdk
+./gradlew build
+
+# Opción B: pasar el JDK solo en esa invocación
+./gradlew -Dorg.gradle.java.home=/usr/lib/jvm/java-27-openjdk build
+```
+
+Los dos números de versión que más se confunden son **el JDK que ejecuta Gradle
+(27)** y **el toolchain que compila el bytecode (11)**. No son el mismo requisito
+y no se sustituyen:
+
+| | Qué es | De dónde sale |
+|---|--------|--------------|
+| JDK 27 | El intérprete que corre el daemon de Gradle y las tareas de build. | Versión del JDK instalado en la máquina. |
+| Toolchain 11 | El `javac`/`kotlinc` que **produce** el bytecode, y el nivel de compatibilidad del resultado. | `jvmToolchain(11)` en `km-core`, `km-webrtc`, `km-daemon` y `km-desktop`, más `sourceCompatibility/targetCompatibility = 11`. El build usa `foojay-resolver-convention`, que **descarga** el toolchain 11 si la máquina no lo tiene. |
+
+Es decir: no hace falta instalar un JDK 11 para compilar. Solo hace falta el 27.
+
+`gradle.properties` **no** fija `org.gradle.java.home`, y es deliberado: es una
+ruta absoluta que no viaja entre máquinas, así que hardcodearla rompería el clon
+de cualquiera que tenga el JDK en otro sitio. Si prefieres no pasar `-D` en cada
+comando, ponla en `~/.gradle/gradle.properties`, que tiene precedencia sobre el
+fichero del repositorio.
+
+### Otros
+
+| Requisito | Versión | Nota |
+|-----------|---------|------|
+| Python (opcional) | 3.x | Solo para `km-id-reference/` y el andamiaje de mutaciones de `tools/`. |
+| Android SDK | — | **No hace falta** para `km-core`, `km-webrtc`, `km-daemon` ni `km-desktop`. El `local.properties` de la raíz solo lo leen los plugins de Android, que aquí no se aplican. |
+
+### Red y puertos
+
+| Qué | Detalle |
+|-----|---------|
+| Salida HTTPS | `services.gradle.org`, `repo.maven.apache.org`, `dl.google.com`. Sin salida a internet el wrapper no descarga la distribución, y `mavenLocal()` no resuelve `com.km:km-core`. |
+| TCP **8080** | Puerto del `km-daemon` por defecto (`listenHost = "0.0.0.0"`, `listenPort = 8080`). Configurable con `listenPort` (rango 1–65535) o con `KM_DAEMON_LISTEN_PORT`. |
+| Salida **443** | Solo si usas el relé desplegado, que es el endpoint por defecto de la TUI: `wss://keymessage.xyz/km`. Con un `km-daemon` propio en `ws://` no hace falta. |
+| Privilegios | **Ninguno.** No hay que abrir puertos privilegiados ni ejecutar nada como root. Solo tiene que ser alcanzable el relé. |
+
+**Pruebas entre varias máquinas.** La vía cómoda es una red privada como
+**Tailscale**: el relé corre en una máquina y los clientes apuntan a su dirección
+`100.x`, sin abrir nada en el router. La alternativa es alcanzar el relé
+públicamente, que para entonces necesita un `listenHost` alcanzable y el firewall
+de la máquina permitiendo ese puerto. No hace falta ningún privilegio especial en
+ninguno de los dos casos: la condición es que el cliente llegue al relé.
+
+---
+
+## Inicio rápido
+
+De un clon limpio a un cliente en marcha, en Linux. Todo con `./gradlew` desde la
+raíz del repositorio.
+
+```sh
+# 1. Clonar. El cliente de escritorio está DENTRO de este repositorio, en
+#    km-desktop/. No hay un repositorio de GitHub aparte para él.
+git clone https://github.com/KemaMada/km-framework.git
+cd KeyMessage
+
+# 2. Publicar km-core en mavenLocal. NO es opcional: km-desktop lo consume como
+#    artefacto publicado (com.km:km-core:0.1.0-SNAPSHOT), no como proyecto del
+#    build. Sin este paso, el paso 3 falla al resolver la dependencia.
+./gradlew -Dorg.gradle.java.home=/usr/lib/jvm/java-27-openjdk \
+          :km-core:publishToMavenLocal
+
+# 3. Compilar el cliente de escritorio: un único jar con todo dentro.
+./gradlew -Dorg.gradle.java.home=/usr/lib/jvm/java-27-openjdk \
+          :km-desktop:shadowJar
+
+# 4. Arrancar un relé propio. installDist deja un launcher con su classpath,
+#    que es la vía recomendada frente a un fat jar.
+./gradlew -Dorg.gradle.java.home=/usr/lib/jvm/java-27-openjdk \
+          :km-daemon:installDist
+./km-daemon/build/install/km-daemon/bin/km-daemon
+
+# 5. Arrancar la TUI, en otra terminal, apuntada a ese relé local.
+java -jar km-desktop/build/libs/km-desktop.jar --relay ws://127.0.0.1:8080/km
+```
+
+Sin `--relay`, la TUI usa el relé desplegado, `wss://keymessage.xyz/km`, que es su
+endpoint por defecto. El `km-daemon` del paso 4 **no enruta por ruta**: acepta el
+handshake WebSocket en cualquier path, así que `/km` y `/ws` funcionan igual.
+
+Al arrancar por primera vez la TUI no encuentra identidad: **crea una** y pide una
+frase de paso nueva, dos veces. En los arranques siguientes pide la que la abre.
+La copia de la identidad es la que los contactos necesitan para poder escribirte,
+así que ese paso no es opcional en la práctica.
+
+### Tests
+
+```sh
+./gradlew :km-core:test        # el núcleo del protocolo
+./gradlew :km-daemon:test      # el relé: codec del cable y reenvío de ACK
+./gradlew :km-desktop:test     # incluye un E2E que levanta el km-daemon real
+./gradlew :km-webrtc:test      # levanta PeerConnections nativas de libwebrtc
+```
+
+`:km-desktop:test` es el que más tarda y el único que abre un socket de verdad:
+levanta el `km-daemon` en proceso (con un puerto libre reservado antes) y conecta
+dos transportes reales contra él para cerrar `MESSAGE(id=M)` → `ACK` →
+confirmación.
 
 ---
 
 ## Cómo consumirlo
 
-> **Estado de publicación: pendiente.** En este commit los módulos **no**
-> publican artefactos: no hay plugin `maven-publish` aplicado ni `group`/`version`
-> declarados, así que **no existe ningún repositorio del que dependas**. Las
-> coordenadas de abajo son el esquema previsto, y pasarán a ser válidas cuando se
-> publique la primera versión. Si necesitas consumirlo hoy, construye desde el
-> fuente (`includeBuild`) o usa un subtree.
+> **Estado de publicación: parcial.** `km-core` **sí** publica, pero **solo en
+> `mavenLocal()`**: lleva el plugin `maven-publish`, con `group = "com.km"` y
+> `version = "0.1.0-SNAPSHOT"`, y un destino `mavenLocal()`. No está en Maven
+> Central ni en ningún registro público, así que **no existe un repositorio del
+> que dependa alguien que no tenga km-core en su `~/.m2`**. `km-webrtc` no
+> publica. Para consumir hoy, construye desde el fuente (`includeBuild`), usa un
+> subtree, o publica primero con `:km-core:publishToMavenLocal`.
 
 El grupo previsto es `com.km`:
 
@@ -247,14 +378,62 @@ firma, Tus consumidores necesitarán esa dependencia por su cuenta.
 
 ---
 
+## Modelo de roles — DISEÑADO, no implementado entero
+
+> **Estado: DISEÑADO.** La arquitectura es esta; lo que hay hoy es un
+> subconjunto. Nada de lo que sigue es una afirmación sobre el código actual
+> salvo donde se marca explícitamente.
+
+El modelo previsto es que **no hay un servidor privilegiado**. Cualquier cliente
+de escritorio puede subir y bajar del rol de nodo de señalización y de relay, y
+el rol es por sesión, no por identidad.
+
+| Rol | Qué hace | Qué necesita |
+|-----|----------|--------------|
+| **Cliente** | Envía y recibe mensajes. Es el rol por defecto de cualquier cliente de escritorio. | Un `km-desktop` en marcha. Nada más. |
+| **Nodo de señalización** | Aloja el intercambio de SDP/ICE entre dos peers para que puedan abrir la `PeerConnection`. | `km-daemon` con `signalingEnabled: true`. |
+| **Relay** | Mueve `MESSAGE` y `ACK` entre dos peers que no se alcanzan directamente, y los mantiene en línea aunque el otro esté dormido. | `km-daemon` con `relayEnabled: true`. |
+
+Los dos últimos roles son el **mismo proceso**. `km-daemon` es a la vez nodo de
+señalización y relay, y ambos caminos se encienden y apagan por separado
+(`signalingEnabled`, `relayEnabled`). Eso es lo que hace que «subir» un cliente a
+relay sea **arrancar un proceso**, nada más: **cualquiera que clone este
+repositorio puede ser el relé** para sus propios contactos, sin pedirle permiso a
+nadie y sin servidor central.
+
+El **móvil es un cliente fino**. No aloja lógica de protocolo: `km-android`
+implementa las interfaces de almacenamiento (`com.km.storage.*`) sobre Room y los
+contratos de transporte (`com.km.protocol.Transport`,
+`com.km.node.RelayTransport`) sobre WebSocket, y todo lo criptográfico lo pide a
+`km-core`. El móvil puede subir a signalling/relay **más adelante**, pero no es
+necesario para que el modelo se sostenga: el diseño no depende de que exista.
+
+Qué hay hoy de esto:
+
+| Pieza | Estado |
+|-------|--------|
+| `km-daemon` hablando el dialecto del cable, con `MESSAGE`, `ACK`, `PING`/`PONG`, `PEER_ONLINE`/`PEER_OFFLINE` y el handshake `AUTH_*` completo | **IMPLEMENTADO** |
+| Relay moviendo datos entre dos clientes de escritorio de verdad, con `ACK` autenticado en el emisor | **IMPLEMENTADO** (`RelayAckEndToEndTest`, `km-desktop`) |
+| Señalización SDP/ICE expuesta en el cable | **DISEÑADO.** El dialecto la tiene como extensión explícita con `kind` ∈ {`sdp_offer`, `sdp_answer`, `ice_candidate`, `contact_exchange`}; el catálogo normativo no define un tipo `SIGNAL`, y esa divergencia está abierta |
+| Un cliente de escritorio que **suba** a relay sin arrancar un proceso aparte | **NO EMPEZADO** |
+| Móvil como relay | **NO EMPEZADO**, y fuera del camino crítico |
+
+---
+
 ## Construir y testear
 
 ```sh
 ./gradlew build                # compila y testea todo
-./gradlew :km-core:test        # solo km-core  (1095 tests)
-./gradlew :km-webrtc:test      # solo km-webrtc (92 tests, levanta PeerConnections nativas)
+./gradlew :km-core:test        # solo km-core
+./gradlew :km-daemon:test      # solo km-daemon
+./gradlew :km-desktop:test     # solo km-desktop (incluye el E2E con el daemon real)
+./gradlew :km-webrtc:test      # solo km-webrtc (levanta PeerConnections nativas)
 ./gradlew :km-webrtc:test --tests 'com.km.webrtc.*Test'   # una clase
 ```
+
+Con `-Dorg.gradle.java.home=/ruta/al/jdk-27` delante si no has exportado
+`JAVA_HOME`. Ver [Inicio rápido](#inicio-rápido) para el recorrido completo desde
+un clon limpio.
 
 `km-webrtc` es una suite de integración real: levanta `PeerConnection` nativas de
 libwebrtc. Necesita el artefacto con clasificador de tu plataforma
@@ -264,6 +443,28 @@ detecta a partir de `os.name` y `os.arch`.
 
 Ver [CONTRIBUTING.md](CONTRIBUTING.md) para estilo, commits convencionales y el
 andamiaje de mutaciones.
+
+---
+
+## Lo que funciona y lo que no, en una línea
+
+Un estado honesto, porque un clon limpio compila pero no envía mensajes cifrados,
+y conviene saberlo antes de perder una tarde.
+
+| Capacidad | Estado |
+|-----------|--------|
+| Autenticar contra el relé (`AUTH_*` completo, `sessionId` de 40 hex) | **FUNCIONA** |
+| Enviar `MESSAGE` por el relé y que lo reciba el destinatario, con su mismo `messageId` | **FUNCIONA** |
+| Recibir el `ACK` de vuelta y **autenticarlo** contra la clave del peer, con `MESSAGE` confirmado | **FUNCIONA** |
+| Reconexión automática con backoff y jitter | **CÓDIGO LISTO, NO PROBADO** contra el relé real: el backoff está cubierto por tests deterministas, pero nadie ha tumbado el socket del relé para ver el ciclo entero |
+| Que la carga del mensaje vaya **cifrada** | **NO EMPEZADO.** Las primitivas existen (`SecureFrame`, `DoubleRatchetSession`, `X3dh`) pero **no están cableadas** a este transporte. Lo que viaja por el cable es exactamente lo que `km-core` produce hoy: el `Message` va **firmado, pero en claro**. Ver [Estado y límites honestos](km-desktop/README.md#estado-y-límites-honestos) |
+| Anonimato / soporte de Tor | **NO EXISTE.** No hay ninguna implementación; los RFC lo declaran fuera de alcance (§22 de KM-0005) |
+| Fragmentación de `SecureFrame` | **NO.** Tope de 65535 B por carga |
+| Store-and-forward (`STORED`, `RELAY_EXPIRED`) | **NO.** El codec está y el cliente los maneja; la lógica que los dispararía no existe |
+
+La distinción que importa: **las primitivas criptográficas están escritas y
+testeadas; el cableado E2E no está hecho.** Firmar un mensaje no es cifrarlo, y
+confundir los dos es el error más caro que se puede cometer con este código.
 
 ---
 
@@ -287,6 +488,72 @@ autoridad normativa; el código las implementa.
 
 **Los RFC están en `Draft` o `Draft (Frozen)`.** Solo KM-0002 y KM-0004 están
 `Stable`. Un RFC en `Draft` puede cambiar.
+
+---
+
+## Bootstrap de contactos — DISEÑADO, no implementado
+
+> **Estado: DISEÑADO.** No hay ningún comando, ninguna opción y ningún formato de
+> fichero que haga esto hoy. Está aquí para que quede escrito antes de que se
+> implemente, y para que nadie asuma que ya existe.
+
+Un protocolo sin servidor de descubrimiento necesita una manera de que dos
+personas se queden con la clave pública de la otra. El diseño previsto tiene dos
+caminos, deliberadamente uno reducido y otro completo.
+
+### El camino completo: un fichero `.km`
+
+Un contacto es un fichero, no un enlace. La primera vez, el cliente exporta su
+propio contacto; el otro lo recibe por el medio que sea (correo, pendrive,
+mensaje) y lo importa.
+
+- **Contenido**: un `ContactBundle` **firmado** (`com.km.identity.ContactBundle`)
+  más un nombre visible para que la lista de contactos no muestre 64 hex.
+- El bundle lleva un snapshot firmado del `DeviceRoster` y de las prekeys
+  vigentes, de modo que es **autónomo**: permite iniciar la relación sin ningún
+  servicio. Es un bootstrap, no una fuente de verdad.
+- El mismo contenido criptográfico sirve para el fichero y para el QR. **No
+  existen dos protocolos distintos**, solo dos formas de transportar lo mismo.
+- El bundle está sujeto al **invariante de binding**: no puede afirmar que
+  pertenece al dispositivo X mientras lleva las claves de Y. El verificador
+  tiene que comprobar que `subjectSigningKey` coincide con la del
+  `DeviceEntry(subjectDeviceId)` y que el `deviceId` derivado encaja.
+
+Lo que **no** puede hacer un `.km` es cifrar el mensaje: solo te da la clave
+pública con la que luego establecer la sesión (X3DH + Double Ratchet).
+
+### El camino reducido: una clave pública a pelo
+
+Para un contacto técnico, o para probar, importar una clave Ed25519 desnuda es
+suficiente — y si no hay nombre, **el nombre por defecto es `user`**. Es
+deliberado: un contacto sin nombre es un dato que existe, y mostrar `user` es
+mejor que mostrar una cadena vacía o un `identityId` hexadecimal.
+
+Esto tiene una consecuencia práctica, y es a propósito: **importar una clave a
+pelo no establece ninguna relación criptográfica.** Sirve para poder *responder*
+a alguien que ya te tiene a ti, y para verificar sus `ACK`. Para escribirle la
+primera vez hace falta un `ContactBundle` con prekeys.
+
+### El QR: se muestra, no se escanea
+
+El cliente de escritorio **muestra** el QR de su contacto en pantalla y **no
+tiene escáner**. Es una decisión de diseño, no una carencia pendiente: un
+escritorio no tiene cámara que ofrecer, así que el QR es una **salida** — se
+pasa el móvil por delante de la pantalla del PC, o se lee a mano. El escaneo de QR
+es del cliente móvil, que sí tiene cámara.
+
+Qué hay hoy de todo esto:
+
+| Pieza | Estado |
+|-------|--------|
+| `ContactBundle` en `km-core`: estructura, firma, invariante de binding, vectores dorados | **IMPLEMENTADO** |
+| `PeerKeyDirectory` en `km-desktop`: registro de una clave de firma pública, con recálculo de coherencia contra `KmIds.identityId`, y persistencia en `peers.json` | **IMPLEMENTADO** |
+| Comando de TUI `peer <identityIdHex> <claveBase64>` | **IMPLEMENTADO**, y es el camino reducido sin nombre |
+| Nombre visible por contacto | **NO EMPEZADO.** `peers.json` guarda `identityId` y `publicKey`, y nada más |
+| Fichero `.km`, importación y exportación de contactos | **NO EMPEZADO** |
+| Nombre por defecto `user` al importar una clave a pelo | **NO EMPEZADO** |
+| QR de contacto en el escritorio | **NO EMPEZADO** (y el escaneo, por diseño, tampoco) |
+| QR de identidad en Android | **IMPLEMENTADO**: `MainActivity.kt` genera y escanea con ZXing, en el formato `nombre\|clavePública`. Sin nombre, esta app usa `"User"` como reserva. El escritorio no tiene QR |
 
 ---
 
@@ -330,8 +597,14 @@ Pre-1.0, en desarrollo activo, sin auditoría. En concreto:
   sitios, pero **el diseño del protocolo y su implementación no han sido
   revisados por nadie**.
 
-Lo que sí se puede afirmar: 1187 tests, código de referencia normativo, RFCs
-escritos, y una campaña de mutaciones sobre la persistencia atómica.
+Lo que sí se puede afirmar: el camino de relé y de `ACK` funciona de extremo a
+extremo entre dos clientes de escritorio, el camino criptográfico completo
+(`SecureFrame`, X3DH, Double Ratchet) está escrito y cubierto por tests pero
+**no cableado al transporte**, y hay RFCs escritos más una campaña de mutaciones
+sobre la persistencia atómica.
+
+El recuento de tests que aparece arriba está fechado el 2026-09-30 y no se ha
+re-medido: córrase `./gradlew test` para tener el número de hoy.
 
 ---
 
