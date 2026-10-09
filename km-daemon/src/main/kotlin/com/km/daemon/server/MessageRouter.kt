@@ -34,14 +34,16 @@ import java.util.concurrent.ConcurrentHashMap
  * | `MESSAGE`   | Base64 -> `RelayServer.deliverData` -> Base64            |
  * | `SIGNAL`    | extension -> `RelayServer.handleSignal`                  |
  * | `PING`/`PONG` | heartbeat de aplicacion (§12.2)                         |
+ * | `ACK`       | texto OPACO: verbatim `String` -> `String`, sin parsear (§11.1) |
  * | `PEER_*`    | NUNCA entrantes: son salida del rele                      |
- * | `STORED`, `RELAY_EXPIRED`, `RELAY_ERROR`, `ACK` | se registran y se descartan |
+ * | `STORED`, `RELAY_EXPIRED`, `RELAY_ERROR` | se registran y se descartan   |
  * | cualquier otro | se ignora (§7.1.3)                                     |
  *
  * Lo que este objeto NO hace, y es lo importante (§6.1): no mira el contenido
  * de `data`, no lee `messageId`, no descifra, no implementa semantica de
  * `ACK`. `data` entra como Base64, sale de `RelayServer` intacto, y vuelve a
- * salir como Base64. Nada mas.
+ * salir como Base64. Un `ACK` entra como `String`, sale como la MISMA
+ * `String`. Nada mas.
  */
 class MessageRouter(
     private val relayServer: RelayServer,
@@ -166,7 +168,7 @@ class MessageRouter(
                 "PEER_ONLINE", "PEER_OFFLINE", "AUTH_CHALLENGE", "AUTH_OK", "AUTH_FAIL" ->
                     onRelayToClient(connection, type)
 
-                "ACK" -> onAck(connection)
+                "ACK" -> onAck(connection, frame, text)
 
                 else -> logger.debug("tipo desconocido ignorado: {}", type)
             }
@@ -411,16 +413,59 @@ class MessageRouter(
     }
 
     /**
-     * `ACK` entrante: se registra y se descarta.
+     * `ACK` entrante: reenvio OPACO, verbatim.
      *
-     * Deliberado. `ACK` es control de APLICACION (§11) y el dialecto B no le
-     * da un campo `data` que transproducir, asi que no hay nada opaco que
-     * mover. Implementar su reenvio exigiria que el rele entendiera
-     * `originalMessageId` y el ciclo de vida de la sesion de aplicacion, que
-     * es exactamente lo que §11.1 le prohibe.
+     * Lo que este metodo NO hace es el contenido del `ACK` (§11.1 ya
+     * enmendada), y esa lista es la parte importante:
+     *
+     * - No valida `signature`. No tiene con que: el receptor la verifica, y es
+     *   el unico que tiene la clave de sesion de aplicacion.
+     * - No lee `originalMessageId`, ni `status`, ni `timestamp`. No mantiene
+     *   estado de pendientes ni correlaciona nada.
+     * - No modifica ni un caracter. Lo que sale es [raw], la MISMA `String`
+     *   que entro: mismo orden de claves, mismo whitespace, mismo formato.
+     *   No hay parse→serialize, que es donde se perderia la firma.
+     * - No emite `RELAY_ERROR` cuando el destino no esta. El relé no sabe si
+     *   ese `ACK` debia llegar, asi que no puede afirmar que se perdio.
+     *
+     * Lo que SI hace son dos comprobaciones de TRANSPORTE, que siempre han sido
+     * suyas (§9): que quien manda sea quien dice ser, y que el texto sea un
+     * objeto JSON con `from` y `to` de forma valida. Por [raw] se reenvia el
+     * original; [frame] solo se mira para leer esos dos campos.
      */
-    private fun onAck(connection: RelayWebSocket) {
-        logger.debug("ACK entrante de {}: el rele no implementa semantica de ACK (§11)", connection)
+    private fun onAck(connection: RelayWebSocket, frame: JsonNode, raw: String) {
+        val peerId = connection.peerId
+        if (peerId == null) {
+            logger.warn("ACK descartado: conexion no autenticada")
+            return
+        }
+
+        val route = codec.parseAckRoute(frame)
+        if (route == null) {
+            logger.warn("ACK descartado: 'from' o 'to' ausente o mal formado")
+            return
+        }
+
+        // Anti-spoofing de transporte, el mismo de `deliverData` (§15.3) pero
+        // aqui porque este camino no pasa por `RelayServer`: no se CORRIGE el
+        // `from`, se descarta el frame. Reescribirlo fabricaria un ACK distinto
+        // del que se firmo, que es un ataque con mejor disfraz.
+        if (route.from != peerId) {
+            logger.warn(
+                "ACK descartado por anti-spoofing: from {} != peer autenticado {}",
+                route.from.value.take(8), peerId.value.take(8),
+            )
+            return
+        }
+
+        if (!withConnection(route.to) { it.send(raw) }) {
+            // Destino ausente. Se registra y se cae: sin `RELAY_ERROR`, porque
+            // el rele no sabe si ese ACK debia llegar (§11.1).
+            logger.info(
+                "ACK descartado: destino {} no conectado (sin RELAY_ERROR, §11.1)",
+                route.to.value.take(8),
+            )
+        }
     }
 
     // --- salida a otras conexiones -------------------------------------------
@@ -431,9 +476,23 @@ class MessageRouter(
         }
     }
 
-    private fun withConnection(identity: IdentityId, action: (RelayWebSocket) -> Unit) {
+    /**
+     * Envia a la conexion de [identity], si la hay.
+     *
+     * Devuelve si la hubo. El valor de retorno no es decorativo: quien lo use
+     * para distinguir "no habia destinatario" de "no habia nada que enviar"
+     * —`ACK` a un peer ausente, §11.1— necesita saberlo, y sin este `Boolean`
+     * tendria que duplicar la busqueda de la conexion.
+     */
+    private fun withConnection(identity: IdentityId, action: (RelayWebSocket) -> Unit): Boolean {
         val target = connections.values.firstOrNull { it.peerId == identity && it.isOpen }
-        if (target != null) action(target) else logger.debug("sin conexion para {}", identity.value.take(8))
+        return if (target != null) {
+            action(target)
+            true
+        } else {
+            logger.debug("sin conexion para {}", identity.value.take(8))
+            false
+        }
     }
 
     // --- control (STORED / RELAY_EXPIRED / RELAY_ERROR) ----------------------

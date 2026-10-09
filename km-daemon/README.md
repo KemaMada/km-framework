@@ -151,6 +151,7 @@ verificable en el código.
 | I13 | `RELAY_ERROR` con `errorCode` (§16.1), codificado por `JsonRelayControlCodec` | `server/MessageRouter.kt` |
 | I14 | `maxConnections` con cierre `1013 Try Again Later` | `server/RelayWebSocketServer.kt` |
 | I15 | Frame binario rechazado con `1003 Unsupported Data` (§7) | `server/RelayWebSocketServer.kt` |
+| I16 | `ACK` reenviado **verbatim**: sale la misma `String` que entró, sin parsear más de `from`/`to` (§11.1) | `server/MessageRouter.kt` |
 
 ### Previsto, NO implementado
 
@@ -160,7 +161,7 @@ verificable en el código.
 | P2 | **`serverNonce` en `AUTH_OK`** | §9.6 no lo lista, así que no se emite. Consecuencia honesta: `serverSignature` viaja sin material verificable para el cliente. No se resuelve aquí; es P6 del spec. |
 | P3 | **`AUTH` server-side de `RelayClient`** | `RelayClient.handleAuthOk` no verifica `serverSignature`. El daemon lo firma correctamente igual (§I5); el cliente es el que no lo mira. |
 | P4 | **Canal WebSocket binario** | §6.4, deliberadamente sin cerrar. Hoy se rechaza con `1003`. |
-| P5 | **Emisión de `ACK` por el relé** | §11: `ACK` es control de aplicación. El daemon registra el `ACK` entrante y lo descarta. No lo reenvía. |
+| P5 | **Emisión de `ACK` por el relé** | **Resuelto en el reenvío** (§I16). El relé ya reenvía el `ACK` de extremo a extremo, verbatim y sin entenderlo (§11.1 ya enmendada). Lo que sigue sin hacer es **emitir** uno: no sabe si un mensaje llegó a entregarse, y `status` no es asunto suyo. |
 | P6 | **`SIGNAL` como tipo de §8** | El dialecto normativo **no define** cómo viajan SDP/ICE. `JsonWireCodec` lo implementa como extensión explícita con `kind` ∈ {`sdp_offer`, `sdp_answer`, `ice_candidate`, `contact_exchange`}, no como un tipo inventado del catálogo. |
 | P7 | **Reconciliación `protocolVersion` string vs int** | §9.7. El cliente manda `"2.0"` (string); `AuthResponse.protocolVersion` es `Int`. `AuthAdapter` traduce sin judgement, porque ni `AuthVerifier` ni `RelayServer` miran ese campo. |
 | P8 | **`AUTH_SESSION_TIMEOUT`** | El cliente no lo maneja (§18.2 P13). |
@@ -171,13 +172,47 @@ verificable en el código.
 ./gradlew :km-daemon:test
 ```
 
-`JsonWireCodecMessageTest` cubre la propiedad central del spec:
+### `JsonWireCodecMessageTest` — el camino de `MESSAGE`
+
+Cubre la propiedad central del spec:
 
 1. **§6.2** — la carga de `MESSAGE` sobrevive al viaje de ida y vuelta
    **byte a byte**, con los 256 valores posibles de byte y las tres
    longitudes de residuo que deciden el padding de Base64.
 2. **§14.1** — un Base64 inválido (alfabeto equivocado, whitespace,
    longitud imposible) se descarta **entero**. No hay carga parcial.
+
+### `AckForwardingTest` — el camino de `ACK`
+
+Diez tests sobre una afirmación que no es «el relé reenvía el `ACK`», sino
+**«el relé lo reenvía sin tocarlo»**. La diferencia es el listón: la firma
+del `ACK` cubre `from`, `to`, `originalMessageId`, `status` y `timestamp`,
+así que un relé que reescriba cualquiera de ellos produce algo que ya no es
+el `ACK` firmado.
+
+| Test | Qué sostiene |
+|------|--------------|
+| `byteIdentity` | La `String` que sale es la que entró, carácter a carácter |
+| `canary` | Un `ACK` con tabuladores, CRLF, espacios y un campo desconocido sale intacto |
+| `signatureIntegrity` | Mutar `timestamp` / `originalMessageId` / `signature` llega mutado y `AckManagerImpl` (el verificador real de km-core) lo rechaza |
+| `antiSpoof` | `from` ≠ peer autenticado → DESCARTE + LOG, **sin corregir** el campo |
+| `noAmplification` | `MESSAGE` → `ACK` → relé → `ACK`, y de ahí no sale ni un `MESSAGE` ni un eco |
+| `noSemantics` | Un `originalMessageId` que no es UUID, o un `status` inexistente, se reenvían igual |
+| `destino ausente` | Se descarta y se registra, **sin `RELAY_ERROR`** |
+| `ACK antes de AUTH_OK`, `ACK sin to utilizable` | Se descartan sin matar la conexión (§7.1) |
+| `noSemantics - el codec solo devuelve from y to` | `AckRoute` no tiene dónde guardar los campos de aplicación |
+
+Dos detalles del entramado que merece la pena saber:
+
+- Las dos conexiones se **autentican de verdad** (`AUTH_REQUEST` →
+  `AUTH_CHALLENGE` → `AUTH_RESPONSE` → `AUTH_OK`, con Ed25519 sobre el
+  transcript de 152 B). Sin eso no habría `peerId` verificado contra el que
+  medir el anti-spoofing, ni handler de datos en `RelayServer`.
+- Cada detector lleva su **control negativo** dentro, y hay uno además a
+  nivel de trama: con la mutación `it.send(frame.toString())` —un
+  parse→serialize que respeta el orden de las claves— **toda la suite pasa
+  menos `canary`**. Por eso el canario no es un test redundante: es el único
+  que distingue un reenvío verbatim de una normalización.
 
 Este módulo no lleva una suite de tests amplia a propósito: es el MVP del
 daemon, y su cobertura no es el frente. El número de tests de `km-core` y

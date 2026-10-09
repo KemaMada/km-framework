@@ -24,28 +24,42 @@ class SenderImpl(
 
     override fun send(message: Message): Result<Unit> {
         validator.validateMessage(message).getOrThrow()
-        messageStore.updateState(message.messageId, MessageState.SENDING, null).getOrThrow()
-        stateHandlers.forEach { it(message.messageId, MessageState.SENDING, null) }
+        // F1: el registro lo escribio `createMessage`, y aqui SOLO se lee.
+        //
+        // Insertar aqui seria un segundo dono del mismo mensaje: el reintento y
+        // `onPeerOnline` pasan por este mismo metodo, asi que un `insert`
+        // recrearia el registro en cada intento y el `messageId` -- que es la
+        // clave contra la que `AckManager` empareja -- dejaria de ser estable.
+        // Ademas, un envio de un mensaje que nadie persistio no es un envio
+        // recuperable: si la conexion se cae a mitad, no hay de donde reintentar.
+        val stored = messageStore.get(message.messageId).getOrNull()
+            ?: return Result.failure(
+                NoSuchElementException("Message ${message.messageId} not found")
+            )
+        messageStore.updateState(stored.messageId, MessageState.SENDING, null).getOrThrow()
+        stateHandlers.forEach { it(stored.messageId, MessageState.SENDING, null) }
 
-        val encoded = encoder.encodeMessage(message).getOrThrow()
+        val encoded = encoder.encodeMessage(stored).getOrThrow()
 
         if (!transport.isOnline()) {
-            return queueOffline(message)
+            return queueOffline(stored)
         }
 
-        val sendResult = transport.send(encoded, message.to)
+        val sendResult = transport.send(encoded, stored.to)
         return if (sendResult.isSuccess) {
-            messageStore.updateState(message.messageId, MessageState.SENT, null).getOrThrow()
-            stateHandlers.forEach { it(message.messageId, MessageState.SENT, null) }
-            ackManager.expectAck(message.messageId)
-            retryManager.scheduleRetry(message.messageId, 1)
+            messageStore.updateState(stored.messageId, MessageState.SENT, null).getOrThrow()
+            stateHandlers.forEach { it(stored.messageId, MessageState.SENT, null) }
+            ackManager.expectAck(stored.messageId)
+            retryManager.scheduleRetry(stored.messageId, 1)
             Result.success(Unit)
         } else {
-            queueOffline(message)
+            queueOffline(stored)
         }
     }
 
     override fun retry(messageId: MessageId): Result<Unit> {
+        // Idem `send`: el reintento LEE el registro. `RetryManagerImpl` solo
+        // programa el temporizador; no tiene `MessageStore` y no escribe nada.
         val message = messageStore.get(messageId).getOrNull()
             ?: return Result.failure(NoSuchElementException("Message $messageId not found"))
 
@@ -92,6 +106,10 @@ class SenderImpl(
     }
 
     fun onPeerOnline(peerId: IdentityId) {
+        // El vaciado de la cola vuelve a pasar por `send`, que ya lee el
+        // registro. Por eso un mensaje que se encolo sin estar persistido
+        // NO se envia: `send` lo rechaza y el mensaje se queda en la cola en vez
+        // de perder el `messageId` que le permitiria reintentarse.
         val queued = offlineQueue.peekAll().getOrNull().orEmpty()
         queued.filter { it.to == peerId }.forEach { message ->
             val sendResult = send(message)

@@ -165,7 +165,7 @@ class IdentityPublicKeyRegressionTest {
     @Test
     fun `AckManager verifica con publicKey correcta`() {
         val store = InMemoryMessageStore()
-        val mgr = AckManagerImpl(store, ed25519, senderPublicKey = { _ -> bob.publicKey })
+        val mgr = AckManagerImpl(store, ed25519, senderPublicKeyResolver = { _ -> bob.publicKey })
 
         val ackData = "ack-data".toByteArray()
         val sig = ed25519.sign(bob.privateKey, ackData)

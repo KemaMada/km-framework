@@ -8,7 +8,21 @@ import java.util.concurrent.ConcurrentHashMap
 class AckManagerImpl(
     private val messageStore: MessageStore,
     private val ed25519: Ed25519,
-    private val senderPublicKey: (IdentityId) -> ByteArray? = { null },
+    /**
+     * Clave de FIRMA Ed25519 del emisor del `ACK`, por identidad.
+     *
+     * Es OBLIGATORIA para hacer nada: sin ella, [onAckReceived] devuelve
+     * `success` sin verificar y sin procesar, y el emisor se queda esperando un
+     * `ACK` que ya llego. Ese era el defecto D3: no una comprobacion que
+     * sobraba, sino la unica forma de distinguir un `ACK` autentico de uno que
+     * cualquiera puede fabricar con un `originalMessageId` ajeno.
+     *
+     * El valor por defecto es `{ null }` para no romper a quien construye el
+     * manager sin claves, pero ese manager NO autentica nada. Quien tenga el
+     * par de claves del peer debe pasarlo, y `KeyMessageCoreImpl` lo hace con
+     * el resolver que le inyecta su consumidor.
+     */
+    private val senderPublicKeyResolver: (IdentityId) -> ByteArray? = { null },
 ) : AckManager {
 
     private val pendingAcks = ConcurrentHashMap<MessageId, MutableList<Ack>>()
@@ -22,8 +36,8 @@ class AckManagerImpl(
             return Result.success(Unit)
         }
 
-        val ackData = buildAckData(ack)
-        val pubKey = senderPublicKey(ack.from) ?: return Result.success(Unit)
+        val ackData = AckTranscript.build(ack)
+        val pubKey = senderPublicKeyResolver(ack.from) ?: return Result.success(Unit)
         val isValid = ed25519.verify(pubKey, ackData, com.km.crypto.Signature(ack.signature))
         if (!isValid) {
             return Result.success(Unit)
@@ -66,9 +80,5 @@ class AckManagerImpl(
 
     fun expectAck(messageId: MessageId) {
         pendingAcks[messageId] = mutableListOf()
-    }
-
-    private fun buildAckData(ack: Ack): ByteArray {
-        return (ack.from.value + ack.to.value + ack.originalMessageId.value.toString() + ack.status.name + ack.timestamp.toString()).toByteArray()
     }
 }

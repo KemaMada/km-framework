@@ -357,32 +357,74 @@ Este punto se ha malinterpretado antes, así que se enuncia sin ambigüedad:
 Un `ACK` **no** es un `MESSAGE` con una respuesta. Es un mensaje de una capa distinta que
 el relé transporta con la misma indiferencia con la que transporta cualquier otra cosa.
 
-### 11.1 — Por qué esta distinción importa
+Que el relé **no lo entienda** nunca significó que **no lo transporte**. Desde la enmienda
+de abajo, el relé reenvía `ACK` de extremo a extremo; lo que sigue siendo verdad es que no
+sabe qué significa ninguno de sus campos.
 
-Si el relé entendiera `ACK`, tendría que mantener estado de pendientes, correlacionar
-`originalMessageId`, decidir qué hacer con destinatarios que ya se fueron, y conocer el
-ciclo de vida de la sesión de aplicación. Todo eso es semántica de aplicación y ninguno
-pertenece a un relé opaco.
+### 11.1 — El relé reenvía `ACK` sin entenderlos
+
+> **Enmienda (Checkpoint B.1).** Esta sección **sustituye** a la prohibición anterior
+> («el relé registra el `ACK` entrante y lo descarta»). La prohibición no era del relé:
+> era una admisión de que el reenvío exigía entender el `ACK`. No lo exige. Reenviar un
+> texto verbatim solo exige saber a quién va y que quien lo manda sea quien dice ser.
+
+El relé **MAY**, y esto es todo lo que hace:
+
+1. Leer **`from`** y **`to`** del `ACK` para **enrutarlo**.
+2. Comprobar que `from` coincide con la identidad **ya autenticada** de la conexión que lo
+   envía. Es el mismo control anti-spoofing de §9/§11 que aplica a `MESSAGE`, y se aplica
+   por el mismo motivo: `from` es transporte, y el transporte sí es suyo.
+3. Reenviar el **texto de WebSocket original, verbatim**, a la conexión de `to`.
+
+El relé **MUST NOT**:
+
+1. **Validar la firma** del `ACK` — ni presente ni ausente. No la mira, y no necesita
+   mirar el `status` para decidir qué hacer: no hay nada que decidir.
+2. **Interpretar `originalMessageId`**, ni `status`, ni el ciclo de vida del ACK. No
+   mantiene estado de pendientes, no correlaciona, no sabe si el destinatario debía
+   esperar ese ACK.
+3. **Modificar `timestamp`, `from`**, ni ningún otro campo. En particular **no corrige**
+   un `from` suplantado: reescribirlo produciría un frame distinto del firmado, que es un
+   ataque con mejor disfraz, no una defensa.
+4. **Firmar o re-firmar** el `ACK`.
+5. **Convertir un `ACK` en `MESSAGE`**, ni al revés. El `ACK` viaja en su propio frame y
+   por ahí vuelve: **no hay amplificación**.
+6. **Re-serializar** lo que entra. No hay parse→serialize. Lo que sale es la misma
+   `String`, carácter a carácter, con su orden de claves, su whitespace y su formato
+   intactos.
+
+Entrega cuando el destino no está:
+
+- `to` no conectado → el `ACK` se **descarta** y se registra en el log. **No** se emite
+  `RELAY_ERROR`: el relé no sabe si ese `ACK` debía llegar, así que no puede afirmar que se
+  perdió. Un error de transporte que el relé no puede interpretar no es un error que deba
+  inventar.
+- `from` ≠ identidad autenticada → el `ACK` se **descarta** y se registra. La conexión
+  sobrevive (§7.1): un frame no autenticado es un frame descartable.
 
 El cliente Android **sí** distingue los dos: despacha `MESSAGE` y `ACK` por separado
-(`RelayClient.kt:163-164`), y `KeyMessageCoreImpl` los entrega a¡ capas distintas —
+(`RelayClient.kt:163-164`), y `KeyMessageCoreImpl` los entrega a dos capas distintas —
 `receiver.onMessageBytesReceived` frente a `ackManager.onAckReceived`
 (`km-core/.../api/KeyMessageCoreImpl.kt:46-52`). Esa separación es correcta y el relé
-debe preservarla, no aplanarla.
+debe preservarla, no aplanarla: **preservarla es precisamente reenviar cada frame por su
+propio camino, sin mezclarlos.**
 
 ### 11.2 — Campos de `ACK`
 
 **Implementado** en `JsonEncoder.encodeAck` (`JsonEncoder.kt:20-29`).
 
-| Campo | Tipo | Obligatorio |
-|-------|------|------------|
-| `type` | string | Sí (`"ACK"`) |
-| `from` | string | Sí |
-| `to` | string | Sí |
-| `originalMessageId` | string (UUID) | Sí |
-| `status` | string (enum `AckStatus`) | Sí |
-| `timestamp` | int64 (ms) | Sí |
-| `signature` | string (Base64 estándar) | Sí |
+La columna «Qué lee el relé» es la regla de §11.1 aplicada campo a campo: `from` y `to`
+salen de la lista de prohibiciones solo porque hacen falta para enrutar.
+
+| Campo | Tipo | Obligatorio | Qué lee el relé |
+|-------|------|-------------|-----------------|
+| `type` | string | Sí (`"ACK"`) | Solo para elegir el camino |
+| `from` | string | Sí | **Sí**, para el anti-spoofing contra la identidad autenticada |
+| `to` | string | Sí | **Sí**, para saber a quién reenviar |
+| `originalMessageId` | string (UUID) | Sí | **No** (§11.1) |
+| `status` | string (enum `AckStatus`) | Sí | **No** (§11.1) |
+| `timestamp` | int64 (ms) | Sí | **No**, y no lo modifica (§11.1) |
+| `signature` | string (Base64 estándar) | Sí | **No**, y no la verifica (§11.1) |
 
 ---
 

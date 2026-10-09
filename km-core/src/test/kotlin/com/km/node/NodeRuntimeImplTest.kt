@@ -73,6 +73,16 @@ class NodeRuntimeImplTest {
         val peerId: IdentityId
     ) : RelayTransport {
         val sentFrames = mutableListOf<ByteArray>()
+
+        /**
+         * `ACK` que salieron por el canal `ACK`, aparte de los `MESSAGE`.
+         *
+         * La separacion no es cosmetica: si un `ACK` acabara en [sentFrames],
+         * el receptor contrario lo trataria como un mensaje entrante mas y
+         * responderia con otro `ACK`. Mantenerlos en dos listas hace que esa
+         * confusion sea visible en un test y no en produccion.
+         */
+        val sentAcks = mutableListOf<ByteArray>()
         var onMessageBytes: ((ByteArray) -> Unit)? = null
         var onAckBytes: ((ByteArray) -> Unit)? = null
         var onStored: ((StoredReceipt) -> Unit)? = null
@@ -94,6 +104,11 @@ class NodeRuntimeImplTest {
 
         override fun send(data: ByteArray, to: IdentityId): Result<Unit> {
             sentFrames.add(data)
+            return Result.success(Unit)
+        }
+
+        override fun sendAck(ackBytes: ByteArray): Result<Unit> {
+            sentAcks.add(ackBytes)
             return Result.success(Unit)
         }
 

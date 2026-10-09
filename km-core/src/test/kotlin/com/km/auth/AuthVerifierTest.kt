@@ -115,6 +115,42 @@ class AuthVerifierTest {
         assertEquals(AuthError.INVALID_IDENTITY, result)
     }
 
+    /**
+     * KM-ID-0001 seccion 6: identityId = SHA-256("KM-ID-IDENTITY" || pubKey)
+     * son 32 bytes, 64 hex. Los 40 hex que produjo km-android con
+     * `publicKey.take(20)` son un PLACEHOLDER, no una identidad: no derivan de
+     * nada y hacen el transcript 16 + 8 + 64 + 64 imposible de montar.
+     */
+    @Test
+    fun `V1 identityId de 40 hex devuelve INVALID_IDENTITY`() {
+        val verifier = AuthVerifier(ed25519, fixedClock(defaultTs), acceptingGuard())
+        // Los primeros 40 hex del identityId canonico de Alice: mismo
+        // contenido no constante que un relleno, y truncado, no inventado.
+        val truncated = aliceIdentityHex().take(40)
+        assertEquals(40, truncated.length)
+        val result = verifier.verifyChallengeResponse(
+            challenge(),
+            AuthResponse(
+                identityId = truncated,
+                publicKey = alice.publicKey,
+                // Firma sobre el transcript que SI se podria montar, para que
+                // el rechazo venga de la capa V1 y no de la V3.
+                signature = response().signature,
+                protocolVersion = 3,
+            )
+        )
+        assertEquals(AuthError.INVALID_IDENTITY, result)
+    }
+
+    @Test
+    fun `V1 identityId canonico de 64 hex se acepta`() {
+        val canonical = aliceIdentityHex()
+        assertEquals(64, canonical.length)
+        val verifier = AuthVerifier(ed25519, fixedClock(defaultTs), acceptingGuard())
+        val result = verifier.verifyChallengeResponse(challenge(), response(identityId = canonical))
+        assertNull(result)
+    }
+
     @Test
     fun `V3 firma invalida devuelve INVALID_SIGNATURE`() {
         val verifier = AuthVerifier(ed25519, fixedClock(defaultTs), acceptingGuard())

@@ -141,6 +141,29 @@ class JsonWireCodec(
         return IncomingMessage(from = from, to = to, data = data)
     }
 
+    // --- ACK (seccion 11.1) ------------------------------------------------
+
+    /**
+     * `ACK` entrante: SOLO `from` y `to`, y SOLO para rutear.
+     *
+     * Deliberadamente minimal, y la minimalidad es el requisito (§11.1 ya
+     * enmendada): de los seis campos con nombre canonico del `ACK` —`from`,
+     * `to`, `originalMessageId`, `status`, `timestamp`, `signature`— este
+     * metodo devuelve los DOS de transporte y ninguno de los cuatro de
+     * aplicacion. No hay forma de que quien llama llegue a `originalMessageId`
+     * por aqui, porque este objeto no lo devuelve.
+     *
+     * La firma NO se lee. No se verifica, no se descarta su ausencia, no se
+     * guarda: el relé no tiene clave de sesion de aplicacion y no deberia
+     * tenerla. Un `ACK` mal firmado llega al destinatario igual que uno bien
+     * firmado, y es el receptor quien lo rechaza (§11.1, MUST NOT 1).
+     */
+    fun parseAckRoute(frame: JsonNode): AckRoute? {
+        val from = frame.identityId("from") ?: return null
+        val to = frame.identityId("to") ?: return null
+        return AckRoute(from = from, to = to)
+    }
+
     // --- extension SIGNAL (fuera de §8) ------------------------------------
 
     /**
@@ -354,6 +377,20 @@ data class IncomingMessage(
         return result
     }
 }
+
+/**
+ * Destino de un `ACK` entrante: quien lo manda y a quien va.
+ *
+ * Solo eso. La ausencia de `originalMessageId`, `status`, `timestamp` y
+ * `signature` en este tipo no es descuido: es la forma que tiene la regla de
+ * §11.1 de ser comprobable. Si alguien necesitara el `originalMessageId` para
+ * reenviar el `ACK`, tendria que anadir el campo aqui, y el primer sitio donde
+ * se veria es la lista de prohibiciones del spec.
+ */
+data class AckRoute(
+    val from: IdentityId,
+    val to: IdentityId,
+)
 
 /**
  * `SIGNAL` entrante.
