@@ -29,6 +29,16 @@ data class DaemonConfig(
      */
     val identityPath: String = DEFAULT_IDENTITY_PATH,
 
+    /**
+     * A1.2 — Semillas de bootstrap de reles (Tailscale IPs / .onion).
+     *
+     * Lista separada por comas o vacia. Se cargan en el `PeerRoleDirectory` del
+     * nodo cuando `km.roles.capabilities` esta encendido. El daemon NO interpreta
+     * estas semillas como destinos activos salvo que aparezcan en un anuncio
+     * firmado: son un punto de arranque, nunca una autoridad.
+     */
+    val bootstrapRelays: List<String> = emptyList(),
+
     /** Camino de datos opacos (`MESSAGE`). Desactivado = el relé no enruta carga. */
     val relayEnabled: Boolean = true,
 
@@ -64,5 +74,8 @@ data class DaemonConfig(
 
         /** Variable de entorno que puede apuntar a otro `km-daemon.conf.json`. */
         const val CONFIG_PATH_ENV: String = "KM_DAEMON_CONFIG"
+
+        /** Semillas de bootstrap separadas por comas. */
+        const val ENV_BOOTSTRAP_RELAYS: String = "KM_DAEMON_BOOTSTRAP_RELAYS"
     }
 }

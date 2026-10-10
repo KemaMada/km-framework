@@ -15,6 +15,7 @@ import com.km.codec.JsonDecoder
 import com.km.codec.JsonEncoder
 import com.km.codec.JsonRelayControlCodec
 import com.km.codec.RelayControlCodec
+import com.km.config.KmFlags
 import com.km.crypto.Ed25519
 import com.km.crypto.Ed25519Impl
 import com.km.crypto.KeyPair
@@ -54,6 +55,24 @@ class NodeRuntimeImpl(
     private val encoder: Encoder = JsonEncoder(),
     private val decoder: Decoder = JsonDecoder(),
     private val controlCodec: RelayControlCodec = JsonRelayControlCodec(),
+
+    /**
+     * A1.1/A1.2 — directorio de roles y capacidades de peers.
+     *
+     * `null` (por defecto) significa "este nodo no observa capacidades": es el
+     * estado seguro y el que mantiene el comportamiento anterior. Un directorio
+     * solo recibe entradas cuando [rolesCapabilities] esta encendido.
+     */
+    val roleDirectory: PeerRoleDirectory? = null,
+
+    /**
+     * A1 — interruptor `km.roles.capabilities`.
+     *
+     * Por defecto lee el entorno ([KmFlags.rolesCapabilities]); con el flag
+     * apagado, [receiveAuthOk] y [registerPeerRoles] NO tocan el directorio y
+     * el comportamiento observable es identico al de antes de A1.
+     */
+    private val rolesCapabilities: Boolean = KmFlags.rolesCapabilities,
 ) : NodeRuntime {
 
     /**
@@ -86,6 +105,8 @@ class NodeRuntimeImpl(
             clientCore: KeyMessageCore? = null,
             relayService: RelayService? = null,
             ed25519: Ed25519 = Ed25519Impl(),
+            roleDirectory: PeerRoleDirectory? = null,
+            rolesCapabilities: Boolean = KmFlags.rolesCapabilities,
         ): NodeRuntimeImpl {
             val kp = KeyPair(publicKey, privateKey)
             return NodeRuntimeImpl(
@@ -95,7 +116,44 @@ class NodeRuntimeImpl(
                 relayService = relayService,
                 keyPair = kp,
                 ed25519 = ed25519,
+                roleDirectory = roleDirectory,
+                rolesCapabilities = rolesCapabilities,
             )
+        }
+
+        /**
+         * A1.3 — Construye el plan de transportes a partir de la disponibilidad
+         * de un rele.
+         *
+         * La regla de degradacion es una sola: `relayService == null` ⇒ no hay
+         * eslabon de relay. El plan resultante es `[p2p]` (o `[p2p, tor]` con
+         * Tor disponible). No existe un eslabon de relay implicito que falle
+         * despues: si el medio no esta, no esta en la cadena.
+         */
+        fun buildTransportPlan(relayService: RelayService?, torAvailable: Boolean = false): TransportPlan =
+            TransportPlan.of(relayAvailable = relayService != null, torAvailable = torAvailable)
+
+        /**
+         * A1.3 — Materializa un [TransportPlan] sobre los backends disponibles.
+         *
+         * Solo los tiers presentes en el plan Y con backend se instalan, en el
+         * orden del plan. Es el unico punto donde el plan se convierte en una
+         * [TransportChain], y por eso es donde se garantiza que una cadena sin
+         * relay NUNCA contenga un eslabon de relay.
+         *
+         * @throws IllegalArgumentException si no queda ningun backend (una
+         *   cadena vacia no es una configuracion: [TransportChain] tambien lo
+         *   rechaza, aqui se falla antes y con mejor mensaje).
+         */
+        fun materializeChain(
+            plan: TransportPlan,
+            backends: Map<TransportTier, TransportBackend>,
+        ): TransportChain {
+            val ordered = plan.tiers.mapNotNull { backends[it] }
+            require(ordered.isNotEmpty()) {
+                "el plan ${plan.tierNames} no tiene ningun backend disponible: no hay cadena"
+            }
+            return TransportChain(ordered)
         }
     }
 
@@ -322,6 +380,11 @@ class NodeRuntimeImpl(
             authSession = session,
         )
         _peerContexts[peerId] = context
+        // A1.2 — intercambio de capacidades al autenticar. El anuncio YA llego
+        // verificado (quien llama lo verifico con verifyNodeAnnouncement), asi
+        // que aqui solo se registra su CONJUNTO DE CAPACIDADES. Gateado por el
+        // flag: apagado, esta llamada no hace nada.
+        recordPeerRoles(announcement)
         return context
     }
 
@@ -436,6 +499,64 @@ class NodeRuntimeImpl(
      */
     fun getNegotiationHash(peerId: IdentityId): ByteArray? =
         _peerContexts[peerId]?.negotiationHash
+
+    // ===================================================================
+    // Runtime.5 — Rol y capacidades (A1.2 / A1.3)
+    // ===================================================================
+
+    /**
+     * Registra las capacidades de un peer a partir de un anuncio YA verificado.
+     *
+     * Es el punto de entrada del intercambio in-band: cuando un peer
+     * re-anuncia endpoints de rele conocidos, su anuncio se registra aqui sin
+     * repetir el handshake. Igual que [receiveAuthOk], NO verifica la firma: el
+     * llamante lo hace antes con [verifyNodeAnnouncement].
+     *
+     * Gateado por `km.roles.capabilities`: apagado, es una no-operacion y el
+     * directorio queda intacto.
+     *
+     * @return el [RelayInfo] registrado, o `null` si el flag esta apagado o no
+     *   hay directorio.
+     */
+    fun registerPeerRoles(announcement: NodeAnnouncement): RelayInfo? = recordPeerRoles(announcement)
+
+    /**
+     * A1.2 — Semillas de bootstrap desde configuracion.
+     *
+     * Direcciones de rele de confianza-de-arranque (IPs de Tailscale, `.onion`).
+     * NO se indexan por identidad: todavia no hay ninguna verificada. Se
+     * guardan como [RelaySeed] hasta que un anuncio firmado las sustituya.
+     *
+     * Gateado por el flag.
+     *
+     * @return cuantas semillas se registraron.
+     */
+    fun seedBootstrapRelays(seedAddresses: List<String>): Int {
+        if (!rolesCapabilities) return 0
+        val dir = roleDirectory ?: return 0
+        val seeds = seedAddresses
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .map { RelaySeed.fromAddress(it) }
+        dir.addSeeds(seeds)
+        return seeds.size
+    }
+
+    /**
+     * A1.3 — Plan de transportes de este nodo.
+     *
+     * El eslabon de relay existe SOLO si hay [relayService]. Sin el, la cadena
+     * se degrada a `[p2p]` o `[p2p, tor]`. Un conjunto vacio de reles es un
+     * estado soportado, no un error.
+     */
+    fun transportPlan(torAvailable: Boolean = false): TransportPlan =
+        buildTransportPlan(relayService, torAvailable)
+
+    private fun recordPeerRoles(announcement: NodeAnnouncement): RelayInfo? {
+        if (!rolesCapabilities) return null
+        val dir = roleDirectory ?: return null
+        return dir.record(announcement)
+    }
 
     // ===================================================================
     // Internal

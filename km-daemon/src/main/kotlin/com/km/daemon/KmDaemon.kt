@@ -193,4 +193,7 @@ private fun logConfig(logger: org.slf4j.Logger, config: DaemonConfig) {
     logger.info("config: listen={}:{}", config.listenHost, config.listenPort)
     logger.info("config: relayEnabled={} signalingEnabled={}", config.relayEnabled, config.signalingEnabled)
     logger.info("config: sessionExpiryMs={} maxConnections={}", config.sessionExpiryMs, config.maxConnections)
+    if (config.bootstrapRelays.isNotEmpty()) {
+        logger.info("config: bootstrapRelays={}", config.bootstrapRelays)
+    }
 }

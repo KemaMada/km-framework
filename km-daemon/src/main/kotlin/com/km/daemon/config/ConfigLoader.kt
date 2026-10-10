@@ -72,6 +72,8 @@ object ConfigLoader {
                 ?: defaults.sessionExpiryMs,
             maxConnections = integer(env, fromFile, "maxConnections", ENV_MAX_CONNECTIONS)
                 ?: defaults.maxConnections,
+            bootstrapRelays = stringList(env, fromFile, "bootstrapRelays", DaemonConfig.ENV_BOOTSTRAP_RELAYS)
+                ?: defaults.bootstrapRelays,
         )
     }
 
@@ -144,5 +146,22 @@ object ConfigLoader {
         "true" -> true
         "false" -> false
         else -> throw IllegalArgumentException("$source debe ser 'true' o 'false', recibido '$raw'")
+    }
+
+    private fun stringList(env: (String) -> String?, file: JsonNode?, key: String, envName: String): List<String>? {
+        env(envName)?.let { raw ->
+            if (raw.isBlank()) return emptyList()
+            return raw.split(',').map { it.trim() }.filter { it.isNotEmpty() }
+        }
+        file?.get(key)?.let { node ->
+            if (node.isArray) {
+                return node.map { it.asText() }.filter { it.isNotBlank() }
+            }
+            require(node.isTextual) { "$key debe ser un string o un array" }
+            val raw = node.asText()
+            if (raw.isBlank()) return emptyList()
+            return raw.split(',').map { it.trim() }.filter { it.isNotEmpty() }
+        }
+        return null
     }
 }
