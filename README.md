@@ -223,7 +223,9 @@ Lo mínimo para clonar este repositorio y construir el cliente de escritorio.
 |-----------|---------|--------------------|
 | JDK para **ejecutar** Gradle | **27** | `JAVA_HOME`, o `-Dorg.gradle.java.home=<ruta>` en la invocación. |
 | Gradle | **9.5.0** | `gradle/wrapper/gradle-wrapper.properties`. **Solo el wrapper**: `./gradlew`. No hay que instalar nada. |
-| Espacio libre | **~5 GB** | Cachés de Gradle (`~/.gradle`) + salidas de build (`*/build/`). |
+| RAM libre | **≥4 GB** (recomendación) | Empírica, de **una** máquina de prueba; no es un mínimo universal. Ver [RAM y máquinas ajustadas](#ram-y-máquinas-ajustadas). |
+| Espacio libre (solo escritorio) | **~1,45 GB** | Medido en el portátil de validación con `publishToMavenLocal` + `installDist` + `shadowJar` y **sin** tests: `~/.gradle` 1,36 GB + repositorio y builds ~50 MB. |
+| Espacio libre (build completo) | **~5 GB** (estimado) | Estimación para `./gradlew build`, que además compila `km-webrtc` (descarga de `libwebrtc` nativo) y ejecuta ~1187 tests. **No medido.** |
 | Red de salida | HTTPS | `services.gradle.org` (el wrapper descarga la distribución), Maven Central y Google Maven. |
 
 ```sh
@@ -251,6 +253,42 @@ ruta absoluta que no viaja entre máquinas, así que hardcodearla rompería el c
 de cualquiera que tenga el JDK en otro sitio. Si prefieres no pasar `-D` en cada
 comando, ponla en `~/.gradle/gradle.properties`, que tiene precedencia sobre el
 fichero del repositorio.
+
+### RAM y máquinas ajustadas
+
+> **Recomendación empírica, no requisito.** El número de abajo sale de **una**
+> máquina de prueba (un portátil Arch Linux con **3,6 GB** de RAM y JDK 27). No es
+> un mínimo universal: puede que a ti te baste menos, o que necesites más, según
+> la carga del sistema y la versión del toolchain.
+
+En esa máquina, un `./gradlew` normal agotó la memoria: `gradle.properties` fija
+`org.gradle.jvmargs=-Xmx2048m`, y el compilador de Kotlin arranca un **segundo**
+JVM. El swap llegó a 1824/1824 MB con load 14,6 y el host se reinició a mitad de
+`compileKotlin`. Por eso, para este build, **se recomiendan ≥4 GB de RAM libres**;
+si vas justo, la compilación puede necesitar ajustes.
+
+En una máquina ajustada, lo que funcionó fue:
+
+- `-Pkotlin.compiler.execution.strategy=in-process`, que ejecuta el compilador de
+  Kotlin **dentro** del daemon de Gradle y **elimina el segundo JVM** — es la
+  bandera decisiva;
+- `--max-workers=1`, para no compilar módulos en paralelo;
+- bajar el heap del daemon, p. ej. `-Dorg.gradle.jvmargs="-Xmx1300m ..."`;
+- lanzarlo **desacoplado** (`setsid nohup … &`), para que una caída de la sesión
+  SSH no mate el build a medias.
+
+```sh
+setsid nohup ./gradlew \
+    -Dorg.gradle.java.home=/usr/lib/jvm/java-27-openjdk \
+    -Pkotlin.compiler.execution.strategy=in-process \
+    --max-workers=1 \
+    -Dorg.gradle.jvmargs="-Xmx1300m -Dfile.encoding=UTF-8" \
+    :km-core:publishToMavenLocal :km-desktop:shadowJar \
+    > /tmp/km-build.log 2>&1 &
+```
+
+`gradle.properties` **no** se toca: su `-Xmx2048m` se mantiene, porque en una
+máquina con RAM de sobra es la configuración correcta.
 
 ### Otros
 
@@ -286,7 +324,7 @@ raíz del repositorio.
 # 1. Clonar. El cliente de escritorio está DENTRO de este repositorio, en
 #    km-desktop/. No hay un repositorio de GitHub aparte para él.
 git clone https://github.com/KemaMada/km-framework.git
-cd KeyMessage
+cd km-framework
 
 # 2. Publicar km-core en mavenLocal. NO es opcional: km-desktop lo consume como
 #    artefacto publicado (com.km:km-core:0.1.0-SNAPSHOT), no como proyecto del
@@ -298,8 +336,7 @@ cd KeyMessage
 ./gradlew -Dorg.gradle.java.home=/usr/lib/jvm/java-27-openjdk \
           :km-desktop:shadowJar
 
-# 4. Arrancar un relé propio. installDist deja un launcher con su classpath,
-#    que es la vía recomendada frente a un fat jar.
+# 4. Arrancar un relé propio. installDist deja un launcher con su classpath.
 ./gradlew -Dorg.gradle.java.home=/usr/lib/jvm/java-27-openjdk \
           :km-daemon:installDist
 ./km-daemon/build/install/km-daemon/bin/km-daemon
@@ -311,6 +348,21 @@ java -jar km-desktop/build/libs/km-desktop.jar --relay ws://127.0.0.1:8080/km
 Sin `--relay`, la TUI usa el relé desplegado, `wss://keymessage.xyz/km`, que es su
 endpoint por defecto. El `km-daemon` del paso 4 **no enruta por ruta**: acepta el
 handshake WebSocket en cualquier path, así que `/km` y `/ws` funcionan igual.
+
+#### `installDist` o fat jar
+
+Las dos vías funcionan y dan el mismo cliente; elige según cómo lo vayas a
+ejecutar. (Antes este README llamaba a `installDist` «la vía recomendada frente a
+un fat jar» y acto seguido lanzaba el fat jar: era contradictorio.) Verificado en
+el portátil de validación:
+
+| Vía | Comando | Salida | Tamaño | Cuándo usarla |
+|-----|---------|--------|--------|---------------|
+| `installDist` | `./gradlew :km-desktop:installDist` | `km-desktop/build/install/km-desktop/bin/km-desktop` | **~22 MB** repartidos en **34 jars** | Ejecutar en local o en desarrollo: es un launcher con su classpath y los jars resueltos por Gradle. |
+| `shadowJar` | `./gradlew :km-desktop:shadowJar` | `km-desktop/build/libs/km-desktop.jar` | **~21 MB** en un solo fichero | Distribuir o copiar: un único jar con todo dentro, `Main-Class: com.km.desktop.DesktopMainKt`, bytecode major **55** = Java 11. |
+
+Los dos scripts arrancan el mismo `main`, así que `--relay` y el resto de opciones
+valen igual en ambos casos.
 
 Al arrancar por primera vez la TUI no encuentra identidad: **crea una** y pide una
 frase de paso nueva, dos veces. En los arranques siguientes pide la que la abre.

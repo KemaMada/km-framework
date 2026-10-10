@@ -359,7 +359,10 @@ class Session(
 fun main(args: Array<String>) {
     val options = runCatching { DesktopOptions.parse(args) }.getOrElse {
         System.err.println("argumentos invalidos: ${it.message}")
-        System.err.println("uso: km-desktop [--relay <endpoint>] [--relay-identity <64hex>] [--keystore <ruta>] [--peers <ruta>] [--reset]")
+        // La ayuda completa sale de `usage()`, unica fuente de verdad: antes
+        // habia aqui una copia literal que se quedo atras al anadir `--verbose`
+        // y `-h`, asi que un argumento mal escrito ocultaba opciones reales.
+        System.err.println(DesktopOptions.usage())
         kotlin.system.exitProcess(2)
     }
     if (options.help) {
@@ -567,7 +570,7 @@ class DesktopOptions(
                                      (por defecto XDG: ~/.config/keymessage/${IdentityKeystore.IDENTITY_FILE_NAME})
               --peers <ruta>        directorio de claves de firma de los peers,
                                      del que sale el resolver que autentica los ACK
-                                     (por defecto, junto al almacen: <PEERS_FILE_NAME>)
+                                     (por defecto, junto al almacen: $PEERS_FILE_NAME)
               --reset               borra el almacen y el directorio de peers antes de arrancar
               --verbose             traza del transporte por stderr
               -h, --help            esta ayuda
