@@ -132,8 +132,8 @@ class PeerTransportManager(
     private val bindings = ConcurrentHashMap<Pair<IdentityId, IdentityId>, PeerTransportBinding>()
 
     // Handlers
-    private val stateChangeHandlers = mutableListOf<(IdentityId, PeerTransportState) -> Unit>()
-    private val dataHandlers = mutableListOf<(IdentityId, ByteArray) -> Unit>()
+    private val stateChangeHandlers = java.util.concurrent.CopyOnWriteArrayList<(IdentityId, PeerTransportState) -> Unit>()
+    private val dataHandlers = java.util.concurrent.CopyOnWriteArrayList<(IdentityId, ByteArray) -> Unit>()
 
     /**
      * A4.2 — Observadores del ciclo de vida del ENLACE, en booleanos.
@@ -147,7 +147,8 @@ class PeerTransportManager(
      * Lista vacia por defecto: con nadie suscrito, el manager se comporta
      * EXACTAMENTE igual que antes.
      */
-    private val connectionStateListeners = mutableListOf<(IdentityId, Boolean) -> Unit>()
+    private val connectionStateListeners =
+        java.util.concurrent.CopyOnWriteArrayList<(IdentityId, Boolean) -> Unit>()
 
     // ===================================================================
     // Gestion de bindings
@@ -386,9 +387,14 @@ class PeerTransportManager(
      * A4.2 — Suscribe un observador del enlace en booleanos (`true` = hay
      * enlace, `false` = cayo o se cerro). Complementa a [onStateChange]: es la
      * señal que consume [ChainSupervisor] para re-intentar tier-1.
+     *
+     * @return handle CANCELABLE. Al cancelarlo, la lista de observadores queda
+     *   como estaba y el manager se comporta igual que sin el: es lo que exige
+     *   que desconectar el cableado de produccion no deje manejadores vivos.
      */
-    fun onConnectionStateChange(handler: (IdentityId, Boolean) -> Unit) {
+    fun onConnectionStateChange(handler: (IdentityId, Boolean) -> Unit): ChainSubscription {
         connectionStateListeners.add(handler)
+        return ChainSubscription { connectionStateListeners.remove(handler) }
     }
 
     fun onData(handler: (IdentityId, ByteArray) -> Unit) {

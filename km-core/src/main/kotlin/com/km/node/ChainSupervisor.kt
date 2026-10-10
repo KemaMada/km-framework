@@ -6,6 +6,19 @@ import kotlin.math.roundToLong
 import kotlin.random.Random
 
 /**
+ * A4.2 — Handle CANCELABLE de una suscripcion a eventos de transporte.
+ *
+ * Existe para que el cableado de produccion no sea de ida: el supervisor se
+ * suscribe al [PeerTransportManager] al arrancar y se desuscribe al parar. Una
+ * lista de handlers sin forma de retirarse convierte cada reconexion del host
+ * en una fuga de observadores y, peor, en triggers duplicados.
+ */
+fun interface ChainSubscription {
+    /** Retira el observador. Idempotente: cancelar dos veces no falla. */
+    fun cancel()
+}
+
+/**
  * A4.1 — Estado observable del supervisor de cadena (R5, R12).
  *
  * Es la maquina de estados del failover P2P -> relay (-> Tor, A4.3). NO decide
@@ -293,18 +306,34 @@ class ChainSupervisor(
         }
         state = next
         synchronized(historyList) { historyList.add(next) }
-        if (next == ChainState.P2P_ACTIVE) lastProbeMs = now()
-        if (next == ChainState.RELAY_ACTIVE || next == ChainState.EPHEMERAL_QUEUE) {
-            if (lastProbeMs == Long.MIN_VALUE) lastProbeMs = now()
+        if (next.isActive) {
+            // Un enlace ACTIVO arma el detector de perdida... salvo cuando lo
+            // produce una ronda disparada por un trigger: ese enlace aun no
+            // esta confirmado por el transporte, y re-armarlo aqui haria que un
+            // evento duplicado migrara dos veces.
+            if (!inTriggerRound) armHeartbeat()
+            if (next == ChainState.P2P_ACTIVE) lastProbeMs = now()
+            else if (lastProbeMs == Long.MIN_VALUE) lastProbeMs = now()
         }
         stateObservers.forEach { it(next) }
     }
+
+    /** Arma el detector de latido con el reloj del supervisor. */
+    private fun armHeartbeat() {
+        lastHeartbeatMs = now()
+        linkArmed = true
+    }
+
+    /** Reloj del supervisor, expuesto para que el cableado marque sus ticks. */
+    fun nowMs(): Long = now()
 
     // ===================================================================
     // A4.1 — Establecimiento dirigido por la maquina de estados
     // ===================================================================
 
     private var lastLocal: IdentityId? = null
+
+    @Volatile
     private var lastRemote: IdentityId? = null
     private var lastFactory: ((TransportBackend) -> TransportEstablishment)? = null
 
@@ -315,6 +344,40 @@ class ChainSupervisor(
     @Volatile
     var retryCount: Int = 0
         private set
+
+    /**
+     * A4.2 — Ultimo latido observado del enlace activo, o [Long.MIN_VALUE] si
+     * el enlace aun no fue armado.
+     *
+     * Es la pieza que convierte el predicado [ChainFailover.heartbeatMissed] en
+     * un hecho observable: sin un latido registrado, el silencio no tiene
+     * origen y no se puede medir.
+     */
+    @Volatile
+    var lastHeartbeatMs: Long = Long.MIN_VALUE
+        private set
+
+    /**
+     * `true` mientras el enlace activo esta ARMADO para detectar su perdida.
+     *
+     * Es el amortiguador de eventos duplicados: una misma caida puede llegar
+     * dos veces (callback del transporte Y `failBinding` del manager), y solo
+     * la primera debe migrar. Se desarma al procesar la caida y se vuelve a
+     * armar cuando el transporte CONFIRMA un enlace vivo (`markConnected`) o
+     * llega un latido.
+     */
+    @Volatile
+    private var linkArmed: Boolean = false
+
+    /**
+     * `true` mientras una ronda disparada por un trigger esta en curso.
+     *
+     * La ronda fresca se intenta, pero su exito NO re-arma el detector: un
+     * enlace recien re-establecido no ha sido confirmado por el transporte. Sin
+     * esta marca, un evento `false` duplicado dispararia una segunda migracion.
+     */
+    @Volatile
+    private var inTriggerRound: Boolean = false
 
     private val triggersRaised = mutableListOf<ChainTrigger>()
 
@@ -330,6 +393,7 @@ class ChainSupervisor(
      * observar el paso por cada tier, pero la decision de fallback sigue
      * siendo de [TransportChain] — el supervisor no la reimplementa.
      */
+    @Synchronized
     fun establish(
         localIdentity: IdentityId,
         remotePeerId: IdentityId,
@@ -385,7 +449,11 @@ class ChainSupervisor(
      *
      * Con el flag apagado es un NO-OP (`false`): asi el flag-off es identico al
      * comportamiento de hoy.
+     *
+     * La ronda se marca como disparada ([inTriggerRound]) para que su exito no
+     * re-arme el detector de caida: solo el transporte confirma un enlace vivo.
      */
+    @Synchronized
     fun trigger(trigger: ChainTrigger, nowMs: Long = now()): Boolean {
         if (!enabled) return false
         if (state == ChainState.BLOCKED) return false
@@ -398,7 +466,13 @@ class ChainSupervisor(
         retryCount++
         lastProbeMs = nowMs
         // Ronda FRESCA: la fabrica del llamante se vuelve a invocar por medio.
-        val result = establish(local, remote, ChainFailover.ESTABLISH_TIMEOUT_MS, factory)
+        val prevTrigger = inTriggerRound
+        inTriggerRound = true
+        val result = try {
+            establish(local, remote, ChainFailover.ESTABLISH_TIMEOUT_MS, factory)
+        } finally {
+            inTriggerRound = prevTrigger
+        }
         return result is EstablishmentResult.Ready || result is EstablishmentResult.Exhausted
     }
 
@@ -407,14 +481,74 @@ class ChainSupervisor(
 
     /**
      * Estado de conexion del medio activo. Una caida despues de `READY`
-     * re-intenta tier-1; una conexion re-arma la sonda.
+     * re-intenta tier-1; una conexion re-arma el detector y la sonda.
+     *
+     * ## Idempotencia
+     *
+     * Una misma caida puede anunciarse dos veces (el callback del transporte Y
+     * el `failBinding` del manager). Solo la PRIMERA migra: al procesarla el
+     * detector queda desarmado, y no se vuelve a armar hasta que el transporte
+     * CONFIRMA un enlace nuevo ([connected] `true` o un latido). Los eventos
+     * repetidos son, por tanto, NO-OP.
      */
+    @Synchronized
     fun onConnectionStateChange(connected: Boolean): Boolean {
         if (connected) {
+            if (!enabled) return false
+            // Confirmacion del transporte: el enlace vuelve a estar armado.
+            armHeartbeat()
             lastProbeMs = now()
             return false
         }
-        return if (state.isActive) trigger(ChainTrigger.ICE_FAILED) else false
+        if (!enabled) return false
+        if (!linkArmed) return false
+        linkArmed = false
+        return trigger(ChainTrigger.ICE_FAILED)
+    }
+
+    /**
+     * A4.2 — Latido observado por el enlace activo.
+     *
+     * Marca el enlace como vivo y re-arma el detector. Con el flag apagado es
+     * NO-OP.
+     */
+    fun onHeartbeat(nowMs: Long = now()): Boolean {
+        if (!enabled) return false
+        lastHeartbeatMs = nowMs
+        linkArmed = true
+        return true
+    }
+
+    /** `true` si el enlace activo lleva mas de [ChainFailover.HEARTBEAT_TIMEOUT_MS] sin latir. */
+    fun heartbeatExpired(nowMs: Long = now()): Boolean {
+        if (!enabled) return false
+        if (!state.isActive) return false
+        val last = lastHeartbeatMs
+        if (last == Long.MIN_VALUE) return false
+        return ChainFailover.heartbeatMissed(last, nowMs)
+    }
+
+    /**
+     * A4.2 — Enforce del timeout de latido DURANTE la ronda.
+     *
+     * Convierte el predicado [ChainFailover.heartbeatMissed] en una accion: si
+     * el enlace activo esta armado y lleva demasiado silencio, lo trata como
+     * caida (trigger de tier-1) y dispara el fallback. Idempotente: la primera
+     * deteccion desarma, y solo un latido/conexion nuevo vuelve a armar.
+     *
+     * @return `true` si la expiracion disparo la transicion/fallback.
+     */
+    @Synchronized
+    fun checkHeartbeat(nowMs: Long = now()): Boolean {
+        if (!enabled) return false
+        if (!state.isActive) return false
+        if (!linkArmed) return false
+        val last = lastHeartbeatMs
+        if (last == Long.MIN_VALUE) return false
+        if (!ChainFailover.heartbeatMissed(last, nowMs)) return false
+        linkArmed = false
+        lastHeartbeatMs = Long.MIN_VALUE
+        return trigger(ChainTrigger.ICE_FAILED, nowMs)
     }
 
     /** Sonda periodica (default: solo si toca). */
@@ -436,9 +570,21 @@ class ChainSupervisor(
      * El manager NO conoce al supervisor: solo anuncia `(remotePeerId,
      * connected)` a quien se registre. Con nadie registrado, el manager se
      * comporta igual que hoy.
+     *
+     * El supervisor solo reacciona a eventos del peer que supervisa
+     * ([lastRemote]): un manager puede alojar bindings de varios peers, y una
+     * caida ajena no puede migrar esta cadena.
+     *
+     * @return handle cancelable; cancelarlo deja la lista del manager como
+     *   estaba (comportamiento identico al de antes de suscribirse).
      */
-    fun attachTo(manager: PeerTransportManager) {
-        manager.onConnectionStateChange { _, connected -> onConnectionStateChange(connected) }
+    @Synchronized
+    fun attachTo(manager: PeerTransportManager): ChainSubscription {
+        val subscription = manager.onConnectionStateChange { remote, connected ->
+            val supervised = lastRemote
+            if (supervised == null || supervised == remote) onConnectionStateChange(connected)
+        }
+        return ChainSubscription { subscription.cancel() }
     }
 
     // ===================================================================
