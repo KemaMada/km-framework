@@ -66,6 +66,7 @@ class ChainCryptoSeparationArchTest {
          */
         val CHAIN_SURFACE_FILES: List<String> = listOf(
             "TransportChain.kt",          // el router: decide el MEDIO
+            "ChainSupervisor.kt",         // A4.1/A4.2: failover observable, solo elige MEDIO
             "PeerTransportManager.kt",    // enlaza peer -> transporte
             "PeerTransportBinding.kt",    // estado del binding peer/transporte
             "TransportBackend.kt",        // contrato del backend de transporte

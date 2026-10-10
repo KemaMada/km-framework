@@ -135,6 +135,20 @@ class PeerTransportManager(
     private val stateChangeHandlers = mutableListOf<(IdentityId, PeerTransportState) -> Unit>()
     private val dataHandlers = mutableListOf<(IdentityId, ByteArray) -> Unit>()
 
+    /**
+     * A4.2 — Observadores del ciclo de vida del ENLACE, en booleanos.
+     *
+     * A diferencia de [onStateChange] (que reporta el estado del binding con la
+     * nomenclatura del manager), esta lista habla el idioma del TRANSPORTE:
+     * "hay enlace" / "se cayo". Es lo que necesita [ChainSupervisor] para sus
+     * triggers (ICE DROPPED/FAILED), y vive aqui y no en el supervisor porque es
+     * el manager quien observa las transiciones del binding.
+     *
+     * Lista vacia por defecto: con nadie suscrito, el manager se comporta
+     * EXACTAMENTE igual que antes.
+     */
+    private val connectionStateListeners = mutableListOf<(IdentityId, Boolean) -> Unit>()
+
     // ===================================================================
     // Gestion de bindings
     // ===================================================================
@@ -281,6 +295,7 @@ class PeerTransportManager(
         val updated = binding.withConnected()
         bindings[key] = updated
         notifyStateChange(peerContext.remotePeerId, PeerTransportState.CONNECTED)
+        notifyConnectionState(peerContext.remotePeerId, connected = true)
         return TransportResult.Success(updated)
     }
 
@@ -331,6 +346,7 @@ class PeerTransportManager(
         bindings[key] = binding.close()
         transportBackend.onCloseBinding(localIdentity, remotePeerId)
         notifyStateChange(remotePeerId, PeerTransportState.CLOSED)
+        notifyConnectionState(remotePeerId, connected = false)
         return TransportResult.Success(Unit)
     }
 
@@ -342,6 +358,7 @@ class PeerTransportManager(
         bindings[key] = binding.fail()
         transportBackend.onCloseBinding(localIdentity, remotePeerId)
         notifyStateChange(remotePeerId, PeerTransportState.FAILED)
+        notifyConnectionState(remotePeerId, connected = false)
         return TransportResult.Success(Unit)
     }
 
@@ -365,6 +382,15 @@ class PeerTransportManager(
         stateChangeHandlers.add(handler)
     }
 
+    /**
+     * A4.2 — Suscribe un observador del enlace en booleanos (`true` = hay
+     * enlace, `false` = cayo o se cerro). Complementa a [onStateChange]: es la
+     * señal que consume [ChainSupervisor] para re-intentar tier-1.
+     */
+    fun onConnectionStateChange(handler: (IdentityId, Boolean) -> Unit) {
+        connectionStateListeners.add(handler)
+    }
+
     fun onData(handler: (IdentityId, ByteArray) -> Unit) {
         dataHandlers.add(handler)
     }
@@ -385,5 +411,9 @@ class PeerTransportManager(
 
     private fun notifyStateChange(remotePeerId: IdentityId, state: PeerTransportState) {
         stateChangeHandlers.forEach { it(remotePeerId, state) }
+    }
+
+    private fun notifyConnectionState(remotePeerId: IdentityId, connected: Boolean) {
+        connectionStateListeners.forEach { it(remotePeerId, connected) }
     }
 }
