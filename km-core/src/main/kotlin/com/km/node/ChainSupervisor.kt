@@ -565,27 +565,36 @@ class ChainSupervisor(
     }
 
     /**
-     * Suscribe el supervisor a los cambios de conexion del manager (A4.2).
+     * Suscribe el supervisor a los cambios de conexion del medio activo (A4.2).
      *
-     * El manager NO conoce al supervisor: solo anuncia `(remotePeerId,
-     * connected)` a quien se registre. Con nadie registrado, el manager se
-     * comporta igual que hoy.
+     * La fuente ([ConnectionStateSource], seam D5) NO conoce al supervisor:
+     * solo anuncia `(remotePeerId, connected)` a quien se registre. Con nadie
+     * registrado, la fuente se comporta igual que hoy.
      *
      * El supervisor solo reacciona a eventos del peer que supervisa
-     * ([lastRemote]): un manager puede alojar bindings de varios peers, y una
+     * ([lastRemote]): una fuente puede alojar bindings de varios peers, y una
      * caida ajena no puede migrar esta cadena.
      *
-     * @return handle cancelable; cancelarlo deja la lista del manager como
+     * @return handle cancelable; cancelarlo deja la lista de la fuente como
      *   estaba (comportamiento identico al de antes de suscribirse).
      */
     @Synchronized
-    fun attachTo(manager: PeerTransportManager): ChainSubscription {
-        val subscription = manager.onConnectionStateChange { remote, connected ->
+    fun attachTo(source: ConnectionStateSource): ChainSubscription {
+        val subscription = source.onConnectionStateChange { remote, connected ->
             val supervised = lastRemote
             if (supervised == null || supervised == remote) onConnectionStateChange(connected)
         }
         return ChainSubscription { subscription.cancel() }
     }
+
+    /**
+     * Sobrecarga retrocompatible (D5): un [PeerTransportManager] ya tiene la
+     * firma exacta del seam [ConnectionStateSource], asi que el cableado de
+     * nodo/test existente sigue compilando y comportandose igual.
+     */
+    @Synchronized
+    fun attachTo(manager: PeerTransportManager): ChainSubscription =
+        attachTo(ConnectionStateSource { handler -> manager.onConnectionStateChange(handler) })
 
     // ===================================================================
     // A4.1 — Presupuesto de escritura (retryBudget)

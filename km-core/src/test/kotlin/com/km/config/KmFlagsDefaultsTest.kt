@@ -42,6 +42,7 @@ class KmFlagsDefaultsTest {
                 "km.contactfile.enabled",
                 "km.relay.queue.strict",
                 "km.chain.probe",
+                "km.desktop.p2p",
                 "km.tor.mode",
                 "km.signaling.legacy3001",
             ),

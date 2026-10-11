@@ -109,6 +109,21 @@ object KmFlags {
     )
 
     /**
+     * DP8 — camino de datos P2P WebRTC en `km-desktop` como tier-1 de la
+     * cadena. Apagado: el escritorio sigue siendo relay-only, byte a byte.
+     *
+     * No confundir con [CHAIN_PROBE]: este flag AÑADE el tier P2P; aquel
+     * enciende la maquina de estados de failover. Se recomienda encender ambos
+     * juntos (ver `sdd/desktop-p2p-data-path`), pero son independientes.
+     */
+    val DESKTOP_P2P = KmFlagDefinition(
+        key = "km.desktop.p2p",
+        envVar = "KM_DESKTOP_P2P",
+        default = false,
+        description = "Camino de datos P2P WebRTC en km-desktop como tier-1 (DP8); OFF = relay-only identico.",
+    )
+
+    /**
      * A4.3/A4.4 — politica Tor (strictest-wins) y filtro de candidatos ICE.
      * Apagado.
      */
@@ -147,6 +162,7 @@ object KmFlags {
         CONTACTFILE_ENABLED,
         RELAY_QUEUE_STRICT,
         CHAIN_PROBE,
+        DESKTOP_P2P,
         TOR_MODE,
         SIGNALING_LEGACY3001,
     )
@@ -208,6 +224,9 @@ object KmFlags {
 
     /** `km.chain.probe` segun el entorno del proceso. */
     val chainProbe: Boolean get() = isEnabled(CHAIN_PROBE)
+
+    /** `km.desktop.p2p` segun el entorno del proceso. */
+    val desktopP2p: Boolean get() = isEnabled(DESKTOP_P2P)
 
     /** `km.tor.mode` segun el entorno del proceso. */
     val torMode: Boolean get() = isEnabled(TOR_MODE)

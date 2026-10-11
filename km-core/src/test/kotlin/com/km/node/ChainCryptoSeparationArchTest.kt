@@ -77,6 +77,37 @@ class ChainCryptoSeparationArchTest {
             "FailureCodeMapper.kt",       // mapeo de errores de relay
             "FakeTransportBackend.kt",    // doble de test del backend
         )
+
+        /**
+         * DP4 (SC15) — Segunda superficie sujeta a R12: el MEDIO P2P de
+         * escritorio. Cada uno de estos 7 archivos decide POR QUE MEDIO salen
+         * los bytes; ninguno crea ni toca una sesion ni cifra.
+         *
+         * Viven en `km-desktop/src/main/kotlin/com/km/desktop`.
+         *
+         * ## Present-only hasta la tarea 6.4 (NO es estricto hoy)
+         *
+         * A la altura del slice 1.1-1.4 estos archivos **todavia no existen**:
+         * los crean los slices 3-6 (DP4 nombra la lista completa de antemano).
+         * Por eso el barrido recorre SOLO los presentes: la guardia se activa
+         * por archivo en cuanto aparece, sin bloquear el aterrizaje incremental.
+         * La tarea 6.4 (freeze) cambia esto a ESTRICTO: los 7 existen y el test
+         * falla si uno se renombra. No leer esto como una guardia estricta hoy.
+         *
+         * `JvmRelayTransport.kt` (firma el transcript con crypto: AUTH, no
+         * enrutamiento), `DesktopMain.kt`/`Session` (raiz de composicion/UI) y
+         * `PeerKeyDirectory.kt` (almacen de claves preexistente) quedan FUERA
+         * con la misma justificacion que `NodeRuntimeImpl`/`RelayServer`.
+         */
+        val DESKTOP_P2P_SURFACE: List<String> = listOf(
+            "DeviceHint.kt",                  // DP1: envoltorio kmh1 (puro)
+            "DesktopRelaySignaling.kt",       // DP1: senalizacion sobre SIGNAL_*
+            "PeerDeviceDirectory.kt",         // DP2: seleccion determinista de dispositivo
+            "P2pTransportBackend.kt",         // DP5: backend de transporte sobre webrtc
+            "DesktopWebRtcEstablishment.kt",  // DP5: establecimiento manager-free
+            "JvmRelayTransportBackend.kt",    // DP6: backend del tier relay
+            "DesktopChainHost.kt",            // DP3: ciclo de vida del host/motor
+        )
     }
 
     // --- Detector puro, reutilizable por los controles ---
@@ -143,6 +174,20 @@ class ChainCryptoSeparationArchTest {
         error("No se encontro '$relative' partiendo de user.dir=${System.getProperty("user.dir")}")
     }
 
+    /**
+     * Directorio de la segunda superficie, o `null` mientras `km-desktop` no
+     * exista (present-only; ver [DESKTOP_P2P_SURFACE]).
+     */
+    private fun desktopSourceDir(): File? {
+        var dir: File? = File(System.getProperty("user.dir")).absoluteFile
+        while (dir != null) {
+            val candidate = File(dir, "km-desktop/src/main/kotlin/com/km/desktop")
+            if (candidate.isDirectory) return candidate
+            dir = dir.parentFile
+        }
+        return null
+    }
+
     // --- Test real: la superficie de cadena esta limpia ---
 
     @Test
@@ -172,6 +217,60 @@ class ChainCryptoSeparationArchTest {
         assertTrue(CHAIN_SURFACE_FILES.contains("TransportChain.kt"))
         assertTrue(CHAIN_SURFACE_FILES.contains("PeerTransportManager.kt"))
         assertTrue(CHAIN_SURFACE_FILES.size >= 5, "la superficie parece demasiado estrecha")
+    }
+
+    // --- Segunda superficie (DP4/SC15): el MEDIO P2P de escritorio ---
+
+    @Test
+    @DisplayName("0.2-07 DESKTOP_P2P_SURFACE fija exactamente los 7 archivos nombrados por DP4")
+    fun desktopSurfaceListaFija() {
+        assertEquals(
+            setOf(
+                "DeviceHint.kt",
+                "DesktopRelaySignaling.kt",
+                "PeerDeviceDirectory.kt",
+                "P2pTransportBackend.kt",
+                "DesktopWebRtcEstablishment.kt",
+                "JvmRelayTransportBackend.kt",
+                "DesktopChainHost.kt",
+            ),
+            DESKTOP_P2P_SURFACE.toSet(),
+            "DP4 nombra 7 archivos; cambiar la lista exige actualizar tambien el diseño",
+        )
+        assertEquals(7, DESKTOP_P2P_SURFACE.size, "no puede haber duplicados en la superficie")
+        assertTrue(DESKTOP_P2P_SURFACE.all { it.endsWith(".kt") }, "la superficie es de archivos .kt")
+    }
+
+    @Test
+    @DisplayName("0.2-08 superficie P2P de escritorio limpia DONDE YA EXISTE (present-only hasta 6.4)")
+    fun desktopSurfacePresentOnly() {
+        val dir = desktopSourceDir()
+        if (dir == null) {
+            // Documentado y deliberado: a la altura del slice 1.1-1.4 los 7
+            // archivos no existen todavia; la tarea 6.4 (freeze) convierte
+            // esto en estricto. Un `return` aqui NO es una guardia estricta.
+            return
+        }
+        val present = DESKTOP_P2P_SURFACE.filter { File(dir, it).isFile }
+        val leaks = present.flatMap { findCryptoLeaks(it, File(dir, it).readText()) }
+        assertEquals(
+            emptyList<String>(),
+            leaks,
+            "R12 VIOLADO: la superficie P2P de escritorio referencio criptografia:\n" + leaks.joinToString("\n"),
+        )
+    }
+
+    @Test
+    @DisplayName("0.2-09 control negativo: el detector dispara tambien sobre la superficie de escritorio")
+    fun controlDesktopSurfaceDispara() {
+        val fuga = """
+            package com.km.desktop
+            import com.km.crypto.Ed25519
+            class P2pTransportBackend
+        """.trimIndent()
+        val leaks = findCryptoLeaks("P2pTransportBackend.kt", fuga)
+        assertEquals(1, leaks.size, "el detector debio ver la fuga de escritorio: $leaks")
+        assertTrue(leaks.single().contains("com.km.crypto"))
     }
 
     // --- Controles: el detector dispara y no inventa ---

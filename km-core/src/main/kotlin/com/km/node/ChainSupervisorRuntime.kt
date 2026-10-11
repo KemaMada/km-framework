@@ -1,6 +1,7 @@
 package com.km.node
 
 import com.km.config.KmFlags
+import com.km.model.IdentityId
 
 /**
  * A4.2 — Fuente de eventos de cambio de red/rota.
@@ -17,6 +18,25 @@ import com.km.config.KmFlags
 fun interface NetworkChangeSource {
     /** Registra [handler]; devuelve el handle para desuscribirse. */
     fun onNetworkChange(handler: () -> Unit): ChainSubscription
+}
+
+/**
+ * D5 — Seam de eventos de conexion del medio activo.
+ *
+ * [ChainSupervisor] solo necesita saber si un peer CONFIRMO (`true`) o PERDIO
+ * (`false`) su enlace; no necesita conocer al [PeerTransportManager]. Esta
+ * interfaz funcional desacopla la fuente para que un backend manager-free (el
+ * de escritorio) alimente la maquina de estados sin pasar por el manager de
+ * nodo.
+ *
+ * [PeerTransportManager.onConnectionStateChange] tiene esta firma EXACTA, de
+ * modo que el manager conforma el seam sin cambios; el constructor secundario
+ * de [ChainSupervisorRuntime] lo adapta y el cableado de nodo/test existente
+ * queda intacto.
+ */
+fun interface ConnectionStateSource {
+    /** Registra [handler]; devuelve el handle para desuscribirse. */
+    fun onConnectionStateChange(handler: (IdentityId, Boolean) -> Unit): ChainSubscription
 }
 
 /**
@@ -57,33 +77,50 @@ fun interface NetworkChangeSource {
  * decorador, llevada al cableado.
  *
  * @param supervisor cadena supervisada.
- * @param manager fuente real de eventos de enlace.
+ * @param source fuente real de eventos de enlace (seam D5).
  * @param network fuente de cambios de red; `null` = solo ICE/heartbeat.
  * @param enabled `km.chain.probe`.
  */
 class ChainSupervisorRuntime(
     val supervisor: ChainSupervisor,
-    val manager: PeerTransportManager,
+    val source: ConnectionStateSource,
     private val network: NetworkChangeSource? = null,
     private val enabled: Boolean = KmFlags.chainProbe,
 ) {
 
+    /**
+     * Constructor retrocompatible: un [PeerTransportManager] ya tiene la firma
+     * exacta del seam [ConnectionStateSource], asi que se adapta sin tocar el
+     * manager ni los sitios de llamada de nodo/test.
+     */
+    constructor(
+        supervisor: ChainSupervisor,
+        manager: PeerTransportManager,
+        network: NetworkChangeSource? = null,
+        enabled: Boolean = KmFlags.chainProbe,
+    ) : this(
+        supervisor,
+        ConnectionStateSource { handler -> manager.onConnectionStateChange(handler) },
+        network,
+        enabled,
+    )
+
     private var connectionSubscription: ChainSubscription? = null
     private var networkSubscription: ChainSubscription? = null
 
-    /** `true` si el runtime esta suscrito de verdad al manager. */
+    /** `true` si el runtime esta suscrito de verdad a la fuente. */
     val attached: Boolean get() = connectionSubscription != null
 
     /**
      * Suscribe el supervisor a las fuentes reales. Idempotente.
      *
-     * Con el flag apagado es un NO-OP: no toca la lista del manager.
+     * Con el flag apagado es un NO-OP: no toca la lista de la fuente.
      */
     @Synchronized
     fun attach() {
         if (!enabled) return
         if (connectionSubscription != null) return
-        connectionSubscription = supervisor.attachTo(manager)
+        connectionSubscription = supervisor.attachTo(source)
         networkSubscription = network?.onNetworkChange { supervisor.onNetworkChange() }
     }
 
