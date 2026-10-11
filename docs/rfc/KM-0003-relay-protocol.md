@@ -287,6 +287,17 @@ El registro permite que un **Client** declare su **Identity** ante el **Relay** 
 
 El **Relay** **DEBE** poseer un par de claves Ed25519 persistente. La clave pública del **Relay** **DEBE** ser distribuida a los **Clients** mediante un mecanismo fuera de banda (configuración incluida en el **Client**, DNS, QR en el panel de administración, etc.). El **identityId** del **Relay** se deriva deterministamente de su clave pública según KM-IDENTITY-0001.
 
+**Pin anclado y verificación de firma (task 1.1, N5).** El **Client** **DEBE** fijar
+(*pin*) el `identityId`/clave del **Relay** fuera de banda. La verificación de
+`serverSignature` (KM-0002 §10.4.3) se hace contra la clave **anclada a ese pin**, nunca
+contra la identidad *declarada* en el **AUTH_CHALLENGE** (que no está demostrada hasta esa
+misma verificación). La posesión del pin es lo que decide **si** se verifica la firma; el
+dialecto del transporte (`protocolVersion`) **no** decide eso (KM-WIRE-RELAY §17.2).
+
+Un **Client** cuyo **Relay** no reproduzca el pin fijado **DEBE** rechazar en **local**, sin
+firmar y sin adoptar la identidad anunciada. Ese rechazo es local y **no** tiene código de
+error en el catálogo del cable: `PIN_MISMATCH` **no** es un error del protocolo (N5).
+
 ### 9.3 — Flujo
 
 | KM-0002 | Rol en Relay |
@@ -338,8 +349,8 @@ El **Client** inicia la autenticación enviando su identidad, clave pública y c
 
 | Campo | Requisito | Descripción |
 |-------|-----------|-------------|
-| protocolVersion | MUST | Versión del protocolo [KM-0002] soportada. |
-| identityId | MUST | **Identity ID** del **Client** (40 caracteres hex). |
+| protocolVersion | MUST | **Dialecto del transporte**, SIEMPRE string (`"2.0"`/`"2.1"`), no la versión numérica del RFC KM-0002 (KM-WIRE-RELAY §9.7, §17.1). El **Relay** lo lee y responde `UNSUPPORTED_PROTOCOL_VERSION` si no lo sirve. |
+| identityId | MUST | **Identity ID** del **Client** (64 caracteres hex, según KM-ID-0001 §6). |
 | publicKey | MUST | Clave pública Ed25519 correspondiente al `identityId` (Base64URL). |
 | responderIdentityId | MUST | **Identity ID** del **Relay**. El **Relay** **DEBE** verificar que coincide con su propia identidad. |
 | capabilities | MAY | Lista de **Capabilities** soportadas (Feature Negotiation, [KM-0002 §X]). Son las mismas capabilities definidas en KM-0002; no existe un sistema de capabilities independiente para el **Relay**. |
@@ -353,6 +364,7 @@ El **Relay** genera un **nonce** y lo envía al **Client** según [KM-0002 §X].
   "type": "AUTH_CHALLENGE",
   "messageId",
   "timestamp",
+  "protocolVersion",
   "nonce": "16 bytes codificados en Base64URL"
 }
 ```
@@ -360,6 +372,7 @@ El **Relay** genera un **nonce** y lo envía al **Client** según [KM-0002 §X].
 | Campo | Requisito | Descripción |
 |-------|-----------|-------------|
 | nonce | MUST | Valor aleatorio de 128 bits, codificado en Base64URL. **DEBE** tener entropía criptográfica. |
+| protocolVersion | MUST | Dialecto **efectivo** del handshake (string, el declarado por el **Client** en §9.4). El **Client** **DEBE** verificarlo **antes de firmar** el **Authentication Transcript**; ausente o desconocido es rechazo (KM-WIRE-RELAY §17.2). |
 
 ### 9.6 — AUTH_RESPONSE (Client → Relay)
 
@@ -410,19 +423,47 @@ El **Relay** confirma la autenticación exitosa mediante **AUTH_OK**, que incluy
 
 A partir de este momento, el **Relay** considera al **Client** como **REGISTERED** y puede emitir **PEER_ONLINE** a otros **Peers**.
 
+**Dialecto en `AUTH_OK` (task 1.1, N4).** El `protocolVersion` del **AUTH_OK** **DEBE**
+confirmar **el mismo** dialecto que el **AUTH_CHALLENGE** del mismo handshake. Un **Client**
+que reciba un `AUTH_OK` sin `protocolVersion`, con un dialecto desconocido, o con uno
+distinto del challenge, **DEBE** rechazarlo y **NUNCA** pasar a **REGISTERED**/`ONLINE`.
+
+La transición de alias **aplica solo al `AUTH_OK`** (N4): en dialecto `"2.0"` el campo
+canónico del iniciador es `initiatorIdentityId` y el alias legacy `identityId` se
+**acepta**; en dialecto `"2.1"` el alias **se retira** y solo se acepta la forma canónica.
+El alias **no** aplica a ningún otro frame del handshake.
+
 ### 9.9 — Rechazo
 
-Si la verificación falla o el **Relay** no puede autenticar al **Client**, responde con:
+Si la verificación falla o el **Relay** no puede autenticar al **Client**, responde —
+**dentro del handshake** — con `AUTH_FAIL` (no con `RELAY_ERROR`, que pertenece a la sesión
+ya autenticada; ver KM-WIRE-RELAY §16.4):
 
 ```
 {
-  "type": "RELAY_ERROR",
+  "type": "AUTH_FAIL",
   "messageId",
   "timestamp",
+  "protocolVersion": "<dialecto intentado, solo diagnostico>",
   "errorCode": "AUTH_FAILED",
   "errorMessage": "Authentication failed — invalid identity or signature"
 }
 ```
+
+El `protocolVersion` en un `AUTH_FAIL` es **opcional y solo diagnóstico** (N6): su presencia
+**nunca** implica que el dialecto fue aceptado.
+
+**Códigos de rechazo del handshake:**
+
+| `errorCode` | Causa | Emisor |
+|-------------|-------|--------|
+| `UNSUPPORTED_PROTOCOL_VERSION` | El `protocolVersion` del **AUTH_REQUEST** es desconocido o no lo sirve este **Relay** | **Relay** |
+| `RELAY_IDENTITY_MISMATCH` | El `responderIdentityId` del **AUTH_REQUEST** no es el de este **Relay** | **Relay** |
+| `AUTH_FAILED` | Firma, identidad o `publicKey` inválidas | **Relay** |
+| `INVALID_AUTH_FLOW` | `AUTH_RESPONSE` sin `AUTH_REQUEST` previo | **Relay** |
+
+No hay **downgrade**: si el **Relay** no sirve el dialecto pedido, **rechaza**; nunca
+responde con un dialecto distinto del declarado por el **Client** (KM-WIRE-RELAY §17.2).
 
 ### 9.10 — Estado interno
 
@@ -430,7 +471,7 @@ El **Relay** mantiene exclusivamente por **Peer** registrado:
 
 ```
 PeerEntry:
-  identityId:    string (40 chars hex)
+  identityId:    string (64 chars hex, según KM-ID-0001 §6)
   connectionId:  string (32 bytes, aleatorio criptográfico)
   sessionId:     string (UUID v7)
   lastSeen:      uint64 (timestamp ms)

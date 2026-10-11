@@ -237,15 +237,21 @@ Cliente                                        Relé
 
 ### 9.3 — `AUTH_CHALLENGE`
 
-**Recibido por el cliente** (`RelayClient.kt:221-235`). El emisor no existe (§17).
+**Emisor: `km daemon`** (`JsonWireCodec.authChallenge`). El cliente lo recibe.
 
 | Campo | Tipo | Obligatorio | Notas |
 |-------|------|-------------|-------|
 | `type` | string | Sí | `"AUTH_CHALLENGE"` |
 | `messageId` | string | Sí | |
 | `timestamp` | int64 (ms) | Sí | Entra en el transcript firmado |
+| `protocolVersion` | string | **Sí** | Dialecto efectivo del handshake (§17.1). **Task 1.1**: antes de esta revisión el challenge NO llevaba versión, y el cliente no tenía forma de detectar un dialecto que no implementaba. Una ausencia cuenta como `MALFORMED_MESSAGE` (§17.2). |
 | `nonce` | string (Base64URL) | Sí | 16 bytes, `nonceSize` |
-| `responderIdentityId` | string | Previsto | `AuthJsonCodec.challengeWire` lo emite; `RelayClient` no lo lee |
+| `responderIdentityId` | string (64 hex) | Sí | Emitido por `JsonWireCodec.authChallenge`; el cliente lo compara con el pin |
+
+> **Nota honesta:** el `AUTH_CHALLENGE` que emite `km daemon` usa la clave `responderIdentityId`
+> (64 hex). El codec de km-core `AuthJsonCodec.challengeWire` emite además un campo `version`
+> **numérico** que es la versión de KM-0002 (hoy 3), **no** el dialecto: son campos distintos
+> (§9.7, §17.1). El campo de dialecto es `protocolVersion`, siempre string.
 
 ### 9.4 — `AUTH_RESPONSE`
 
@@ -286,34 +292,55 @@ Ambos tamaños son **constantes**, no aproximaciones (`km-core/.../auth/Transcri
 
 ### 9.6 — `AUTH_OK` y `AUTH_FAIL`
 
-**Implementado** en recepción (`RelayClient.kt:237-249`). Emisor: no existe.
+**Emisor: `km daemon`** (`JsonWireCodec.authOk` / `authFail`). El cliente los recibe.
 
 | `AUTH_OK` campo | Tipo | Obligatorio | Notas |
 |-------|------|-------------|-------|
 | `type` | string | Sí | `"AUTH_OK"` |
-| `sessionId` | string (40 hex) | Sí | `RelayClient.kt:238` |
+| `protocolVersion` | string | **Sí** | Dialecto efectivo confirmado; **debe coincidir con el del `AUTH_CHALLENGE`** del mismo handshake (§17.2) |
+| `sessionId` | string (40 hex) | Sí | |
 | `serverSignature` | string (Base64URL) | Sí (según KM-0002) | Firma sobre el transcript de 120 B |
+| `identityId` | string (64 hex) | Dialecto 2.0 | Iniciador; alias de `initiatorIdentityId` (§9.7, KM-0003 §9.8) |
 
 | `AUTH_FAIL` campo | Tipo | Obligatorio | Notas |
 |-------|------|-------------|-------|
 | `type` | string | Sí | `"AUTH_FAIL"` |
-| `errorCode` | string | Sí | Leído en `RelayClient.kt:245` |
-| `errorMessage` | string | Previsto | Leído en `RelayClient.kt:246` |
+| `errorCode` | string (enum) | Sí | Ver §16 |
+| `errorMessage` | string | Opcional | |
+| `protocolVersion` | string | Opcional | **Solo diagnóstico.** Su presencia **NUNCA** implica que el dialecto fue aceptado (N6). Sirve para que el operador vea con qué dialecto se intentó el handshake. |
 
 > **Nota de honestidad (normativa por proyecto, honesta por estado):**
-> `RelayClient.handleAuthOk`
-> **no verifica** `serverSignature`. Pasa a `ONLINE` en cuanto lee `sessionId`
-> (`RelayClient.kt:237-242`). La verificación del transcript de 120 bytes existe en km-core
-> (`AuthVerifier.verifyAuthOk`) y está probada, pero **el cliente Android no la invoca**.
-> Esto está marcado como pendiente, no como norma cumplida.
+> `RelayClient.handleAuthOk` **no verifica** `serverSignature`. La verificación del transcript
+> de 120 bytes existe en km-core (`AuthVerifier.verifyAuthOk`) y está probada, pero el cliente
+> Android aún no la invoca, porque la tabla de `AUTH_OK` no lista todavía el `serverNonce` que
+> el transcript necesita (§18). **La verificación de `serverSignature` NO es opcional por
+> dialecto**: el dialecto decide QUÉ se firma y con qué nombres, nunca SI se verifica (N5). La
+> posesión del pin anclado al `responderPublicKey` es lo que decide la verificación, no el
+> campo de dialecto.
 
-### 9.7 — Divergencia de tipos en `protocolVersion`
+### 9.7 — Tipos de `protocolVersion`: resuelto por una fuente única
 
-> **Honestidad:** el cliente envía `protocolVersion` como **string** `"2.0"`
-> (`RelayClient.kt:210`), pero `AuthJsonCodec` lo parsea como **int**
-> (`AuthJsonCodec.kt:65`, `intField`). Son dialectos incompatibles hoy. La norma de este
-> documento asume el **string `"2.0"`** porque es lo que el cliente emite, y marca la
-> reconciliación como pendiente (§18).
+**Norma (task 1.1, R34):** `protocolVersion` es **SIEMPRE un string JSON**. Nunca un número.
+Un `protocolVersion` numérico es un valor del tipo equivocado y se trata como ausencia
+estructural: `MALFORMED_MESSAGE` (§17.2).
+
+Antes de esta revisión el literal `"2.0"` estaba repetido en el codec del daemon
+(`JsonWireCodec.DIALECT_VERSION`) y en los dos clientes (Android `RelayClient`,
+escritorio `JvmRelayTransport`), y el codec de km-core `AuthJsonCodec` parseaba
+`protocolVersion` como **int** (`intField`). Esa era la divergencia: dos espacios de
+tipos sin reconciliar. La resolución es una **única fuente de verdad**:
+
+| Símbolo | Ubicación | Papel |
+|---------|-----------|-------|
+| `Dialect` (enum, `Dialect.wire`) | `km-core/.../auth/Dialect.kt` | Los valores canónicos como string: `V2_0 = "2.0"`, `V2_1 = "2.1"`. Todos los componentes referencian ESTE símbolo, ninguno repite el literal. |
+| `Dialect.TRANSITIONAL` | idem | El conjunto de la política de transición `{2.0, 2.1}` (§17.4). |
+| `DialectNegotiation` | idem | La verificación del dialecto en la dirección de respuesta (§17.2). |
+
+El campo **numérico** `AuthChallenge.version` (hoy `3`, `RelayServer.createChallenge`) y el
+campo `AuthResponse.protocolVersion: Int` **son otra cosa**: la versión del RFC KM-0002,
+no el dialecto. Se documentan como tales en KM-0002 §10 y **nunca** se interpretan como
+dialecto. La reconciliación del código de km-core que aún los usa (task 1.2 / P11) no
+cambia esta norma: el dialecto del cable es el string de `Dialect`.
 
 ---
 
@@ -650,6 +677,33 @@ Los nueve valores existentes (`km-core/.../model/RelayErrorNotice.kt:3-13`):
 > código de este documento debe asumirse como emitted por el relé hasta que ese mapeo
 > exista.
 
+### 16.4 — `RELAY_ERROR` vs `AUTH_FAIL`: cuál lleva qué (task 1.1)
+
+Dos sobres distintos, no intercambiables:
+
+| Sobre | Emisor | Cuándo | Lleva `protocolVersion` |
+|-------|--------|--------|-------------------------|
+| `AUTH_FAIL` | `km daemon`, DENTRO del handshake (§9.6) | El handshake falla: dialecto no soportado, identidad de relevo equivocada, firma inválida | **Opcional, solo diagnóstico** (N6) |
+| `RELAY_ERROR` | `km daemon`, FUERA del handshake (§16.1) | Un error de la capa de relé ya autenticada (storage, TTL, peer ausente) | No |
+
+**Regla:** un fallo de **negociación de dialecto** se comunica con `AUTH_FAIL` +
+`errorCode = UNSUPPORTED_PROTOCOL_VERSION`, **nunca** con `RELAY_ERROR`. `RELAY_ERROR`
+pertenece a la sesión ya establecida y no debe usarse para negociar el dialecto.
+
+### 16.5 — Códigos de `AUTH_FAIL` usados en el handshake (task 1.1)
+
+| Código | Significado | Emisor |
+|--------|-------------|--------|
+| `UNSUPPORTED_PROTOCOL_VERSION` | `protocolVersion` desconocido o no servido por el relé (§17.2.2) | `km daemon` (`AuthAdapter.begin`) |
+| `AUTH_FAILED` | Firma o identidad inválida | `km daemon` |
+| `RELAY_IDENTITY_MISMATCH` | `responderIdentityId` no es el del relé | `km daemon` |
+| `INVALID_AUTH_FLOW` | `AUTH_RESPONSE` sin `AUTH_REQUEST` previo, o sin dialecto negociado válido | `km daemon` |
+| `MALFORMED_MESSAGE` | Campo ausente o del tipo equivocado (p. ej. `protocolVersion` numérico) | Cliente (fallo local, ver §17.2) |
+
+> **`PIN_MISMATCH` (N5):** el pin es una decisión **local del cliente** (KM-0003 §9.2) y
+> NO forma parte de este catálogo de errores del cable. El cliente que no reproduce su pin
+> fijado rechaza en local; no envía ni espera un código de error por ello.
+
 ---
 
 ## 17. Versionado
@@ -664,30 +718,112 @@ relé. KM-0002 tiene su propio campo `version` numérico dentro del challenge
 (`RelayServer.kt:132`). Son campos distintos con valores distintos. Que `"2.0"` sea un
 string y `version` sea un int 3 es otra expresión de la divergencia de §9.7.
 
-### 17.2 — Cómo se negocia
+### 17.2 — Cómo se negocia (NORMATIVE, task 1.1)
 
-**No hay negociación implementada.** El modelo actual es *send-and-hope*:
+La negociación es **explícita y verificada en ambos sentidos**. Ya no es *send-and-hope*:
+el cliente no solo declara el dialecto, lo **exige** en la respuesta.
 
-1. El cliente anuncia `"2.0"`.
-2. El relé (cuando exista) decide qué hacer con esa cadena.
-3. No hay campo de versión en `AUTH_OK` que confirme el acuerdo.
+**Algoritmo vinculante (MUST):**
 
-**Previsto** para el daemon:
+1. **Cliente declara.** El cliente envía `protocolVersion` en `AUTH_REQUEST`. Cada cliente
+   implementa **exactamente un** dialecto; no hay selección ambigua (N7).
+2. **Relé negocia.** El relé lee `protocolVersion`:
+   - si falta o es del tipo equivocado → `AUTH_FAIL` (el cliente lo verá como fallo
+     estructural);
+   - si es un valor **desconocido** o **no servido** por este relé → `AUTH_FAIL` con
+     `errorCode = UNSUPPORTED_PROTOCOL_VERSION`, **sin** ofrecer un dialecto alternativo
+     (no hay downgrade ni upgrade silencioso);
+   - si es soportado, el dialecto **efectivo** es **el declarado por el cliente**, ni uno
+     más alto ni uno más bajo.
+3. **Relé confirma en el challenge.** El `AUTH_CHALLENGE` DEBE incluir `protocolVersion`
+   con el dialecto efectivo (§9.3).
+4. **Cliente verifica el challenge ANTES de firmar.** El cliente DEBE comprobar:
+   - `protocolVersion` presente y del tipo string; si falta o no es string →
+     `MALFORMED_MESSAGE` (fallo estructural, no se firma);
+   - valor conocido y **igual al dialecto que el cliente implementa**; si no →
+     `UNSUPPORTED_PROTOCOL_VERSION` (no se firma). Un cliente que implementa 2.0 ante un
+     challenge 2.1 **rechaza**; nunca adopta el dialecto del relé.
+5. **Relé confirma en `AUTH_OK`.** El `AUTH_OK` DEBE incluir `protocolVersion` con el
+   **mismo** dialecto efectivo del challenge (§9.6).
+6. **Cliente verifica `AUTH_OK` ANTES de `ONLINE`.** El cliente DEBE comprobar que
+   `protocolVersion`:
+   - está presente y es string; si no → `MALFORMED_MESSAGE`;
+   - es conocido e igual al del challenge del **mismo** handshake; distinto →
+     `UNSUPPORTED_PROTOCOL_VERSION` (**inconsistencia intra-handshake**, N2);
+   - es igual al dialecto que el cliente implementa.
+   Solo entonces pasa a `ONLINE`. **Tras un dialecto rechazado el cliente NUNCA queda
+   `ONLINE`.**
 
-1. El relé MUST leer `protocolVersion` de `AUTH_REQUEST`.
-2. Si la versión no es soportada, MUST responder `AUTH_FAIL` con un código explícito de
-   versión no soportada.
-3. Si es soportada, MUST confirmar la versión efectiva en `AUTH_OK` para que el cliente
-   sepa con qué dialecto está hablando.
+**Invariante P6-A3:** el dialecto **decide la interpretación** de los campos (qué nombres
+se aceptan, §KM-0003 §9.8) y **nunca** decide **si** se verifica la firma del servidor. La
+verificación de `serverSignature` la manda la posesión del pin anclado a
+`responderPublicKey`; el campo de dialecto no la habilita ni la deshabilita (N5).
 
-El punto 3 es importante: hoy el cliente asume que su dialectsólo existe. Sin
-confirmación, un cliente antiguo y un relé nuevo pueden hablar y no entenderse.
+**No-hueco:** el punto 4 existe precisamente porque sin él el cliente firmaba a ciegas
+contra un dialecto que no conocía; y el punto 6 porque sin él el cliente podía pasar a
+`ONLINE` con un `AUTH_OK` de otro dialecto.
 
 ### 17.3 — Compatibilidad
 
 Un campo `type` desconocido MUST ser ignorado (§7.1). Esto da compatibilidad hacia
 atrás limitada pero real: un relé nuevo que envie tipos que el cliente no conoce no rompe
 al cliente viejo, que simplemente los descarta.
+
+Esta tolerancia es de **campos desconocidos**, NUNCA del campo de dialecto. El dialecto no
+tiene tolerancia: ausencia o desconocimiento es rechazo (R4). "Ignorar campos desconocidos"
+no habilita "ignorar el dialecto".
+
+### 17.4 — Matriz de compatibilidad y retirada de `"2.0"` (NORMATIVE, task 1.1)
+
+**La distinción que importa.** "Un relé que soporta AMBOS dialectos" y "un solo handshake
+que MEZCLA dialectos" son cosas distintas:
+
+- Un relé puede **soportar** `{2.0, 2.1}`: según lo que declare el cliente, sirve uno u
+  otro. Es una propiedad del **relé**, no del handshake.
+- Un **handshake** usa **uno y solo uno** de esos dialectos: el que el cliente declaró y
+  el relé confirmó, idéntico en `AUTH_CHALLENGE` y `AUTH_OK`. Un handshake que mezcle
+  dialectos (challenge 2.0, `AUTH_OK` 2.1; o viceversa) se **rechaza** con
+  `UNSUPPORTED_PROTOCOL_VERSION`. No es un "upgrade de negociación": es un fraude de
+  dialecto.
+
+**Matriz de compatibilidad (por resultado de un handshake):**
+
+| Cliente | Relé | Resultado | Protección P6 |
+|---------|------|-----------|---------------|
+| 2.0 | soporta 2.0 y 2.1 | Conexión bajo el protocolo **legacy 2.0** | **NO**: el cliente 2.0 no verifica la firma del servidor ni el pin anclado; se documenta como no protegido |
+| 2.1 | soporta 2.1 | Conexión bajo 2.1. El cliente declara éxito **solo tras** verificar `serverSignature` y la clave anclada al pin | **SÍ** |
+| 2.0 | solo 2.1 | Rechazo explícito, `UNSUPPORTED_PROTOCOL_VERSION` | — (sin downgrade) |
+| 2.1 | solo 2.0 (o sin negociación) | Rechazo explícito, **sin downgrade** a 2.0 | — (nunca `ONLINE`) |
+| cualquiera | challenge sin `protocolVersion` | `MALFORMED_MESSAGE`, nunca `ONLINE` | — |
+
+**Retirada de `"2.0"` (N1).** La política es transitoria `{2.0, 2.1}`. El trabajo **no
+cierra** sin un criterio de retirada **verificable** y un procedimiento de **confirmación
+de migración**:
+
+- **Criterio de retirada (fecha/condición):** `"2.0"` deja de servirse cuando **todo
+  cliente en producción** haya migrado a `"2.1"`, evidenciado por el procedimiento de
+  abajo. Fecha límite de retirada: la primera release estable posterior a que se cumpla
+  la condición. Mientras la condición no se cumpla, `"2.0"` sigue aceptándose.
+- **Procedimiento de confirmación de migración:**
+  1. Instrumentar el relé para registrar, por conexión, el `protocolVersion` declarado
+     (métrica agregada; no se registra identidad ni sobre).
+  2. Declarar `"2.0"` retirado solo cuando, en una **ventana de observación completa**
+     (≥ 30 días), el 100 % de los handshakes declaró `"2.1"` y **cero** declararon
+     `"2.0"`.
+  3. Antes de retirar, publicar el aviso y ejecutar el gate de conformidad (§17.5) con el
+     conjunto efectivo recortado a `{2.1}`.
+- **La retirada de `"2.0"` NO es la gracia de 12 h del pin.** Son cosas distintas: la
+  gracia de 12 h (R8/R9/R10/R21, `43200 s`) acota cuánto tiempo se tolera un pin sin
+  confirmar en un handshake; la retirada de `"2.0"` acota cuánto tiempo se sirve el
+  dialecto legacy completo. No se pueden usar como justificación la una de la otra.
+
+### 17.5 — Gate de conformidad de los vectores P6
+
+La familia de vectores P6 tiene **20** miembros: `P6-A..P6-L` (12) + `P6-M..P6-T` (8). El
+inventario canónico es **uno solo** (`km-id-reference/P6_VECTOR_INVENTORY.txt`) con
+generador único (`auth_generate.py`) y checksums (`AUTH_MANIFEST.json`, `FROZEN.sha256`).
+El gate `P6VectorInventoryGateTest` (km-core) falla si el inventario diverge del real o
+si aparece una segunda fuente. Ningún componente duplica la lista.
 
 ---
 

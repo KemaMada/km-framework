@@ -289,8 +289,14 @@ El **Challenge** **DEBE** contener:
 |-------|-----------|-------------|
 | nonce | MUST | Valor aleatorio de al menos 128 bits, codificado en Base64URL. |
 | timestamp | MUST | Tiempo Unix en milisegundos (epoch) del momento de generación. Este timestamp es el único que se utiliza en el **Authentication Transcript** (§9). |
-| version | MUST | Versión del protocolo soportada por el **Responder**. |
+| version | MUST | **Versión NUMÉRICA del RFC KM-0002** soportada por el **Responder** (`RelayServer.createChallenge` la fija a `3`). NO es el dialecto del transporte. No confundir con `protocolVersion` (abajo). |
+| protocolVersion | MUST | **Dialecto del transporte**, SIEMPRE string (`"2.0"` / `"2.1"`), fuente única `Dialect` (KM-WIRE-RELAY §9.7, §17.1). Es el dialecto **efectivo** del handshake; el **Initiator** lo verifica **antes de firmar** (KM-WIRE-RELAY §17.2). |
 | responderIdentityId | MUST | IdentityId del **Responder** (64 caracteres hex, según KM-ID-0001). |
+
+> **Nota (task 1.1, N3):** `version` (numérico, hoy `3`) y `protocolVersion` (string) son
+> campos **distintos** con propósitos distintos. `version` documenta la versión del RFC de
+> autenticación; `protocolVersion` negocia el dialecto del cable. Tratarlos como el mismo
+> campo es el error que KM-WIRE-RELAY §9.7 marca como divergencia.
 
 > **Nota:** El `responderIdentityId` incluido en el **Challenge** es una **identidad declarada** por el **Responder**. Su autenticidad **no queda demostrada** hasta que el **Responder** complete su parte de la autenticación mutua (firmando el **Server Authentication Transcript** en §10.4). Hasta entonces, el **Initiator** solo sabe que alguien afirma ser esa identidad.
 
@@ -315,11 +321,18 @@ La **Response** **DEBE** contener:
 | Campo | Requisito | Descripción |
 |-------|-----------|-------------|
 | type | MUST | `AUTH_OK` o `AUTH_FAIL`. |
+| protocolVersion | MUST (OK) | Dialecto del transporte confirmado, SIEMPRE string (`"2.0"` / `"2.1"`). **DEBE** coincidir con el del **Challenge** del mismo handshake; si no, el **Initiator** **DEBE** rechazar el `AUTH_OK` (KM-WIRE-RELAY §17.2). |
 | sessionId | MUST (OK) | Identificador único de la **Session** generado por el **Responder**. |
 | serverNonce | MUST (OK) | Nuevo nonce del servidor (128 bits, codificado en Base64URL) para futuros mensajes de la **Session**. |
 | signature | MUST (OK) | Firma Ed25519 del **Responder** sobre el **Server Authentication Transcript** (§10.4). |
 | errorCode | MUST (FAIL) | Código de error según §13 (Failure Modes). |
 | errorMessage | SHOULD (FAIL) | Mensaje legible del error. |
+| protocolVersion | MAY (FAIL) | **Solo diagnóstico.** En un `AUTH_FAIL` puede aparecer el dialecto con el que se intentó el handshake; su presencia **NUNCA** debe interpretarse como que el dialecto fue aceptado (N6). |
+
+> **Invariante (N5):** la verificación de la `signature` del **Responder** (§10.4) **NO** es
+> opcional según el dialecto. El dialecto decide **qué** se firma y **con qué nombres de
+> campo**, nunca **si** se verifica. Quien decide si se verifica es la posesión de la clave
+> del **Responder** anclada al pin (KM-0003 §9.2), no el campo `protocolVersion`.
 
 ### 10.4 — Server Authentication Transcript
 
@@ -361,8 +374,17 @@ contra los 96 bytes de la versión 0.4.
 El **Initiator** **DEBE** verificar:
 
 1. Que `sessionId` no esté vacío y tenga formato válido.
-2. Que la firma `ok_signature` sea válida contra la clave pública del **Responder** (obtenida del **Challenge** o de un medio externo).
+2. Que la firma `ok_signature` sea válida contra la clave pública del **Responder**. **La
+   clave se obtiene del PIN fuera de banda** (KM-0003 §9.2), **no** de la identidad
+   *declarada* en el **Challenge**: esa declaración no está demostrada hasta esta misma
+   verificación (§10.1, nota). Verificar con la clave que trae el propio **Challenge** sin
+   anclarla a un pin conocido sería TOFU y no autentica nada.
 3. Que `serverNonce` tenga el tamaño correcto (128 bits).
+4. **Dialecto (`protocolVersion`).** Que el `protocolVersion` del **Challenge** y el del
+   **AUTH_OK** sean el mismo dialecto y que sea el que este **Initiator** implementa
+   (KM-WIRE-RELAY §17.2). Ausente → `MALFORMED_MESSAGE`; desconocido o inconsistente
+   entre frames → `UNSUPPORTED_PROTOCOL_VERSION`. Esta comprobación es **independiente**
+   de la firma: no la sustituye ni la desactiva (N5).
 
 El `serverNonce` no es un mecanismo de protección contra replay de **AUTH_OK**. Su propósito es servir como semilla criptográfica para mensajes posteriores de la **Session**, según lo definido en RFCs posteriores. El **Initiator** **MUST** almacenar el `serverNonce` asociado a la **Session** para ese fin.
 
@@ -457,6 +479,7 @@ Los parámetros `serialization`, `compression` y `cryptoSuites` se definen en KM
 |--------|-------------|----------------|
 | `INVALID_SIGNATURE` | La firma no corresponde a la clave pública declarada. | Clave privada incorrecta o mensaje modificado. |
 | `UNKNOWN_PROTOCOL` | La versión del protocolo no es compatible. | El **Client** usa una versión que el otro extremo no soporta. |
+| `UNSUPPORTED_PROTOCOL_VERSION` | El dialecto del transporte (`protocolVersion`) es desconocido, no servido por el otro extremo, o **inconsistente entre los frames del mismo handshake** (KM-WIRE-RELAY §17.2, N2). | Cliente y relé no comparten dialecto, o un handshake mezcla dialectos. Nombre canónico en el cable del relé; equivale a `UNKNOWN_PROTOCOL` en el habla de auth. |
 | `TIMEOUT` | La autenticación no se completó en el tiempo máximo. | Conexión lenta, ataque DoS, o **Client** malicioso. |
 | `INVALID_TIMESTAMP` | El timestamp está fuera de la ventana de tolerancia. | Relojes desincronizados o **Replay Attack**. |
 | `INVALID_NONCE` | El nonce fue reutilizado. | **Replay Attack** detectado. |
