@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
 import com.km.auth.Base64Url
+import com.km.auth.Dialect
 import com.km.daemon.util.Base64Standard
 import com.km.model.IdentityId
 import java.util.UUID
@@ -41,11 +42,16 @@ class JsonWireCodec(
 
     companion object {
         /**
-         * Version de dialecto que el daemon habla (§17.1). El cliente la
-         * anuncia como el string `"2.0"`; no es la `version` numerica 3 de
-         * KM-0002, que viaja dentro del challenge. Son campos distintos.
+         * Dialecto por defecto/legacy que el daemon habla (§17.1). Ya NO es un
+         * literal duplicado: referencia la fuente unica `Dialect` (R34). El
+         * cliente lo anuncia como el string `"2.0"`; no es la `version`
+         * numerica 3 de KM-0002, que viaja dentro del challenge. Son campos
+         * distintos (§9.7).
+         *
+         * Se conserva como alias de compatibilidad; el codigo nuevo usa
+         * `Dialect` directamente.
          */
-        const val DIALECT_VERSION: String = "2.0"
+        val DIALECT_VERSION: String = Dialect.V2_0.wire
 
         private fun defaultMapper(): ObjectMapper = ObjectMapper()
             // El codec usa la API de arbol, no el binding a data classes: el
@@ -192,13 +198,27 @@ class JsonWireCodec(
     // Escritura: tipos de frame
     // =====================================================================
 
-    /** `AUTH_CHALLENGE` (§9.3, §19.2). */
-    fun authChallenge(nonce: ByteArray, timestamp: Long, responderIdentityId: String): String =
+    /**
+     * `AUTH_CHALLENGE` (§9.3, §19.2).
+     *
+     * `protocolVersion` SI viaja (task 1.1, N3): es la confirmacion que el
+     * cliente verifica ANTES de firmar. El valor es SIEMPRE el dialecto
+     * efectivo del handshake, un string (`Dialect.wire`), nunca un numero
+     * (§9.7). Se emite el dialecto que el cliente DECLARO y que este rele
+     * sabe servir: ni se sube ni se baja de dialecto por iniciativa del rele.
+     */
+    fun authChallenge(
+        nonce: ByteArray,
+        timestamp: Long,
+        responderIdentityId: String,
+        dialect: String,
+    ): String =
         mapper.writeValueAsString(
             frame {
                 put("type", "AUTH_CHALLENGE")
                 put("messageId", newMessageId().toString())
                 put("timestamp", timestamp)
+                put("protocolVersion", dialect)
                 // Base64URL sin padding: entra en el transcript de 152 B y no
                 // puede llevar '=' (§9.3, RFC 4648 §5).
                 put("nonce", Base64Url.encode(nonce))
@@ -216,20 +236,24 @@ class JsonWireCodec(
      * ya hoy no la comprueba (P6 de §18.2); no se resuelve aqui.
      *
      * `protocolVersion` SI viaja: es la confirmacion que §17.2.3 pide para que
-     * un cliente antiguo y un rele nuevo no se finjan entendidos.
+     * un cliente antiguo y un rele nuevo no se finjan entendidos. Su valor es
+     * el dialecto EFECTIVO del handshake (el que el challenge confirmo), un
+     * string, nunca un numero (§9.7). Un cliente que no implemente ese dialecto
+     * DEBE fallar cerrado (nunca ONLINE).
      */
     fun authOk(
         sessionId: String,
         serverSignature: ByteArray,
         initiatorIdentityId: String,
         responderIdentityId: String,
+        dialect: String,
     ): String =
         mapper.writeValueAsString(
             frame {
                 put("type", "AUTH_OK")
                 put("messageId", newMessageId().toString())
                 put("timestamp", now())
-                put("protocolVersion", DIALECT_VERSION)
+                put("protocolVersion", dialect)
                 put("identityId", initiatorIdentityId)
                 put("responderIdentityId", responderIdentityId)
                 put("sessionId", sessionId)
@@ -237,13 +261,20 @@ class JsonWireCodec(
             }
         )
 
-    /** `AUTH_FAIL` (§9.6, §19.9). */
-    fun authFail(errorCode: String, errorMessage: String?): String =
+    /**
+     * `AUTH_FAIL` (§9.6, §19.9).
+     *
+     * `protocolVersion` es OPCIONAL y puramente diagnostico (N6): si se
+     * incluye, es el dialecto que el rele intento usar, y NUNCA debe
+     * interpretarse como prueba de que el dialecto fue aceptado.
+     */
+    fun authFail(errorCode: String, errorMessage: String?, dialect: String? = null): String =
         mapper.writeValueAsString(
             frame {
                 put("type", "AUTH_FAIL")
                 put("messageId", newMessageId().toString())
                 put("timestamp", now())
+                dialect?.let { put("protocolVersion", it) }
                 put("errorCode", errorCode)
                 errorMessage?.let { put("errorMessage", it) }
             }

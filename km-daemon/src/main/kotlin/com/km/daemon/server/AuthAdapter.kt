@@ -1,6 +1,7 @@
 package com.km.daemon.server
 
 import com.km.auth.AuthResponse
+import com.km.auth.Dialect
 import com.km.model.IdentityId
 import com.km.node.RelayServer
 import com.km.node.RelayServerError
@@ -23,15 +24,33 @@ import com.km.node.RelayServerResult
  *    `AuthResponse` que `RelayServer.authenticate` espera.
  * 2. Traducir el resultado a los tipos de frame del dialecto.
  *
- * Lo que NO hace, por diseno: verificar firmas, construir transcripts,
- * negociar nada, ni decidir que una identidad es valida mas alla de su FORMA
- * (64 hex, 32 bytes). Eso es de km-core.
+ * Lo que NO hace, por diseno: verificar firmas, construir transcripts, ni
+ * decidir que una identidad es valida mas alla de su FORMA (64 hex, 32 bytes).
+ * Eso es de km-core. Lo unico que NEGOCIA es el dialecto del cable (task 1.1):
+ * acepta el declarado si este rele lo sirve, lo confirma en `AUTH_CHALLENGE` y
+ * en `AUTH_OK`, y lo transporta a los codecs como `Dialect`, nunca como literal
+ * ni como Int.
  */
 class AuthAdapter(
     private val relayServer: RelayServer,
     private val relayIdentityId: IdentityId,
     private val codec: JsonWireCodec,
 ) {
+
+    /**
+     * Dialectos que este rele sabe SERVIR de verdad (task 1.1, N1).
+     *
+     * La politica de transicion aprobada es `Dialect.TRANSITIONAL` = {2.0, 2.1},
+     * pero `2.1` retira el alias `identityId` de `AUTH_OK` (tasks 1.2/1.3), que
+     * aun no estan implementadas: confirmar `2.1` seria mentir sobre el
+     * dialecto servido. Por eso el conjunto EFECTIVO se estrecha a los
+     * dialectos cuyas reglas de campo estan implementadas. Al aterrizar 1.2/1.3
+     * basta con añadir `Dialect.V2_1` aqui.
+     *
+     * El eco del dialecto en `AUTH_CHALLENGE` y `AUTH_OK` sale SIEMPRE de este
+     * conjunto efectivo, nunca de un literal ni de un Int.
+     */
+    private val supportedDialects: Set<Dialect> = setOf(Dialect.V2_0)
 
     /** Codigos de `AUTH_FAIL`. El cliente los lee como string, sin enum. */
     object ErrorCode {
@@ -56,12 +75,19 @@ class AuthAdapter(
      * que tumbe el hilo de la conexion.
      */
     fun begin(request: AuthRequestFields): AuthStep {
-        if (request.protocolVersion != JsonWireCodec.DIALECT_VERSION) {
+        // Negociacion de dialecto (task 1.1, §17.2). Se acepta EXACTAMENTE el
+        // dialecto declarado si este rele lo sirve; ni upgrade ni downgrade
+        // silencioso. Un dialecto desconocido o no servido es un rechazo
+        // explicito con UNSUPPORTED_PROTOCOL_VERSION.
+        val dialect = Dialect.fromWireOrNull(request.protocolVersion)
+        if (dialect == null || dialect !in supportedDialects) {
             return AuthStep.Rejected(
                 codec.authFail(
                     ErrorCode.UNSUPPORTED_PROTOCOL_VERSION,
-                    "dialecto '${request.protocolVersion}' no soportado; este rele habla " +
-                        "'${JsonWireCodec.DIALECT_VERSION}'",
+                    "dialecto '${request.protocolVersion}' no soportado; este rele sirve " +
+                        supportedDialects.map { it.wire }.sorted(),
+                    // N6: eco diagnostico. NUNCA implica que el dialecto se acepto.
+                    dialect = request.protocolVersion,
                 )
             )
         }
@@ -83,6 +109,9 @@ class AuthAdapter(
                 nonce = challenge.nonce,
                 timestamp = challenge.timestampMillis,
                 responderIdentityId = challenge.responderIdentityId,
+                // El dialecto EFECTIVO viaja en el challenge: el cliente lo
+                // verifica ANTES de firmar.
+                dialect = dialect.wire,
             )
         )
     }
@@ -101,11 +130,26 @@ class AuthAdapter(
             )
         }
 
-        // `protocolVersion` de AuthResponse es un Int y el cliente manda el
-        // string "2.0" (§9.7, P11). Ni `AuthVerifier` ni `RelayServer` lo
-        // miran, asi que aqui se traduce sin judgement: la version SI se ha
-        // comprobado arriba, sobre el string. La reconciliacion de los dos
-        // espacios es P11, no una decision de este modulo.
+        // El dialecto EFECTIVO del handshake se re-deriva del propio
+        // `AUTH_REQUEST` (misma regla que `begin`): el `AUTH_OK` confirma
+        // exactamente el dialecto que el challenge confirmo. Si por lo que
+        // fuera no fuese servible, el paso 2 no puede continuar.
+        val dialect = Dialect.fromWireOrNull(request.protocolVersion)
+            ?.takeIf { it in supportedDialects }
+            ?: return AuthStep.Rejected(
+                codec.authFail(
+                    ErrorCode.INVALID_AUTH_FLOW,
+                    "AUTH_RESPONSE sin negociacion de dialecto valida",
+                    dialect = request.protocolVersion,
+                )
+            )
+
+        // `protocolVersion` de AuthResponse es un Int (campo INTERNO de
+        // KM-0002, jamas el dialecto del cable) y el cliente manda el string
+        // "2.0" (§9.7). Ni `AuthVerifier` ni `RelayServer` lo miran: la
+        // reconciliacion del Int con el dialecto es P11/task 1.2, no una
+        // decision de este modulo. El dialecto del cable que viaja en el
+        // `AUTH_OK` sale de `dialect`, NO de este Int.
         val response = AuthResponse(
             identityId = request.identityId.value,
             publicKey = request.publicKey,
@@ -122,6 +166,7 @@ class AuthAdapter(
                         serverSignature = authOk.signature,
                         initiatorIdentityId = request.identityId.value,
                         responderIdentityId = relayIdentityId.value,
+                        dialect = dialect.wire,
                     ),
                     sessionId = session.sessionId,
                 )
@@ -149,7 +194,12 @@ class AuthAdapter(
     }
 
     private companion object {
-        /** "2.0" -> 2. Solo para rellenar el Int de `AuthResponse`. */
+        /**
+         * Rellena el Int `AuthResponse.protocolVersion`, campo INTERNO de
+         * KM-0002 que hoy nadie lee. NO es el dialecto del cable: el dialecto
+         * es un string y viaja por `Dialect`. La reconciliacion de ambos
+         * espacios es task 1.2 / P11.
+         */
         const val DIALECT_VERSION_NUMBER: Int = 2
     }
 }
