@@ -1,6 +1,9 @@
 package com.km.desktop
 
 import com.km.auth.Base64Url
+import com.km.auth.Dialect
+import com.km.auth.DialectCheck
+import com.km.auth.DialectNegotiation
 import com.km.auth.TranscriptBuilder
 import com.km.codec.JsonDecoder
 import com.km.codec.JsonRelayControlCodec
@@ -148,6 +151,12 @@ class JvmRelayTransport(
     private val stateRef = AtomicReference(ConnectionState.DISCONNECTED)
     private val sessionIdRef = AtomicReference<String?>(null)
     private val relayIdentityRef = AtomicReference<String?>(null)
+    /**
+     * Dialecto confirmado por el `AUTH_CHALLENGE` de ESTE handshake, si lo
+     * hubo. El `AUTH_OK` debe confirmar el mismo; si no, se rechaza. Se limpia
+     * al empezar cada handshake nuevo.
+     */
+    private val challengeDialectRef = AtomicReference<Dialect?>(null)
     private val attemptRef = AtomicInteger(0)
     private val nextRetryRef = AtomicLong(0)
     private val lastErrorRef = AtomicReference<String?>(null)
@@ -392,6 +401,8 @@ private fun sendFrame(data: ByteArray, to: IdentityId? = null, ack: Boolean): Re
     }
 
     private suspend fun sendAuthRequest(session: DefaultClientWebSocketSession) {
+        // Handshake nuevo: aun no hay dialecto confirmado por el challenge.
+        challengeDialectRef.set(null)
         val announced = relayIdentityRef.get() ?: relayIdentity?.value
         session.send(
             Frame.Text(
@@ -478,6 +489,18 @@ private fun sendFrame(data: ByteArray, to: IdentityId? = null, ack: Boolean): Re
      * fallo de forma no debe llegar a la capa de firma.
      */
     private suspend fun onAuthChallenge(session: DefaultClientWebSocketSession, frame: JsonObject) {
+        // Dialecto PRIMERO: sin una confirmacion valida no se firma nada.
+        // Ausente -> MALFORMED_MESSAGE; desconocido o no implementado ->
+        // UNSUPPORTED_PROTOCOL_VERSION. Nunca se adopta el dialecto del rele.
+        val dialectWire = frame.string("protocolVersion")
+        when (val check = DialectNegotiation.checkChallenge(IMPLEMENTED_DIALECT, dialectWire)) {
+            is DialectCheck.Rejected -> {
+                fail("dialecto rechazado (${check.error.wireCode}): ${check.detail}")
+                return
+            }
+            is DialectCheck.Accepted -> challengeDialectRef.set(check.dialect)
+        }
+
         val nonce = frame.string("nonce")?.let { runCatching { Base64Url.decode(it) }.getOrNull() }
         if (nonce == null || nonce.size != NONCE_BYTES) {
             fail("AUTH_CHALLENGE sin nonce de $NONCE_BYTES bytes")
@@ -527,6 +550,21 @@ private fun sendFrame(data: ByteArray, to: IdentityId? = null, ack: Boolean): Re
      * hay sesion que distinguir de la de otro peer.
      */
     private fun onAuthOk(frame: JsonObject) {
+        // Dialecto antes que cualquier otra cosa: un `AUTH_OK` que no confirme
+        // el MISMO dialecto del challenge (o ninguno) no pasa a ONLINE.
+        val challengeDialect = challengeDialectRef.get()
+        if (challengeDialect == null) {
+            fail("AUTH_OK sin AUTH_CHALLENGE previo con dialecto confirmado")
+            return
+        }
+        when (val check = DialectNegotiation.checkAuthOk(IMPLEMENTED_DIALECT, challengeDialect, frame.string("protocolVersion"))) {
+            is DialectCheck.Rejected -> {
+                fail("dialecto rechazado (${check.error.wireCode}): ${check.detail}")
+                return
+            }
+            is DialectCheck.Accepted -> Unit
+        }
+
         val sessionId = frame.string("sessionId")
         if (sessionId == null || sessionId.length != SESSION_ID_HEX) {
             fail("AUTH_OK con sessionId ausente o de longitud distinta de $SESSION_ID_HEX")
@@ -735,8 +773,15 @@ private fun sendFrame(data: ByteArray, to: IdentityId? = null, ack: Boolean): Re
         /** Rele desplegado. */
         const val DEFAULT_ENDPOINT: String = "wss://keymessage.xyz/km"
 
-        /** Dialecto que anuncia el cliente (seccion 17.1). */
-        const val DIALECT_VERSION: String = "2.0"
+        /** Dialecto que anuncia el cliente (seccion 17.1). Fuente unica: `Dialect` (R34). */
+        val DIALECT_VERSION: String = Dialect.V2_0.wire
+
+        /**
+         * El UNICO dialecto que implementa este cliente (N7). Se declara en el
+         * `AUTH_REQUEST` y se EXIGE en `AUTH_CHALLENGE` y `AUTH_OK`: cualquier
+         * otra confirmacion, o su ausencia, es un rechazo cerrado.
+         */
+        val IMPLEMENTED_DIALECT: Dialect = Dialect.V2_0
 
         /** `RelayServer.maxDataPayloadBytes` (seccion 15.1). */
         const val MAX_DATA_PAYLOAD_BYTES: Int = 65_535

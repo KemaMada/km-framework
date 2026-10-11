@@ -1,8 +1,12 @@
 package com.km.desktop
 
+import com.km.auth.Dialect
+import com.km.auth.DialectCheck
+import com.km.auth.DialectNegotiation
 import org.junit.jupiter.api.Test
 import java.util.UUID
 import kotlin.test.assertEquals
+import kotlin.test.assertIs
 import kotlin.test.assertNull
 
 /**
@@ -42,6 +46,7 @@ class HandshakeFieldsTest {
         val frame = RelayDataCodec().parseObject(
             """
             {"type":"AUTH_CHALLENGE","messageId":"${UUID.randomUUID()}","timestamp":1790000001042,
+             "protocolVersion":"2.0",
              "nonce":"AAECAwQFBgcICQoLDA0ODw","responderIdentityId":"$relay"}
             """.trimIndent()
         )!!
@@ -110,5 +115,80 @@ class HandshakeFieldsTest {
             thrown = e
         }
         assert(thrown != null) { "una identidad corta debe fallar al parsear, no en el handshake" }
+    }
+
+    // ===================================================================
+    // Task 1.1 — dialecto en la direccion de respuesta
+    //
+    // `JvmRelayTransport` delega la decision en `DialectNegotiation` con
+    // `IMPLEMENTED_DIALECT`. Estos tests ejercitan EXACTAMENTE esa funcion con
+    // ese dialecto, de modo que fijan la politica del transporte de escritorio
+    // sin montar un WebSocket: la funcion es la misma, la entrada es el frame
+    // real que el transporte parsea.
+    // ===================================================================
+
+    @Test
+    fun `el dialecto anunciado sale de la fuente unica`() {
+        assertEquals(Dialect.V2_0.wire, JvmRelayTransport.DIALECT_VERSION)
+        assertEquals(Dialect.V2_0, JvmRelayTransport.IMPLEMENTED_DIALECT)
+    }
+
+    @Test
+    fun `el transporte acepta un challenge 2_0 y recuerda el dialecto`() {
+        val frame = RelayDataCodec().parseObject(
+            """{"type":"AUTH_CHALLENGE","protocolVersion":"2.0","nonce":"AAECAwQFBgcICQoLDA0ODw"}"""
+        )!!
+        val accepted = assertIs<DialectCheck.Accepted>(
+            DialectNegotiation.checkChallenge(JvmRelayTransport.IMPLEMENTED_DIALECT, frame.string("protocolVersion"))
+        )
+        assertEquals(Dialect.V2_0, accepted.dialect)
+    }
+
+    @Test
+    fun `un challenge sin protocolVersion se rechaza MALFORMED, sin firmar`() {
+        val frame = RelayDataCodec().parseObject(
+            """{"type":"AUTH_CHALLENGE","nonce":"AAECAwQFBgcICQoLDA0ODw"}"""
+        )!!
+        val rejected = assertIs<DialectCheck.Rejected>(
+            DialectNegotiation.checkChallenge(JvmRelayTransport.IMPLEMENTED_DIALECT, frame.string("protocolVersion"))
+        )
+        assertEquals("MALFORMED_MESSAGE", rejected.error.wireCode)
+    }
+
+    @Test
+    fun `un challenge con dialecto desconocido se rechaza sin firmar`() {
+        val frame = RelayDataCodec().parseObject(
+            """{"type":"AUTH_CHALLENGE","protocolVersion":"9.9","nonce":"AAECAwQFBgcICQoLDA0ODw"}"""
+        )!!
+        val rejected = assertIs<DialectCheck.Rejected>(
+            DialectNegotiation.checkChallenge(JvmRelayTransport.IMPLEMENTED_DIALECT, frame.string("protocolVersion"))
+        )
+        assertEquals("UNSUPPORTED_PROTOCOL_VERSION", rejected.error.wireCode)
+    }
+
+    @Test
+    fun `un challenge 2_1 se rechaza en un cliente que solo implementa 2_0`() {
+        val frame = RelayDataCodec().parseObject(
+            """{"type":"AUTH_CHALLENGE","protocolVersion":"2.1","nonce":"AAECAwQFBgcICQoLDA0ODw"}"""
+        )!!
+        val rejected = assertIs<DialectCheck.Rejected>(
+            DialectNegotiation.checkChallenge(JvmRelayTransport.IMPLEMENTED_DIALECT, frame.string("protocolVersion"))
+        )
+        assertEquals("UNSUPPORTED_PROTOCOL_VERSION", rejected.error.wireCode)
+    }
+
+    @Test
+    fun `un AUTH_OK que no confirma el dialecto del challenge se rechaza (nunca ONLINE)`() {
+        val ok = RelayDataCodec().parseObject(
+            """{"type":"AUTH_OK","protocolVersion":"2.1","sessionId":"8fc607fe9ab1423b8f61a9908ec3fe3174d4cd43"}"""
+        )!!
+        val rejected = assertIs<DialectCheck.Rejected>(
+            DialectNegotiation.checkAuthOk(
+                JvmRelayTransport.IMPLEMENTED_DIALECT,
+                Dialect.V2_0,
+                ok.string("protocolVersion"),
+            )
+        )
+        assertEquals("UNSUPPORTED_PROTOCOL_VERSION", rejected.error.wireCode)
     }
 }
