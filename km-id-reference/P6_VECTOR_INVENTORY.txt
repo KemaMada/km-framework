@@ -1,0 +1,30 @@
+# Inventario canonico de vectores P6 (relay mutual authentication).
+#
+# FUENTE UNICA. Ningun componente duplica esta lista: todos la leen y
+# verifican el checksum (AUTH_MANIFEST.json + FROZEN.sha256).
+#
+# Generador unico: km-id-reference/auth_generate.py
+# Total: 20 vectores -> P6-A..P6-L (12) + P6-M..P6-T (8).
+#
+# OJO: esta lista es el INVENTARIO (los identificadores). La generacion y el
+# congelado de los ficheros son la task 1.4; aqui no se generan fixtures.
+P6-A
+P6-B
+P6-C
+P6-D
+P6-E
+P6-F
+P6-G
+P6-H
+P6-I
+P6-J
+P6-K
+P6-L
+P6-M
+P6-N
+P6-O
+P6-P
+P6-Q
+P6-R
+P6-S
+P6-T
