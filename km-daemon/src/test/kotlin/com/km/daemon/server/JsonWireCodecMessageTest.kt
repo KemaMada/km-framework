@@ -2,12 +2,15 @@ package com.km.daemon.server
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.databind.node.ObjectNode
+import com.km.auth.Dialect
 import com.km.daemon.util.Base64Standard
 import com.km.model.IdentityId
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.security.SecureRandom
 
@@ -95,5 +98,56 @@ class JsonWireCodecMessageTest {
         node.put("to", to.value)
         node.put("data", data)
         return node
+    }
+
+    // =====================================================================
+    // Task 1.1 — el dialecto en el cable: siempre string, en challenge y OK
+    // =====================================================================
+
+    @Test
+    fun `el AUTH_CHALLENGE lleva protocolVersion como string`() {
+        val frame = mapper.readTree(
+            codec.authChallenge(
+                nonce = ByteArray(16) { it.toByte() },
+                timestamp = 1_790_000_000_000L,
+                responderIdentityId = from.value,
+                dialect = Dialect.V2_0.wire,
+            )
+        )
+        assertTrue(
+            frame.get("protocolVersion").isTextual,
+            "protocolVersion debe ser string, no numero (R34)",
+        )
+        assertEquals("2.0", frame.get("protocolVersion").asText())
+    }
+
+    @Test
+    fun `el AUTH_OK confirma el dialecto como string`() {
+        val frame = mapper.readTree(
+            codec.authOk(
+                sessionId = "c".repeat(40),
+                serverSignature = ByteArray(64),
+                initiatorIdentityId = from.value,
+                responderIdentityId = to.value,
+                dialect = Dialect.V2_0.wire,
+            )
+        )
+        assertTrue(frame.get("protocolVersion").isTextual)
+        assertEquals("2.0", frame.get("protocolVersion").asText())
+    }
+
+    @Test
+    fun `el AUTH_FAIL solo lleva protocolVersion como diagnostico`() {
+        val withEcho = mapper.readTree(
+            codec.authFail(
+                AuthAdapter.ErrorCode.UNSUPPORTED_PROTOCOL_VERSION,
+                "no soportado",
+                dialect = "9.9",
+            )
+        )
+        assertEquals("9.9", withEcho.get("protocolVersion").asText())
+
+        val without = mapper.readTree(codec.authFail(AuthAdapter.ErrorCode.AUTH_FAILED, "firma mala"))
+        assertFalse(without.has("protocolVersion"), "el eco es opcional (N6)")
     }
 }
