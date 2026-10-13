@@ -107,6 +107,11 @@ object AuthJsonCodec {
      * OBLIGATORIOS y NO VACIOS: ausentes, de tipo no-string o vacios lanzan
      * [IllegalArgumentException]. La forma canonica (64 hex) no se comprueba
      * aqui.
+     *
+     * Este metodo es ESTRICTO en el nombre del iniciador: lee solo
+     * `initiatorIdentityId` y no admite el alias legacy. La lectura que SI
+     * aplica las reglas del dialecto (aceptar el alias en `2.0`, retirarlo en
+     * `2.1`, exigir igualdad si conviven) es [parseAuthOkForDialect].
      */
     fun parseAuthOk(wire: String): AuthOk {
         val n = requireObject(wire)
@@ -117,6 +122,42 @@ object AuthJsonCodec {
             signature = bytes(n, "serverSignature"),
             initiatorIdentityId = requiredTextField(n, "initiatorIdentityId"),
             responderIdentityId = requiredTextField(n, "responderIdentityId"),
+        )
+    }
+
+    /**
+     * Parsea un `AUTH_OK` aplicando la transicion del alias `identityId`
+     * (task 1.3, R2/R3) para el [dialect] del handshake.
+     *
+     * A diferencia de [parseAuthOk], esta lectura:
+     *  - acepta `identityId` como ALIAS del iniciador SOLO en dialecto `2.0`;
+     *  - en `2.1` rechaza `identityId` en solitario con `UNKNOWN_PROTOCOL`;
+     *  - si los dos campos conviven, exige que sean IGUALES y rechaza con
+     *    `MALFORMED_MESSAGE` si difieren.
+     *
+     * Un rechazo de campo (alias retirado o conflicto) se devuelve como
+     * [AuthOkFields.Rejected] con su codigo, no como excepcion: es una decision
+     * del dialecto, no un JSON ilegible. Un JSON que no sea objeto, o un campo
+     * base mal formado (sessionId/serverNonce/responderPublicKey/serverSignature
+     * ausentes o del tipo equivocado), sigue lanzando [IllegalArgumentException].
+     */
+    fun parseAuthOkForDialect(wire: String, dialect: Dialect): AuthOkFields {
+        val n = requireObject(wire)
+        val canonical = optionalTextField(n, "initiatorIdentityId")
+        val legacy = optionalTextField(n, "identityId")
+        val initiator = when (val resolved = AuthOkAliasRules.resolve(dialect, canonical, legacy)) {
+            is AuthOkInitiator.Rejected -> return AuthOkFields.Rejected(resolved.error, resolved.detail)
+            is AuthOkInitiator.Accepted -> resolved.identityId
+        }
+        return AuthOkFields.Accepted(
+            AuthOk(
+                sessionId = textField(n, "sessionId"),
+                serverNonce = bytes(n, "serverNonce"),
+                responderPublicKey = bytes(n, "responderPublicKey"),
+                signature = bytes(n, "serverSignature"),
+                initiatorIdentityId = initiator,
+                responderIdentityId = requiredTextField(n, "responderIdentityId"),
+            )
         )
     }
 
@@ -139,6 +180,19 @@ object AuthJsonCodec {
     private fun textField(n: JsonNode, field: String): String {
         val v = n.get(field)
         require(v != null && v.isTextual) { "campo '$field' debe ser un string presente" }
+        return v.asText()
+    }
+
+    /**
+     * Como [textField] pero devuelve `null` si el campo NO esta. Un campo
+     * presente pero de tipo no-string sigue siendo un fallo estructural.
+     *
+     * Lo usa la lectura dialectal del iniciador ([parseAuthOkForDialect]): el
+     * alias legacy puede faltar o estar, y la regla del dialecto decide.
+     */
+    private fun optionalTextField(n: JsonNode, field: String): String? {
+        val v = n.get(field) ?: return null
+        require(v.isTextual) { "campo '$field', si esta presente, debe ser un string" }
         return v.asText()
     }
 

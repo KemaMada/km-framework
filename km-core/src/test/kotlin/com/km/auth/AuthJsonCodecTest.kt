@@ -276,9 +276,104 @@ class AuthJsonCodecTest {
     }
 
     // ===================================================================
-    // Campos extra se ignoran
+    // Task 1.3 — transicion del alias identityId (R2/R3, S13/S14/S15)
     // ===================================================================
 
+    /**
+     * AUTH_OK con los campos de bytes canonicos y los campos del iniciador que
+     * reciba [initiatorFields]. El prefijo debe terminar en coma (o ser vacio).
+     */
+    private fun authOkAliasJson(initiatorFields: String): String =
+        """{$initiatorFields"responderIdentityId":"$responderId","sessionId":"${"0".repeat(40)}","serverNonce":"${Base64Url.encode(serverNonce16)}","responderPublicKey":"${Base64Url.encode(pubKey32)}","serverSignature":"${Base64Url.encode(sig64)}"}"""
+
+    private fun parseAlias(dialect: Dialect, initiatorFields: String): AuthOkFields =
+        AuthJsonCodec.parseAuthOkForDialect(authOkAliasJson(initiatorFields), dialect)
+
+    private fun acceptedId(result: AuthOkFields): String =
+        assertInstanceOf(AuthOkFields.Accepted::class.java, result).authOk.initiatorIdentityId
+
+    private fun rejectCode(result: AuthOkFields): AuthFieldError =
+        assertInstanceOf(AuthOkFields.Rejected::class.java, result).error
+
+    /** S13: en 2.0 el canonico se acepta tal cual. */
+    @Test
+    fun `2_0 acepta initiatorIdentityId canonico`() {
+        val result = parseAlias(Dialect.V2_0, """"initiatorIdentityId":"$initiatorId",""")
+        assertEquals(initiatorId, acceptedId(result))
+    }
+
+    /** S13/R2: en 2.0 el alias legacy en solitario se acepta como iniciador. */
+    @Test
+    fun `2_0 acepta el alias identityId en solitario`() {
+        val result = parseAlias(Dialect.V2_0, """"identityId":"$initiatorId",""")
+        assertEquals(initiatorId, acceptedId(result))
+    }
+
+    /** R3/S13: si ambos conviven y son iguales, se acepta (en los dos dialectos). */
+    @Test
+    fun `ambos campos iguales se aceptan en 2_0 y en 2_1`() {
+        val fields = """"initiatorIdentityId":"$initiatorId","identityId":"$initiatorId","""
+        assertEquals(initiatorId, acceptedId(parseAlias(Dialect.V2_0, fields)))
+        assertEquals(initiatorId, acceptedId(parseAlias(Dialect.V2_1, fields)))
+    }
+
+    /** S14/P6-T: si ambos conviven y difieren -> MALFORMED_MESSAGE (en los dos). */
+    @Test
+    fun `ambos campos distintos son MALFORMED_MESSAGE en 2_0 y en 2_1`() {
+        val other = "0".repeat(64)
+        val fields = """"initiatorIdentityId":"$initiatorId","identityId":"$other","""
+        assertEquals(AuthFieldError.MALFORMED_MESSAGE, rejectCode(parseAlias(Dialect.V2_0, fields)))
+        assertEquals(AuthFieldError.MALFORMED_MESSAGE, rejectCode(parseAlias(Dialect.V2_1, fields)))
+    }
+
+    /** S15/P6-S: en 2.1 el alias en solitario es UNKNOWN_PROTOCOL (retirado). */
+    @Test
+    fun `2_1 rechaza el alias identityId en solitario con UNKNOWN_PROTOCOL`() {
+        val result = parseAlias(Dialect.V2_1, """"identityId":"$initiatorId",""")
+        assertEquals(AuthFieldError.UNKNOWN_PROTOCOL, rejectCode(result))
+        assertEquals("UNKNOWN_PROTOCOL", AuthFieldError.UNKNOWN_PROTOCOL.wireCode)
+    }
+
+    /** R2: en 2.1 el canonico sigue siendo la unica forma valida. */
+    @Test
+    fun `2_1 acepta initiatorIdentityId canonico`() {
+        val result = parseAlias(Dialect.V2_1, """"initiatorIdentityId":"$initiatorId",""")
+        assertEquals(initiatorId, acceptedId(result))
+    }
+
+    /** R15: sin canonico ni alias no hay iniciador -> MALFORMED_MESSAGE. */
+    @Test
+    fun `alias ausente es MALFORMED_MESSAGE en ambos dialectos`() {
+        assertEquals(AuthFieldError.MALFORMED_MESSAGE, rejectCode(parseAlias(Dialect.V2_0, "")))
+        assertEquals(AuthFieldError.MALFORMED_MESSAGE, rejectCode(parseAlias(Dialect.V2_1, "")))
+    }
+
+    /** Un alias canonico presente pero VACIO no es un id valido (R15). */
+    @Test
+    fun `initiatorIdentityId vacio es MALFORMED_MESSAGE en ambos dialectos`() {
+        val fields = """"initiatorIdentityId":"","""
+        assertEquals(AuthFieldError.MALFORMED_MESSAGE, rejectCode(parseAlias(Dialect.V2_0, fields)))
+        assertEquals(AuthFieldError.MALFORMED_MESSAGE, rejectCode(parseAlias(Dialect.V2_1, fields)))
+    }
+
+    /** El alias legacy vacio tampoco es un id valido, ni siquiera en 2.0 (R15). */
+    @Test
+    fun `identityId vacio es MALFORMED_MESSAGE`() {
+        val fields = """"identityId":"","""
+        assertEquals(AuthFieldError.MALFORMED_MESSAGE, rejectCode(parseAlias(Dialect.V2_0, fields)))
+    }
+
+    /** El emisor solo escribe el canonico; el parser estricto lo reafirma. */
+    @Test
+    fun `parseAuthOk estricto sigue exigiendo el canonico, sin alias`() {
+        assertThrows<IllegalArgumentException> {
+            AuthJsonCodec.parseAuthOk(authOkAliasJson(""""identityId":"$initiatorId","""))
+        }
+    }
+
+    // ===================================================================
+    // Campos extra se ignoran
+    // ===================================================================
     @Test
     fun `challenge con campo extra se parsea correctamente`() {
         val json = """{"nonce":"${Base64Url.encode(nonce16)}","timestamp":1,"version":3,"responderIdentityId":"${"0".repeat(64)}","extra":"ignored"}"""
