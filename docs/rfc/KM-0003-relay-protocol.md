@@ -423,9 +423,12 @@ El **Relay** confirma la autenticación exitosa mediante **AUTH_OK**, que incluy
 }
 ```
 
-El campo del iniciador es `initiatorIdentityId` (**canónico**). En dialecto `"2.0"` se acepta
-además el alias legacy `identityId` (con el mismo valor si ambos están presentes); en `"2.1"`
-el alias se retira (task 1.2 deja la forma canónica; la transición del alias es task 1.3).
+El campo del iniciador es `initiatorIdentityId` (**canónico**, R1). La aceptación del alias
+legacy `identityId` en dialecto `"2.0"` y su retirada en `"2.1"` están **especificadas** (R2)
+pero **NO implementadas** todavía (task 1.3): hoy ningún codec lee ni emite `identityId` en
+`AUTH_OK`, y el **Relay** solo sirve `"2.0"` con el nombre **canónico** `initiatorIdentityId`.
+Cuando 1.3 aterrice, si ambos campos conviven **DEBEN** ser iguales; si difieren,
+`MALFORMED_MESSAGE` (R3). (La task 1.2 dejó la forma canónica; la transición del alias es 1.3.)
 El `AUTH_OK` transporta ya `serverNonce` y `responderPublicKey` (task 1.2): son el material con
 el que el **Client** rehace el transcript de 120 B para verificar `serverSignature`. **Que
 viajen no equivale a que se verifiquen**: la verificación en el cliente sigue siendo P6
@@ -438,10 +441,11 @@ confirmar **el mismo** dialecto que el **AUTH_CHALLENGE** del mismo handshake. U
 que reciba un `AUTH_OK` sin `protocolVersion`, con un dialecto desconocido, o con uno
 distinto del challenge, **DEBE** rechazarlo y **NUNCA** pasar a **REGISTERED**/`ONLINE`.
 
-La transición de alias **aplica solo al `AUTH_OK`** (N4): en dialecto `"2.0"` el campo
-canónico del iniciador es `initiatorIdentityId` y el alias legacy `identityId` se
-**acepta**; en dialecto `"2.1"` el alias **se retira** y solo se acepta la forma canónica.
-El alias **no** aplica a ningún otro frame del handshake.
+La transición de alias **aplica solo al `AUTH_OK`** (N4): el campo canónico del iniciador es
+`initiatorIdentityId` en todo dialecto; la aceptación del alias legacy `identityId` en
+dialecto `"2.0"` y su retirada en `"2.1"` están **especificadas** pero **NO implementadas**
+(task 1.3). Hoy no se acepta ni se retira nada: ningún codec lee ni emite el alias. El alias
+**no** aplica a ningún otro frame del handshake.
 
 ### 9.9 — Rechazo
 
