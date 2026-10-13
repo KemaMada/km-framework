@@ -570,11 +570,11 @@ private fun sendFrame(data: ByteArray, to: IdentityId? = null, ack: Boolean): Re
             fail("AUTH_OK con sessionId ausente o de longitud distinta de $SESSION_ID_HEX")
             return
         }
-        // OJO: en `AUTH_OK`, `identityId` es el INICIADOR — el cliente — y
-        // `responderIdentityId` es el rele (`JsonWireCodec.authOk` los rellena
-        // asi). Leer el campo equivocado guarda como identidad del rele la
-        // propia, y la siguiente reconexion se anuncia a si misma y recibe
-        // `AUTH_FAIL RELAY_IDENTITY_MISMATCH`.
+        // OJO: en `AUTH_OK`, `initiatorIdentityId` es el INICIADOR — el
+        // cliente — y `responderIdentityId` es el rele (`JsonWireCodec.authOk`
+        // los rellena asi). Leer el campo equivocado guarda como identidad del
+        // rele la propia, y la siguiente reconexion se anuncia a si misma y
+        // recibe `AUTH_FAIL RELAY_IDENTITY_MISMATCH`.
         frame.responderIdentity()?.let { relayIdentityRef.set(it) }
         sessionIdRef.set(sessionId)
         attemptRef.set(0)

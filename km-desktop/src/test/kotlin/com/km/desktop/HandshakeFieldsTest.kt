@@ -22,15 +22,15 @@ class HandshakeFieldsTest {
     private val client = "bb".repeat(32)
 
     @Test
-    fun `responderIdentity sale de responderIdentityId, NO de identityId`() {
-        // Forma REAL de un `AUTH_OK` del `km-daemon`: `identityId` es el
-        // iniciador y `responderIdentityId` es el rele. Leer el primero
-        // devolveria la identidad del propio cliente.
+    fun `responderIdentity sale de responderIdentityId, NO de initiatorIdentityId`() {
+        // Forma REAL de un `AUTH_OK` del `km-daemon` desde la task 1.2:
+        // `initiatorIdentityId` es el iniciador y `responderIdentityId` es el
+        // rele. Leer el primero devolveria la identidad del propio cliente.
         val frame = RelayDataCodec().parseObject(
             """
             {"type":"AUTH_OK","messageId":"${UUID.randomUUID()}","timestamp":1790000001150,
              "protocolVersion":"2.0",
-             "identityId":"$client",
+             "initiatorIdentityId":"$client",
              "responderIdentityId":"$relay",
              "sessionId":"8fc607fe9ab1423b8f61a9908ec3fe3174d4cd43",
              "serverSignature":"B2nQ4wE6rT8yU0iO2pA4sD6fG8hJ0kL2mN4pQ6rS8u"}
@@ -38,7 +38,7 @@ class HandshakeFieldsTest {
         )!!
 
         assertEquals(relay, frame.responderIdentity())
-        assertEquals(client, frame.string("identityId"), "el iniciador es OTRO campo")
+        assertEquals(client, frame.string("initiatorIdentityId"), "el iniciador es OTRO campo")
     }
 
     @Test
