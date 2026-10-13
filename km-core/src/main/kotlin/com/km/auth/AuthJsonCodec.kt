@@ -78,8 +78,18 @@ object AuthJsonCodec {
      * `responderIdentityId`, `sessionId`, `serverNonce`, `responderPublicKey`,
      * `serverSignature`. Sin `identityId`, `publicKey` ni `signature` (nombres
      * retirados).
+     *
+     * R15: los dos ids canonicos son REQUERIDOS. Aqui se exige que no vengan
+     * VACIOS (un id "" se serializaba antes); la forma canonica (64 hex) NO se
+     * valida en este codec: la garantiza el emisor del cable.
      */
     fun authOkWire(authOk: AuthOk): String {
+        require(authOk.initiatorIdentityId.isNotEmpty()) {
+            "campo 'initiatorIdentityId' no puede ser vacio al serializar el AUTH_OK (R15)"
+        }
+        require(authOk.responderIdentityId.isNotEmpty()) {
+            "campo 'responderIdentityId' no puede ser vacio al serializar el AUTH_OK (R15)"
+        }
         val node = mapper.createObjectNode()
         node.put("initiatorIdentityId", authOk.initiatorIdentityId)
         node.put("responderIdentityId", authOk.responderIdentityId)
@@ -90,6 +100,14 @@ object AuthJsonCodec {
         return mapper.writeValueAsString(node)
     }
 
+    /**
+     * Parsea un `AUTH_OK` con la tabla canonica de campos (R15/R16).
+     *
+     * Los dos ids canonicos (`initiatorIdentityId`, `responderIdentityId`) son
+     * OBLIGATORIOS y NO VACIOS: ausentes, de tipo no-string o vacios lanzan
+     * [IllegalArgumentException]. La forma canonica (64 hex) no se comprueba
+     * aqui.
+     */
     fun parseAuthOk(wire: String): AuthOk {
         val n = requireObject(wire)
         return AuthOk(
@@ -97,8 +115,8 @@ object AuthJsonCodec {
             serverNonce = bytes(n, "serverNonce"),
             responderPublicKey = bytes(n, "responderPublicKey"),
             signature = bytes(n, "serverSignature"),
-            initiatorIdentityId = textField(n, "initiatorIdentityId"),
-            responderIdentityId = textField(n, "responderIdentityId"),
+            initiatorIdentityId = requiredTextField(n, "initiatorIdentityId"),
+            responderIdentityId = requiredTextField(n, "responderIdentityId"),
         )
     }
 
@@ -122,6 +140,19 @@ object AuthJsonCodec {
         val v = n.get(field)
         require(v != null && v.isTextual) { "campo '$field' debe ser un string presente" }
         return v.asText()
+    }
+
+    /**
+     * Como [textField], pero ademas rechaza la cadena VACIA.
+     *
+     * Lo usan los ids canonicos del `AUTH_OK`, que R15 declara requeridos: un
+     * id "" no es un id valido y antes se colaba. No valida 64 hex (forma
+     * canonica): eso es responsabilidad del emisor del cable.
+     */
+    private fun requiredTextField(n: JsonNode, field: String): String {
+        val value = textField(n, field)
+        require(value.isNotEmpty()) { "campo '$field' debe ser un string no vacio" }
+        return value
     }
 
     private fun longField(n: JsonNode, field: String): Long {

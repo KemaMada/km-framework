@@ -44,10 +44,21 @@ data class AuthOk(
     /**
      * `identityId` del INICIADOR (64 hex). Campo canonico `initiatorIdentityId`
      * del `AUTH_OK` (R1/R15). Por defecto vacio para los llamantes que solo
-     * ejercitan la verificacion; [AuthJsonCodec.authOkWire] exige la forma
-     * canonica al serializar (lo llena el emisor del cable).
+     * ejercitan la verificacion ([AuthVerifier.verifyAuthOk] recibe el id
+     * esperado como parametro aparte y no lee este campo).
+     *
+     * Serializacion y parseo (R15): [AuthJsonCodec.authOkWire] y
+     * [AuthJsonCodec.parseAuthOk] rechazan un id VACIO, pero NO validan la
+     * forma canonica completa (64 hex). La forma canonica la garantiza el
+     * emisor del cable: `AuthAdapter.complete` solo entrega ids ya validados
+     * por `JsonWireCodec.parseAuthRequest` (un `IdentityId` de 64 hex). Este
+     * codec es el punto de presencia y no-vacio, no el de la forma.
      */
     val initiatorIdentityId: String = "",
-    /** `identityId` del RESPONDER/rele (64 hex). Campo canonico `responderIdentityId`. */
+    /**
+     * `identityId` del RESPONDER/rele (64 hex). Campo canonico
+     * `responderIdentityId`. Mismas reglas de serializacion y parseo que
+     * [initiatorIdentityId].
+     */
     val responderIdentityId: String = "",
 )

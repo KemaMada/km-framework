@@ -197,6 +197,65 @@ class AuthJsonCodecTest {
         }
     }
 
+    /**
+     * R15: los ids canonicos son requeridos y NO vacios. Un id "" no es un id
+     * valido; el parseo debe fallar cerrado.
+     */
+    @Test
+    fun `authOk con initiatorIdentityId vacio lanza`() {
+        assertThrows<IllegalArgumentException> {
+            AuthJsonCodec.parseAuthOk(
+                """{"initiatorIdentityId":"","responderIdentityId":"$responderId","sessionId":"${"0".repeat(40)}","serverNonce":"${"A".repeat(22)}","responderPublicKey":"${"A".repeat(43)}","serverSignature":"${"A".repeat(86)}"}"""
+            )
+        }
+    }
+
+    @Test
+    fun `authOk con responderIdentityId vacio lanza`() {
+        assertThrows<IllegalArgumentException> {
+            AuthJsonCodec.parseAuthOk(
+                """{"initiatorIdentityId":"$initiatorId","responderIdentityId":"","sessionId":"${"0".repeat(40)}","serverNonce":"${"A".repeat(22)}","responderPublicKey":"${"A".repeat(43)}","serverSignature":"${"A".repeat(86)}"}"""
+            )
+        }
+    }
+
+    /**
+     * R15: la serializacion tambien rechaza un id vacio. [AuthOk] trae `""`
+     * por defecto para los llamantes que solo verifican, pero un `AUTH_OK` de
+     * cable con un id vacio no es valido y no debe poder emitirse.
+     */
+    @Test
+    fun `authOkWire con initiatorIdentityId vacio lanza`() {
+        assertThrows<IllegalArgumentException> {
+            AuthJsonCodec.authOkWire(
+                AuthOk(
+                    sessionId = "b0a9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b2a1",
+                    serverNonce = serverNonce16,
+                    responderPublicKey = pubKey32,
+                    signature = sig64,
+                    initiatorIdentityId = "",
+                    responderIdentityId = responderId,
+                )
+            )
+        }
+    }
+
+    @Test
+    fun `authOkWire con responderIdentityId vacio lanza`() {
+        assertThrows<IllegalArgumentException> {
+            AuthJsonCodec.authOkWire(
+                AuthOk(
+                    sessionId = "b0a9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b2a1",
+                    serverNonce = serverNonce16,
+                    responderPublicKey = pubKey32,
+                    signature = sig64,
+                    initiatorIdentityId = initiatorId,
+                    responderIdentityId = "",
+                )
+            )
+        }
+    }
+
     @Test
     fun `authOk sin responderPublicKey lanza`() {
         assertThrows(IllegalArgumentException::class.java) {
