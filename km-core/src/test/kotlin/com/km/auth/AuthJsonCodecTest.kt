@@ -295,6 +295,35 @@ class AuthJsonCodecTest {
     private fun rejectCode(result: AuthOkFields): AuthFieldError =
         assertInstanceOf(AuthOkFields.Rejected::class.java, result).error
 
+    /**
+     * TABLA DE VERDAD autoritativa del alias (ruling del owner, 2026-10-13):
+     * las diez celdas dialecto x campos. Es la fuente que el resto de los tests
+     * de alias desglosa; cualquier cambio de comportamiento debe mover esta
+     * tabla primero.
+     */
+    @Test
+    fun `tabla de verdad del alias identityId en 2_0 y en 2_1`() {
+        val canonicalOnly = """"initiatorIdentityId":"$initiatorId","""
+        val legacyOnly = """"identityId":"$initiatorId","""
+        val bothEqual = """"initiatorIdentityId":"$initiatorId","identityId":"$initiatorId","""
+        val bothDifferent = """"initiatorIdentityId":"$initiatorId","identityId":"${"0".repeat(64)}","""
+        val neither = ""
+
+        // 2.0 — ventana de transicion: el alias se admite.
+        assertEquals(initiatorId, acceptedId(parseAlias(Dialect.V2_0, canonicalOnly)))
+        assertEquals(initiatorId, acceptedId(parseAlias(Dialect.V2_0, legacyOnly)))
+        assertEquals(initiatorId, acceptedId(parseAlias(Dialect.V2_0, bothEqual)))
+        assertEquals(AuthFieldError.MALFORMED_MESSAGE, rejectCode(parseAlias(Dialect.V2_0, bothDifferent)))
+        assertEquals(AuthFieldError.MALFORMED_MESSAGE, rejectCode(parseAlias(Dialect.V2_0, neither)))
+
+        // 2.1 — retirada del alias: CUALQUIER presencia es UNKNOWN_PROTOCOL.
+        assertEquals(initiatorId, acceptedId(parseAlias(Dialect.V2_1, canonicalOnly)))
+        assertEquals(AuthFieldError.UNKNOWN_PROTOCOL, rejectCode(parseAlias(Dialect.V2_1, legacyOnly)))
+        assertEquals(AuthFieldError.UNKNOWN_PROTOCOL, rejectCode(parseAlias(Dialect.V2_1, bothEqual)))
+        assertEquals(AuthFieldError.UNKNOWN_PROTOCOL, rejectCode(parseAlias(Dialect.V2_1, bothDifferent)))
+        assertEquals(AuthFieldError.MALFORMED_MESSAGE, rejectCode(parseAlias(Dialect.V2_1, neither)))
+    }
+
     /** S13: en 2.0 el canonico se acepta tal cual. */
     @Test
     fun `2_0 acepta initiatorIdentityId canonico`() {
@@ -309,21 +338,30 @@ class AuthJsonCodecTest {
         assertEquals(initiatorId, acceptedId(result))
     }
 
-    /** R3/S13: si ambos conviven y son iguales, se acepta (en los dos dialectos). */
+    /**
+     * R3/S13: en 2.0, si ambos conviven y son iguales, se acepta (el valor
+     * canonico gobierna). En 2.1 NO: el alias esta retirado y su presencia,
+     * aunque el valor coincida, se rechaza con UNKNOWN_PROTOCOL (ruling del
+     * owner, celda 8 de la tabla de verdad).
+     */
     @Test
-    fun `ambos campos iguales se aceptan en 2_0 y en 2_1`() {
+    fun `ambos campos iguales se aceptan en 2_0 y se rechazan en 2_1`() {
         val fields = """"initiatorIdentityId":"$initiatorId","identityId":"$initiatorId","""
         assertEquals(initiatorId, acceptedId(parseAlias(Dialect.V2_0, fields)))
-        assertEquals(initiatorId, acceptedId(parseAlias(Dialect.V2_1, fields)))
+        assertEquals(AuthFieldError.UNKNOWN_PROTOCOL, rejectCode(parseAlias(Dialect.V2_1, fields)))
     }
 
-    /** S14/P6-T: si ambos conviven y difieren -> MALFORMED_MESSAGE (en los dos). */
+    /**
+     * S14/P6-T: en la ventana de transicion (2.0) si ambos conviven y difieren
+     * -> MALFORMED_MESSAGE. En 2.1 el alias se rechaza ANTES de comparar
+     * (UNKNOWN_PROTOCOL): el nombre esta retirado (ruling del owner).
+     */
     @Test
     fun `ambos campos distintos son MALFORMED_MESSAGE en 2_0 y en 2_1`() {
         val other = "0".repeat(64)
         val fields = """"initiatorIdentityId":"$initiatorId","identityId":"$other","""
         assertEquals(AuthFieldError.MALFORMED_MESSAGE, rejectCode(parseAlias(Dialect.V2_0, fields)))
-        assertEquals(AuthFieldError.MALFORMED_MESSAGE, rejectCode(parseAlias(Dialect.V2_1, fields)))
+        assertEquals(AuthFieldError.UNKNOWN_PROTOCOL, rejectCode(parseAlias(Dialect.V2_1, fields)))
     }
 
     /** S15/P6-S: en 2.1 el alias en solitario es UNKNOWN_PROTOCOL (retirado). */
@@ -356,11 +394,16 @@ class AuthJsonCodecTest {
         assertEquals(AuthFieldError.MALFORMED_MESSAGE, rejectCode(parseAlias(Dialect.V2_1, fields)))
     }
 
-    /** El alias legacy vacio tampoco es un id valido, ni siquiera en 2.0 (R15). */
+    /**
+     * El alias legacy vacio tampoco es un id valido en 2.0 (R15). En 2.1 el
+     * campo esta retirado: su PRESENCIA (aunque sea vacia) es UNKNOWN_PROTOCOL,
+     * porque la retirada mira el nombre, no el valor.
+     */
     @Test
-    fun `identityId vacio es MALFORMED_MESSAGE`() {
+    fun `identityId vacio es MALFORMED_MESSAGE en 2_0 y UNKNOWN_PROTOCOL en 2_1`() {
         val fields = """"identityId":"","""
         assertEquals(AuthFieldError.MALFORMED_MESSAGE, rejectCode(parseAlias(Dialect.V2_0, fields)))
+        assertEquals(AuthFieldError.UNKNOWN_PROTOCOL, rejectCode(parseAlias(Dialect.V2_1, fields)))
     }
 
     /** El emisor solo escribe el canonico; el parser estricto lo reafirma. */

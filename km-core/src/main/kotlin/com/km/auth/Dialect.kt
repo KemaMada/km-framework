@@ -20,10 +20,10 @@ package com.km.auth
  * downgrade silencioso.
  */
 enum class Dialect(val wire: String) {
-    /** Dialecto de transicion: `identityId` es la forma canonica y su alias se acepta. */
+    /** Dialecto de transicion: `initiatorIdentityId` es canonico y el alias legacy `identityId` se acepta. */
     V2_0("2.0"),
 
-    /** Dialecto con el alias retirado: solo la forma canonica. */
+    /** Dialecto con el alias retirado: solo se admite la forma canonica `initiatorIdentityId`. */
     V2_1("2.1");
 
     companion object {

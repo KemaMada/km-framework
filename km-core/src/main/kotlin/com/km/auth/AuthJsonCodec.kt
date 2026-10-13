@@ -110,8 +110,8 @@ object AuthJsonCodec {
      *
      * Este metodo es ESTRICTO en el nombre del iniciador: lee solo
      * `initiatorIdentityId` y no admite el alias legacy. La lectura que SI
-     * aplica las reglas del dialecto (aceptar el alias en `2.0`, retirarlo en
-     * `2.1`, exigir igualdad si conviven) es [parseAuthOkForDialect].
+     * aplica las reglas del dialecto (aceptar el alias en `2.0` y retirarlo
+     * —en cualquier forma— en `2.1`) es [parseAuthOkForDialect].
      */
     fun parseAuthOk(wire: String): AuthOk {
         val n = requireObject(wire)
@@ -130,10 +130,13 @@ object AuthJsonCodec {
      * (task 1.3, R2/R3) para el [dialect] del handshake.
      *
      * A diferencia de [parseAuthOk], esta lectura:
-     *  - acepta `identityId` como ALIAS del iniciador SOLO en dialecto `2.0`;
-     *  - en `2.1` rechaza `identityId` en solitario con `UNKNOWN_PROTOCOL`;
-     *  - si los dos campos conviven, exige que sean IGUALES y rechaza con
-     *    `MALFORMED_MESSAGE` si difieren.
+     *  - acepta `identityId` como ALIAS del iniciador SOLO en dialecto `2.0`
+     *    (en solitario, o junto al canonico si ambos son IGUALES);
+     *  - en `2.1` rechaza el alias en CUALQUIER forma (solo, o junto al
+     *    canonico, con valor igual o distinto) con `UNKNOWN_PROTOCOL`: el
+     *    nombre esta retirado en ese dialecto (ruling del owner);
+     *  - en `2.0`, si los dos campos conviven y DIFIEREN, rechaza con
+     *    `MALFORMED_MESSAGE`.
      *
      * Un rechazo de campo (alias retirado o conflicto) se devuelve como
      * [AuthOkFields.Rejected] con su codigo, no como excepcion: es una decision

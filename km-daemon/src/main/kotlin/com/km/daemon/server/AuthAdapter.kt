@@ -31,8 +31,13 @@ import com.km.node.RelayServerResult
  * en `AUTH_OK`, y lo transporta a los codecs como `Dialect`, nunca como literal
  * ni como Int. Desde la task 1.3 sirve `{2.0, 2.1}`: la retirada del alias
  * `identityId` de `2.1` esta implementada en la lectura del `AUTH_OK`
- * (`AuthOkAliasRules`), de modo que confirmar `2.1` es una promesa que el
- * sistema cumple.
+ * (`AuthOkAliasRules`), de modo que la mitad del RELE —nunca emitir el alias y
+ * confirmar coherentemente el dialecto— es una promesa que el rele cumple. La
+ * mitad del CLIENTE no la ejerce todavia ningun consumidor de produccion: la
+ * lectura dialectal del `AUTH_OK` no tiene llamador de produccion (llega con la
+ * verificacion de `serverSignature`, 4.1/5.2) y los clientes entregados
+ * implementan solo el dialecto `2.0`. "El rele sirve `2.1`" por tanto NO
+ * equivale a "un cliente entregado aplica las reglas de campo de `2.1`".
  */
 class AuthAdapter(
     private val relayServer: RelayServer,
@@ -45,11 +50,14 @@ class AuthAdapter(
      * = `{2.0, 2.1}`. Desde la task 1.3 el rele sirve los DOS: `2.1` retira el
      * alias `identityId` del `AUTH_OK`, y esa regla de campo ya esta
      * implementada (`AuthOkAliasRules` / `AuthJsonCodec.parseAuthOkForDialect`),
-     * asi que confirmar `2.1` ya no miente sobre el dialecto servido. La
-     * coherencia del dialecto a lo largo del handshake (`AUTH_REQUEST` ->
-     * `AUTH_CHALLENGE` -> `AUTH_OK`) la garantiza este adaptador, que deriva el
-     * dialecto EFECTIVO del `AUTH_REQUEST` y lo ecoa identico en el challenge y
-     * en el OK.
+     * asi que confirmar `2.1` ya no miente sobre el dialecto que ESTE rele
+     * sirve. Esto es una propiedad de la mitad del rele: no implica que un
+     * cliente entregado aplique las reglas de campo de `2.1` (solo implementa
+     * `2.0` y la lectura dialectal no tiene consumidor de produccion todavia;
+     * 4.1/5.2). La coherencia del dialecto a lo largo del handshake
+     * (`AUTH_REQUEST` -> `AUTH_CHALLENGE` -> `AUTH_OK`) la garantiza este
+     * adaptador, que deriva el dialecto EFECTIVO del `AUTH_REQUEST` y lo ecoa
+     * identico en el challenge y en el OK.
      *
      * El parametro es inyectable para poder ejercitar la matriz de
      * compatibilidad (un rele que solo sirve `2.0`, o solo `2.1`) y para el gate

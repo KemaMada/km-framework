@@ -297,19 +297,48 @@ class JsonWireCodecMessageTest {
         assertEquals(from.value, accepted.authOk.initiatorIdentityId)
     }
 
-    /** R3/S14/P6-T: ambos presentes y distintos -> MALFORMED_MESSAGE. */
+    /**
+     * R3/S14/P6-T (2.0): ambos presentes y distintos -> MALFORMED_MESSAGE.
+     * En 2.1 el alias se rechaza antes de comparar -> UNKNOWN_PROTOCOL.
+     */
     @Test
-    fun `ambos campos distintos son MALFORMED_MESSAGE`() {
+    fun `ambos campos distintos son MALFORMED en 2_0 y UNKNOWN_PROTOCOL en 2_1`() {
         val wire = authOkAliasFrame(
             """"initiatorIdentityId":"${from.value}","identityId":"${to.value}"""",
         )
-        for (dialect in listOf(Dialect.V2_0, Dialect.V2_1)) {
-            val rejected = assertInstanceOf(
-                AuthOkFields.Rejected::class.java,
-                AuthJsonCodec.parseAuthOkForDialect(wire, dialect),
-            )
-            assertEquals(AuthFieldError.MALFORMED_MESSAGE, rejected.error)
-        }
+        assertEquals(
+            AuthFieldError.MALFORMED_MESSAGE,
+            (AuthJsonCodec.parseAuthOkForDialect(wire, Dialect.V2_0)
+                as AuthOkFields.Rejected).error,
+        )
+        assertEquals(
+            AuthFieldError.UNKNOWN_PROTOCOL,
+            (AuthJsonCodec.parseAuthOkForDialect(wire, Dialect.V2_1)
+                as AuthOkFields.Rejected).error,
+        )
+    }
+
+    /**
+     * Celda 8 de la tabla de verdad (ruling del owner): en 2.1 el alias esta
+     * retirado, asi que su presencia JUNTO al canonico con valor IGUAL tambien
+     * se rechaza con UNKNOWN_PROTOCOL. En 2.0 el mismo frame se acepta.
+     */
+    @Test
+    fun `en 2_1 ambos campos iguales siguen siendo UNKNOWN_PROTOCOL`() {
+        val wire = authOkAliasFrame(
+            """"initiatorIdentityId":"${from.value}","identityId":"${from.value}"""",
+        )
+        val accepted20 = assertInstanceOf(
+            AuthOkFields.Accepted::class.java,
+            AuthJsonCodec.parseAuthOkForDialect(wire, Dialect.V2_0),
+        )
+        assertEquals(from.value, accepted20.authOk.initiatorIdentityId)
+
+        val rejected21 = assertInstanceOf(
+            AuthOkFields.Rejected::class.java,
+            AuthJsonCodec.parseAuthOkForDialect(wire, Dialect.V2_1),
+        )
+        assertEquals(AuthFieldError.UNKNOWN_PROTOCOL, rejected21.error)
     }
 
     @Test

@@ -241,7 +241,9 @@ class JsonWireCodec(
      * El nombre del iniciador es SIEMPRE `initiatorIdentityId` (canonico) al
      * emitir; el rele nunca escribe el alias legacy `identityId` en el cable.
      * La ACEPTACION de ese alias es cosa de la LECTURA: `2.0` lo admite y `2.1`
-     * lo retira (task 1.3, R2/R3), regla que vive en `AuthOkAliasRules` /
+     * lo retira **en cualquier forma** —solo, o junto al canonico, con valor
+     * igual o distinto— con `UNKNOWN_PROTOCOL` (task 1.3, R2/R3, ruling del
+     * owner), regla que vive en `AuthOkAliasRules` /
      * `AuthJsonCodec.parseAuthOkForDialect`.
      *
      * `protocolVersion` SI viaja: es la confirmacion que §17.2.3 pide para que

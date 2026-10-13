@@ -5,14 +5,17 @@ package com.km.auth
  *
  * El campo canonico del iniciador es `initiatorIdentityId` (R1). Durante la
  * ventana de transicion el nombre legacy `identityId` se acepta como ALIAS,
- * pero **solo** en el dialecto `2.0`: en `2.1` el alias esta retirado y un
- * `AUTH_OK` que lo traiga SOLO en esa forma se rechaza con `UNKNOWN_PROTOCOL`
- * (R2, S15/P6-S).
+ * pero **solo** en el dialecto `2.0`. En `2.1` el nombre esta **retirado**: la
+ * retirada es del NOMBRE, no del conflicto de valores, de modo que CUALQUIER
+ * presencia del alias —en solitario, o acompanado del canonico, con valor
+ * igual o distinto— se rechaza con `UNKNOWN_PROTOCOL` (R2, S15/P6-S, ruling del
+ * owner 2026-10-13).
  *
- * Si los dos campos conviven DEBEN ser iguales; una discrepancia es un mensaje
- * mal formado (`MALFORMED_MESSAGE`), nunca una eleccion silenciosa de uno de
- * los dos (R3, S14/P6-T). La igualdad se exige en AMBOS dialectos: convivir no
- * es "estar retirado".
+ * La obligacion de igualdad de R3 rige **solo** en la ventana de transicion
+ * (`2.0`): alli, si los dos campos conviven, DEBEN ser iguales; una
+ * discrepancia es un mensaje mal formado (`MALFORMED_MESSAGE`), nunca una
+ * eleccion silenciosa de uno de los dos (R3, S14/P6-T). En `2.1` el alias ni
+ * siquiera llega a compararse: su sola presencia ya es el rechazo.
  *
  * La regla es una funcion pura de (dialecto, campo canonico, campo legacy): no
  * decide criptografia, no verifica nada y no interpreta el transcript. Es la
@@ -63,6 +66,19 @@ object AuthOkAliasRules {
         canonical: String?,
         legacy: String?,
     ): AuthOkInitiator {
+        // R2 (ruling del owner): en 2.1 el alias esta RETIRADO. La retirada es
+        // del NOMBRE: CUALQUIER presencia del campo legacy se rechaza con
+        // UNKNOWN_PROTOCOL, ya venga solo, ya junto al canonico, y con
+        // independencia de si los valores coinciden. Se comprueba ANTES que la
+        // consistencia: en 2.1 un alias no se "valida", se retira.
+        if (dialect != Dialect.V2_0 && legacy != null) {
+            return reject(
+                AuthFieldError.UNKNOWN_PROTOCOL,
+                "alias 'identityId' retirado en dialecto '${dialect.wire}'; " +
+                    "solo se admite 'initiatorIdentityId'",
+            )
+        }
+
         canonical?.let {
             if (it.isEmpty()) return reject(AuthFieldError.MALFORMED_MESSAGE, "initiatorIdentityId vacio")
         }
@@ -71,7 +87,9 @@ object AuthOkAliasRules {
         }
 
         if (canonical != null && legacy != null) {
-            // R3: conviven -> DEBEN ser iguales. Vale en 2.0 y en 2.1.
+            // R3: en la ventana de transicion (2.0) conviven -> DEBEN ser
+            // iguales. (En 2.1 este camino es inalcanzable: el alias ya se
+            // rechazo arriba.)
             return if (canonical == legacy) {
                 AuthOkInitiator.Accepted(canonical)
             } else {
@@ -85,16 +103,9 @@ object AuthOkAliasRules {
         canonical?.let { return AuthOkInitiator.Accepted(it) }
 
         legacy?.let {
-            // R2: el alias se acepta SOLO en dialecto 2.0; en 2.1 esta retirado.
-            return if (dialect == Dialect.V2_0) {
-                AuthOkInitiator.Accepted(it)
-            } else {
-                reject(
-                    AuthFieldError.UNKNOWN_PROTOCOL,
-                    "alias 'identityId' retirado en dialecto '${dialect.wire}'; " +
-                        "se esperaba 'initiatorIdentityId'",
-                )
-            }
+            // Solo alcanzable en dialecto 2.0 (en 2.1 se rechazo arriba):
+            // durante la transicion el alias en solitario se acepta.
+            return AuthOkInitiator.Accepted(it)
         }
 
         // R15: el campo canonico es obligatorio; sin canonico ni alias no hay
