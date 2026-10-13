@@ -113,6 +113,18 @@ class P6VectorConformanceTest {
                         }
                         assertEquals("REJECT", outcome, "$id/$artifact")
                         assertEquals(errorCode, actual, "$id/$artifact: codigo de dialecto")
+                        // Condicion 5: aunque el rechazo sea de DIALECTO, el
+                        // wire del AUTH_OK debe ser valido. El codec de
+                        // produccion lo parsea en el dialecto del cliente
+                        // (los campos canonicales estan bien; lo que falla es
+                        // el dialecto, no el esquema). Un esquema legacy aqui
+                        // haria fallar esta asercion.
+                        assertTrue(
+                            AuthJsonCodec.parseAuthOkForDialect(wire, client) is AuthOkFields.Accepted,
+                        ) {
+                            "$id/$artifact: el wire del AUTH_OK debe ser estructuralmente valido " +
+                                "aunque el dialecto se rechace"
+                        }
                     }
 
                     else -> {
