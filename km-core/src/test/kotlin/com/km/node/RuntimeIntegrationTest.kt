@@ -175,7 +175,7 @@ class RuntimeIntegrationTest {
             identityId = bob.identity.nodeId.value,
             publicKey = aliceKP.publicKey,
             signature = fakeSig.bytes,
-            protocolVersion = 3,
+            protocolVersion = Dialect.V2_0,
         )
         // V1: identityId no deriva de publicKey
         assertEquals(AuthError.INVALID_IDENTITY, verifier.verifyChallengeResponse(challenge, fakeResponse))
@@ -262,7 +262,7 @@ class RuntimeIntegrationTest {
             identityId = wrongIdentityId,
             publicKey = aliceKP.publicKey,
             signature = sig.bytes,
-            protocolVersion = 3,
+            protocolVersion = Dialect.V2_0,
         )
 
         val verifier = AuthVerifier(

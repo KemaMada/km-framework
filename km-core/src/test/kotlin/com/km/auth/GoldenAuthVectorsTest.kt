@@ -259,7 +259,7 @@ class GoldenAuthVectorsTest {
             identityId = responseJson["identityId"] as String,
             publicKey = Base64Url.decode(responseJson["publicKey"] as String),
             signature = Base64Url.decode(responseJson["signature"] as String),
-            protocolVersion = (responseJson["protocolVersion"] as Number).toInt(),
+            protocolVersion = Dialect.V2_0,
         )
 
         val verifier = AuthVerifier(
@@ -411,7 +411,7 @@ class GoldenAuthVectorsTest {
             identityId = resp["identityId"] as String,
             publicKey = Base64Url.decode(resp["publicKey"] as String),
             signature = Base64Url.decode(resp["signature"] as String),
-            protocolVersion = 3,
+            protocolVersion = Dialect.V2_0,
         )
         val challenge = AuthChallenge(
             nonce = Base64Url.decode(ch["nonce"] as String),
@@ -434,7 +434,7 @@ class GoldenAuthVectorsTest {
             identityId = resp["identityId"] as String,
             publicKey = Base64Url.decode(resp["publicKey"] as String),
             signature = Base64Url.decode(resp["signature"] as String),
-            protocolVersion = 3,
+            protocolVersion = Dialect.V2_0,
         )
         val challenge = AuthChallenge(
             nonce = Base64Url.decode(ch["nonce"] as String),
@@ -457,7 +457,7 @@ class GoldenAuthVectorsTest {
             identityId = resp["identityId"] as String,
             publicKey = Base64Url.decode(resp["publicKey"] as String),
             signature = Base64Url.decode(resp["signature"] as String),
-            protocolVersion = 3,
+            protocolVersion = Dialect.V2_0,
         )
         val challenge = AuthChallenge(
             nonce = Base64Url.decode(ch["nonce"] as String),
@@ -502,7 +502,7 @@ class GoldenAuthVectorsTest {
             identityId = identityId,
             publicKey = initiatorKp.publicKey,
             signature = sig.bytes,
-            protocolVersion = 3,
+            protocolVersion = Dialect.V2_0,
         )
 
         // Clock fijo en el timestamp DEFAULT (posterior a I4)
@@ -529,7 +529,7 @@ class GoldenAuthVectorsTest {
             identityId = g15resp["identityId"] as String,
             publicKey = Base64Url.decode(g15resp["publicKey"] as String),
             signature = Base64Url.decode(g15resp["signature"] as String),
-            protocolVersion = 3,
+            protocolVersion = Dialect.V2_0,
         )
 
         val seen = mutableSetOf<String>()

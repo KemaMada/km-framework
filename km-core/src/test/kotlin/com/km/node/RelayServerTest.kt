@@ -124,7 +124,7 @@ class RelayServerTest {
             identityId = aliceId.value,
             publicKey = bobKP.publicKey, // CLAVE EQUIVOCADA
             signature = sig.bytes,
-            protocolVersion = 3,
+            protocolVersion = Dialect.V2_0,
         )
 
         val result = server.authenticate(aliceId, badResponse)
@@ -142,7 +142,7 @@ class RelayServerTest {
             challenge.nonce, 0L, relayId.value, bobId.value,
         )
         val sig = ed25519.sign(bobKP.privateKey, transcript)
-        val response = AuthResponse(bobId.value, bobKP.publicKey, sig.bytes, 3)
+        val response = AuthResponse(bobId.value, bobKP.publicKey, sig.bytes, Dialect.V2_0)
 
         // autenticar como Alice, pero response declara Bob
         val result = server.authenticate(aliceId, response)
@@ -160,7 +160,7 @@ class RelayServerTest {
             challenge.nonce, 0L, relayId.value, aliceId.value,
         )
         val sig = ed25519.sign(bobKP.privateKey, transcript) // Bob firma, no Alice
-        val response = AuthResponse(aliceId.value, aliceKP.publicKey, sig.bytes, 3)
+        val response = AuthResponse(aliceId.value, aliceKP.publicKey, sig.bytes, Dialect.V2_0)
 
         val result = server.authenticate(aliceId, response)
         assertTrue(result.isFailure)
@@ -535,7 +535,7 @@ class RelayServerTest {
             ByteArray(16), 0L, relayId.value, aliceId.value,
         )
         val sig = ed25519.sign(aliceKP.privateKey, transcript)
-        val response = AuthResponse(aliceId.value, aliceKP.publicKey, sig.bytes, 3)
+        val response = AuthResponse(aliceId.value, aliceKP.publicKey, sig.bytes, Dialect.V2_0)
 
         val result = server.authenticate(aliceId, response)
         assertTrue(result.isFailure)

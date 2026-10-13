@@ -187,7 +187,7 @@ class AuthSessionTest {
         // Construir response
         val response = session.buildResponse(relayId)
         assertEquals(aliceId, response.identityId)
-        assertEquals(3, response.protocolVersion)
+        assertEquals(Dialect.V2_0, response.protocolVersion)
 
         // Marcar enviado
         session.markResponseSent()

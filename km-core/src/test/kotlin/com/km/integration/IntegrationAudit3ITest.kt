@@ -67,7 +67,7 @@ class IntegrationAudit3ITest {
             responderIdentityId = aliceId, identityId = charlieId,
         )
         val sig = ed25519.sign(aliceKP.privateKey, transcript)
-        val response = AuthResponse(charlieId, aliceKP.publicKey, sig.bytes, 3)
+        val response = AuthResponse(charlieId, aliceKP.publicKey, sig.bytes, Dialect.V2_0)
 
         val verifier = AuthVerifier(ed25519, fixedClock, acceptingGuard)
         assertEquals(AuthError.INVALID_IDENTITY,
@@ -84,7 +84,7 @@ class IntegrationAudit3ITest {
             responderIdentityId = aliceId, identityId = aliceId,
         )
         val sig = ed25519.sign(aliceKP.privateKey, transcript)
-        val response = AuthResponse(aliceId, deviceId, sig.bytes, 3)
+        val response = AuthResponse(aliceId, deviceId, sig.bytes, Dialect.V2_0)
 
         val verifier = AuthVerifier(ed25519, fixedClock, acceptingGuard)
         assertEquals(AuthError.INVALID_IDENTITY,

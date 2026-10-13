@@ -2,6 +2,9 @@ package com.km.daemon.server
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.databind.node.ObjectNode
+import com.km.auth.AuthJsonCodec
+import com.km.auth.AuthOk
+import com.km.auth.Base64Url
 import com.km.auth.Dialect
 import com.km.daemon.util.Base64Standard
 import com.km.model.IdentityId
@@ -130,10 +133,107 @@ class JsonWireCodecMessageTest {
                 initiatorIdentityId = from.value,
                 responderIdentityId = to.value,
                 dialect = Dialect.V2_0.wire,
+                serverNonce = ByteArray(16) { it.toByte() },
+                responderPublicKey = ByteArray(32) { (it + 1).toByte() },
             )
         )
         assertTrue(frame.get("protocolVersion").isTextual)
         assertEquals("2.0", frame.get("protocolVersion").asText())
+    }
+
+    // =====================================================================
+    // Task 1.2 — la tabla canonica de AUTH_OK y la conformidad entre codecs
+    // =====================================================================
+
+    private val serverNonce16 = ByteArray(16) { (it + 16).toByte() }
+    private val responderPub32 = ByteArray(32) { (it + 7).toByte() }
+
+    private fun emitCanonicalAuthOk(): String = codec.authOk(
+        sessionId = "c".repeat(40),
+        serverSignature = ByteArray(64) { (it * 3).toByte() },
+        initiatorIdentityId = from.value,
+        responderIdentityId = to.value,
+        dialect = Dialect.V2_0.wire,
+        serverNonce = serverNonce16,
+        responderPublicKey = responderPub32,
+    )
+
+    /**
+     * R15: el `AUTH_OK` incorpora la tabla canonica con las codificaciones y
+     * longitudes exactas. Los nombres retirados no se emiten.
+     */
+    @Test
+    fun `el AUTH_OK lleva la tabla canonica con codificaciones exactas`() {
+        val frame = mapper.readTree(emitCanonicalAuthOk())
+
+        for (f in listOf(
+            "protocolVersion", "initiatorIdentityId", "responderIdentityId",
+            "sessionId", "serverNonce", "responderPublicKey", "serverSignature",
+        )) {
+            assertTrue(frame.has(f), "falta el campo canonico $f")
+        }
+        for (retired in listOf("identityId", "publicKey", "signature")) {
+            assertFalse(frame.has(retired), "el nombre retirado $retired no debe emitirse")
+        }
+
+        assertEquals(40, frame.get("sessionId").asText().length)
+        assertEquals(from.value, frame.get("initiatorIdentityId").asText())
+        assertEquals(to.value, frame.get("responderIdentityId").asText())
+
+        // Base64URL sin padding, con las longitudes del spec.
+        val serverNonce = frame.get("serverNonce").asText()
+        val responderPublicKey = frame.get("responderPublicKey").asText()
+        val serverSignature = frame.get("serverSignature").asText()
+        assertFalse(serverNonce.contains('='), "serverNonce sin padding")
+        assertFalse(responderPublicKey.contains('='), "responderPublicKey sin padding")
+        assertFalse(serverSignature.contains('='), "serverSignature sin padding")
+        assertArrayEquals(serverNonce16, Base64Url.decode(serverNonce))
+        assertArrayEquals(responderPub32, Base64Url.decode(responderPublicKey))
+        assertEquals(64, Base64Url.decode(serverSignature).size)
+    }
+
+    /**
+     * R16: los dos codecs hablan UN dialecto. El frame del `JsonWireCodec`
+     * (daemon) es parseable por el `AuthJsonCodec` (km-core) y viceversa: las
+     * seis claves canonicas coinciden, byte a byte en los campos.
+     */
+    @Test
+    fun `JsonWireCodec y AuthJsonCodec comparten las mismas claves canonicas`() {
+        val jsonWireFrame = mapper.readTree(emitCanonicalAuthOk())
+
+        // Direccion daemon -> core: el parser de km-core entiende el frame.
+        val parsed = AuthJsonCodec.parseAuthOk(jsonWireFrame.toString())
+        assertEquals("c".repeat(40), parsed.sessionId)
+        assertEquals(from.value, parsed.initiatorIdentityId)
+        assertEquals(to.value, parsed.responderIdentityId)
+        assertArrayEquals(serverNonce16, parsed.serverNonce)
+        assertArrayEquals(responderPub32, parsed.responderPublicKey)
+        assertEquals(64, parsed.signature.size)
+
+        // Direccion core -> daemon: mismas claves, mismos valores.
+        val coreFrame = mapper.readTree(
+            AuthJsonCodec.authOkWire(
+                AuthOk(
+                    sessionId = parsed.sessionId,
+                    serverNonce = parsed.serverNonce,
+                    responderPublicKey = parsed.responderPublicKey,
+                    signature = parsed.signature,
+                    initiatorIdentityId = parsed.initiatorIdentityId,
+                    responderIdentityId = parsed.responderIdentityId,
+                )
+            )
+        )
+        for (f in listOf(
+            "initiatorIdentityId", "responderIdentityId", "sessionId",
+            "serverNonce", "responderPublicKey", "serverSignature",
+        )) {
+            assertTrue(coreFrame.has(f), "AuthJsonCodec debe emitir la clave canonica $f")
+            assertEquals(
+                jsonWireFrame.get(f).asText(),
+                coreFrame.get(f).asText(),
+                "el valor de $f debe coincidir entre ambos codecs",
+            )
+        }
     }
 
     @Test

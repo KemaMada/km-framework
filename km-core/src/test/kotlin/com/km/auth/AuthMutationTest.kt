@@ -161,7 +161,7 @@ class AuthMutationTest {
     fun `M-V1-1 identityId incorrecto rechazado`() {
         val wrongId = "f".repeat(64)
         val sig = ed25519.sign(initiatorKp.privateKey, authTranscript)
-        val response = AuthResponse(wrongId, initiatorKp.publicKey, sig.bytes, 3)
+        val response = AuthResponse(wrongId, initiatorKp.publicKey, sig.bytes, Dialect.V2_0)
         val challenge = AuthChallenge(nonce, defaultTs, 3, responderId)
         val verifier = AuthVerifier(ed25519, fixedClock(defaultTs), acceptingGuard())
         assertEquals(AuthError.INVALID_IDENTITY, verifier.verifyChallengeResponse(challenge, response))
@@ -171,7 +171,7 @@ class AuthMutationTest {
     fun `M-V1-2 publicKey hex como identityId sin separacion de dominio rechazado`() {
         val rawHex = initiatorKp.publicKey.joinToString("") { "%02x".format(it) }
         val sig = ed25519.sign(initiatorKp.privateKey, authTranscript)
-        val response = AuthResponse(rawHex, initiatorKp.publicKey, sig.bytes, 3)
+        val response = AuthResponse(rawHex, initiatorKp.publicKey, sig.bytes, Dialect.V2_0)
         val challenge = AuthChallenge(nonce, defaultTs, 3, responderId)
         val verifier = AuthVerifier(ed25519, fixedClock(defaultTs), acceptingGuard())
         assertEquals(AuthError.INVALID_IDENTITY, verifier.verifyChallengeResponse(challenge, response))
@@ -215,7 +215,7 @@ class AuthMutationTest {
             nonce, defaultTs, responderId, initiatorId.replaceFirst('a', 'b')
         )
         val sig = ed25519.sign(initiatorKp.privateKey, authTranscript) // firmado sobre authTranscript
-        val response = AuthResponse(initiatorId, initiatorKp.publicKey, sig.bytes, 3)
+        val response = AuthResponse(initiatorId, initiatorKp.publicKey, sig.bytes, Dialect.V2_0)
         val challenge = AuthChallenge(nonce, defaultTs, 3, responderId)
 
         // El verifier construye el transcript desde el challenge+response, NO acepta
@@ -229,7 +229,7 @@ class AuthMutationTest {
         // El signature de response se firmo sobre authTranscript, pero si el verifier
         // usara wrongTranscript, la verificacion fallaria.
         val sigForWrong = ed25519.sign(initiatorKp.privateKey, wrongTranscript)
-        val responseWrong = AuthResponse(initiatorId, initiatorKp.publicKey, sigForWrong.bytes, 3)
+        val responseWrong = AuthResponse(initiatorId, initiatorKp.publicKey, sigForWrong.bytes, Dialect.V2_0)
         assertEquals(AuthError.INVALID_SIGNATURE,
             verifier.verifyChallengeResponse(challenge, responseWrong))
     }
@@ -237,7 +237,7 @@ class AuthMutationTest {
     @Test
     fun `M-V3-3 firma de clave distinta rechazada`() {
         val sig = ed25519.sign(bob.privateKey, authTranscript)
-        val response = AuthResponse(initiatorId, initiatorKp.publicKey, sig.bytes, 3)
+        val response = AuthResponse(initiatorId, initiatorKp.publicKey, sig.bytes, Dialect.V2_0)
         val challenge = AuthChallenge(nonce, defaultTs, 3, responderId)
         val verifier = AuthVerifier(ed25519, fixedClock(defaultTs), acceptingGuard())
         assertEquals(AuthError.INVALID_SIGNATURE, verifier.verifyChallengeResponse(challenge, response))
@@ -290,7 +290,7 @@ class AuthMutationTest {
         val futureTs = defaultTs + 600_000_000L
         val sig = ed25519.sign(initiatorKp.privateKey,
             TranscriptBuilder.authTranscript(nonce, futureTs, responderId, initiatorId))
-        val response = AuthResponse(initiatorId, initiatorKp.publicKey, sig.bytes, 3)
+        val response = AuthResponse(initiatorId, initiatorKp.publicKey, sig.bytes, Dialect.V2_0)
         val challenge = AuthChallenge(nonce, futureTs, 3, responderId)
         val verifier = AuthVerifier(ed25519, fixedClock(defaultTs), acceptingGuard())
         assertEquals(AuthError.INVALID_TIMESTAMP, verifier.verifyChallengeResponse(challenge, response))
@@ -301,7 +301,7 @@ class AuthMutationTest {
         val pastTs = defaultTs - 600_000L
         val sig = ed25519.sign(initiatorKp.privateKey,
             TranscriptBuilder.authTranscript(nonce, pastTs, responderId, initiatorId))
-        val response = AuthResponse(initiatorId, initiatorKp.publicKey, sig.bytes, 3)
+        val response = AuthResponse(initiatorId, initiatorKp.publicKey, sig.bytes, Dialect.V2_0)
         val challenge = AuthChallenge(nonce, pastTs, 3, responderId)
         val verifier = AuthVerifier(ed25519, fixedClock(defaultTs), acceptingGuard())
         assertEquals(AuthError.INVALID_TIMESTAMP, verifier.verifyChallengeResponse(challenge, response))
@@ -312,7 +312,7 @@ class AuthMutationTest {
         val futureTs = defaultTs + 60_000_000L // ~20 min futuro
         val sig = ed25519.sign(initiatorKp.privateKey,
             TranscriptBuilder.authTranscript(nonce, futureTs, responderId, initiatorId))
-        val response = AuthResponse(initiatorId, initiatorKp.publicKey, sig.bytes, 3)
+        val response = AuthResponse(initiatorId, initiatorKp.publicKey, sig.bytes, Dialect.V2_0)
         val challenge = AuthChallenge(nonce, futureTs, 3, responderId)
 
         // Ventana enorme: acepta
@@ -334,7 +334,7 @@ class AuthMutationTest {
         // Es responsabilidad del usuario del verifier proporcionar un guard real.
         val alwaysGuard = NonceReplayGuard { true }
         val sig = ed25519.sign(initiatorKp.privateKey, authTranscript)
-        val response = AuthResponse(initiatorId, initiatorKp.publicKey, sig.bytes, 3)
+        val response = AuthResponse(initiatorId, initiatorKp.publicKey, sig.bytes, Dialect.V2_0)
         val challenge = AuthChallenge(nonce, defaultTs, 3, responderId)
 
         val verifier = AuthVerifier(ed25519, fixedClock(defaultTs), alwaysGuard)
@@ -358,7 +358,7 @@ class AuthMutationTest {
         }
 
         val sig = ed25519.sign(initiatorKp.privateKey, authTranscript)
-        val response = AuthResponse(initiatorId, initiatorKp.publicKey, sig.bytes, 3)
+        val response = AuthResponse(initiatorId, initiatorKp.publicKey, sig.bytes, Dialect.V2_0)
         val challenge = AuthChallenge(nonce, defaultTs, 3, responderId)
 
         val verifier = AuthVerifier(ed25519, fixedClock(defaultTs), guardCheckOnly)
@@ -427,7 +427,7 @@ class AuthMutationTest {
         // El JSON codec no valida hex, pero AuthVerifier V1 si lo hace.
         // Esta mutacion es KILLED a nivel protocolo, no a nivel parseo.
         val nonHexId = "z".repeat(64)
-        val response = AuthResponse(nonHexId, initiatorKp.publicKey, ByteArray(64), 3)
+        val response = AuthResponse(nonHexId, initiatorKp.publicKey, ByteArray(64), Dialect.V2_0)
         val challenge = AuthChallenge(nonce, defaultTs, 3, responderId)
         val verifier = AuthVerifier(ed25519, fixedClock(defaultTs), acceptingGuard())
         assertEquals(AuthError.INVALID_IDENTITY, verifier.verifyChallengeResponse(challenge, response),
@@ -467,7 +467,7 @@ class AuthMutationTest {
         assertEquals(64, rawHex.length)
 
         val sig = ed25519.sign(initiatorKp.privateKey, authTranscript)
-        val response = AuthResponse(rawHex, initiatorKp.publicKey, sig.bytes, 3)
+        val response = AuthResponse(rawHex, initiatorKp.publicKey, sig.bytes, Dialect.V2_0)
         val challenge = AuthChallenge(nonce, defaultTs, 3, responderId)
         val verifier = AuthVerifier(ed25519, fixedClock(defaultTs), acceptingGuard())
         assertEquals(AuthError.INVALID_IDENTITY, verifier.verifyChallengeResponse(challenge, response))

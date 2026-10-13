@@ -80,7 +80,7 @@ class RelayAuthHandlerTest {
         // Construir response como si fuera de Bob (identityId de Bob)
         val transcript = TranscriptBuilder.authTranscript(nonce, defaultTs, relayId, bobId)
         val sig = ed25519.sign(bob.privateKey, transcript)
-        val response = AuthResponse(bobId, bob.publicKey, sig.bytes, 3)
+        val response = AuthResponse(bobId, bob.publicKey, sig.bytes, Dialect.V2_0)
 
         val verifier = AuthVerifier(ed25519, Clock { defaultTs }, NonceReplayGuard { true })
         val result = verifier.verifyChallengeResponse(challenge, response)

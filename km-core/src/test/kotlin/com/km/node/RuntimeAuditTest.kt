@@ -69,7 +69,7 @@ class RuntimeAuditTest {
             identityId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             publicKey = aliceKP.publicKey,
             signature = ByteArray(64),
-            protocolVersion = 3,
+            protocolVersion = Dialect.V2_0,
         )
 
         val verifier = AuthVerifier(
@@ -389,7 +389,7 @@ class RuntimeAuditTest {
             identityId = KmIds.identityId(aliceKP.publicKey).toHexString(),
             publicKey = aliceKP.publicKey,
             signature = ByteArray(64) { 0x42.toByte() },
-            protocolVersion = 3,
+            protocolVersion = Dialect.V2_0,
         )
 
         val verifier = AuthVerifier(

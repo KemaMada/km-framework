@@ -60,7 +60,7 @@ class AuthVerifierTest {
             identityId = identityId,
             publicKey = keyPair.publicKey,
             signature = sig.bytes,
-            protocolVersion = 3,
+            protocolVersion = Dialect.V2_0,
         )
     }
 
@@ -109,7 +109,7 @@ class AuthVerifierTest {
                 identityId = "a1b2c3", // demasiado corto
                 publicKey = alice.publicKey,
                 signature = ByteArray(64),
-                protocolVersion = 3,
+                protocolVersion = Dialect.V2_0,
             )
         )
         assertEquals(AuthError.INVALID_IDENTITY, result)
@@ -136,7 +136,7 @@ class AuthVerifierTest {
                 // Firma sobre el transcript que SI se podria montar, para que
                 // el rechazo venga de la capa V1 y no de la V3.
                 signature = response().signature,
-                protocolVersion = 3,
+                protocolVersion = Dialect.V2_0,
             )
         )
         assertEquals(AuthError.INVALID_IDENTITY, result)
@@ -166,7 +166,7 @@ class AuthVerifierTest {
             identityId = aliceIdentityHex(),
             publicKey = alice.publicKey, // identityId de Alice, publicKey de Alice
             signature = sig.bytes, // pero firma de Bob
-            protocolVersion = 3,
+            protocolVersion = Dialect.V2_0,
         )
         val result = verifier.verifyChallengeResponse(ch, badResp)
         assertEquals(AuthError.INVALID_SIGNATURE, result)
@@ -242,7 +242,7 @@ class AuthVerifierTest {
             identityId = identityId,
             publicKey = keyPair.publicKey,
             signature = sig.bytes,
-            protocolVersion = 3,
+            protocolVersion = Dialect.V2_0,
         )
     }
 
