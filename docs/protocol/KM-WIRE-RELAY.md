@@ -865,7 +865,7 @@ de la columna «Implementado» requiere actualizar esta tabla.
 | P4 | Store-and-forward persistente | Solo `InMemoryRelayStore`, en memoria, sin límites efectivos. |
 | P5 | `MESSAGE` con campo `data` | El cliente reenvía bytes opacos; no nombra el campo (§10.1). |
 | P6 | Verificación de `serverSignature` en `AUTH_OK` | El cliente pasa a `ONLINE` sin verificar (§9.6). |
-| P7 | Negociación de `protocolVersion` | Sin confirmar en `AUTH_OK` (§17.2). |
+| P7 | Negociación de `protocolVersion` | **Mecanismo implementado (task 1.1):** el relé confirma el dialecto efectivo en `AUTH_CHALLENGE` y `AUTH_OK` (`JsonWireCodec.authChallenge`/`authOk`) y ambos clientes lo verifican antes de firmar y antes de `ONLINE`; ausencia → `MALFORMED_MESSAGE`, valor desconocido, no implementado o inconsistente entre frames → `UNSUPPORTED_PROTOCOL_VERSION`, sin downgrade ni upgrade. **Abierto:** el conjunto efectivo servido hoy es `{2.0}` (`AuthAdapter.supportedDialects`); servir `2.1` (reglas de campo y retirada del alias) es 1.2/1.3. La verificación de `serverSignature` en el cliente es P6 (4.1/5.2). |
 | P8 | Emisión de `PEER_ONLINE` / `PEER_OFFLINE` | El cliente los lee; el relé no los serializa (§12.1). |
 | P9 | Tratamiento de `RELAY_ERROR` en el cliente | Cuerpo vacío (`RelayClient.kt:272-273`). |
 | P10 | Mapeo `RelayServerError` → `RelayErrorCode` | Indefinido (§16.3). |
@@ -919,12 +919,15 @@ Nótese además que el mock usa el campo `payload`, no `data`
   "type": "AUTH_CHALLENGE",
   "messageId": "b7e91c48-2f6a-4d03-9a15-8e4c7b20d6f1",
   "timestamp": 1790000001042,
+  "protocolVersion": "2.0",
   "nonce": "kQ3vNp7xRz2mW8tYc5bHjL0nVd",
   "responderIdentityId": "f9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a2f1e0d9c8b7a6958473625140f3e2d"
 }
 ```
 
 El `nonce` son 16 bytes en Base64URL sin padding. Entra en el transcript de 152 B.
+El `protocolVersion` es el dialecto efectivo, siempre un string (`"2.0"`/`"2.1"`, §9.3,
+§9.7); el cliente lo verifica **antes de firmar** (§17.2).
 
 ### 19.3 — Response
 
@@ -1065,7 +1068,7 @@ no hay transporte.
 - [ ] Implementa el flujo `AUTH_REQUEST` → `AUTH_CHALLENGE` → `AUTH_RESPONSE` → `AUTH_OK`.
 - [ ] Construye el transcript de 152 B con `TranscriptBuilder`; no lo reimplementa.
 - [ ] Verifica la firma con `AuthVerifier`, no con lógica propia.
-- [ ] Confirma `protocolVersion` en `AUTH_OK` (§17.2, P7).
+- [x] Confirma `protocolVersion` en `AUTH_CHALLENGE` y `AUTH_OK` (§17.2, P7). **Task 1.1** (conjunto efectivo servido hoy `{2.0}`).
 - [ ] **Decodifica `data` de forma atómica; jamás parcialmente** (§14).
 - [ ] **Entrega `RelayDataEnvelope.payload` sin tocar un byte** (§6.1, §6.2).
 - [ ] Aplica anti-spoofing: `envelope.from` = peer autenticado (`RelayServer.kt:337-343`).
