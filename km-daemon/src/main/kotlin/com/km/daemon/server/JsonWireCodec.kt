@@ -129,6 +129,49 @@ class JsonWireCodec(
         return signature.takeIf { it.size == ED25519_SIGNATURE_BYTES }
     }
 
+    // --- AUTH_OK (§9.6) -----------------------------------------------------
+
+    /**
+     * Campos canonicos de un `AUTH_OK` leidos del cable (§9.6).
+     *
+     * LADO DE LECTURA: el daemon EMITE el `AUTH_OK` con [authOk]; este metodo
+     * existe para consumirlo —lo necesita el gate de conformidad de vectores P6
+     * (task 1.4), que debe probar que el codec del daemon LEE los MISMOS bytes
+     * del artefacto que los otros tres componentes. Solo valida la FORMA (64
+     * hex, 40 hex, 16/32/64 bytes); la decision de dialecto y el alias legacy
+     * `identityId` viven en `AuthJsonCodec.parseAuthOkForDialect` (km-core), que
+     * es el UNICO sitio que resuelve el nombre canonico y su alias.
+     *
+     * `protocolVersion` se devuelve como el string que vino (o `null`), sin
+     * convertir: es dialecto, nunca la `version` numerica de KM-0002 (§9.7).
+     */
+    fun parseAuthOk(frame: JsonNode): AuthOkWireFields? {
+        val initiator = frame.string("initiatorIdentityId") ?: return null
+        if (initiator.length != IDENTITY_ID_HEX || !initiator.all { it in HEX }) return null
+        val responder = frame.string("responderIdentityId") ?: return null
+        if (responder.length != IDENTITY_ID_HEX || !responder.all { it in HEX }) return null
+        val sessionId = frame.string("sessionId") ?: return null
+        if (sessionId.length != SESSION_ID_HEX || !sessionId.all { it in HEX }) return null
+        val serverNonce = frame.string("serverNonce")
+            ?.let { runCatching { Base64Url.decode(it) }.getOrNull() } ?: return null
+        if (serverNonce.size != NONCE_BYTES) return null
+        val responderPublicKey = frame.string("responderPublicKey")
+            ?.let { runCatching { Base64Url.decode(it) }.getOrNull() } ?: return null
+        if (responderPublicKey.size != ED25519_PUBLIC_KEY_BYTES) return null
+        val serverSignature = frame.string("serverSignature")
+            ?.let { runCatching { Base64Url.decode(it) }.getOrNull() } ?: return null
+        if (serverSignature.size != ED25519_SIGNATURE_BYTES) return null
+        return AuthOkWireFields(
+            protocolVersion = frame.string("protocolVersion"),
+            initiatorIdentityId = initiator.lowercase(),
+            responderIdentityId = responder.lowercase(),
+            sessionId = sessionId.lowercase(),
+            serverNonce = serverNonce,
+            responderPublicKey = responderPublicKey,
+            serverSignature = serverSignature,
+        )
+    }
+
     // --- MESSAGE (§10) ------------------------------------------------------
 
     /**
@@ -385,6 +428,44 @@ class JsonWireCodec(
             ?.let { IdentityId(it.lowercase()) }
 }
 
+/**
+ * Campos canonicos de un `AUTH_OK` leidos del cable (§9.6), ya validados en su
+ * FORMA. El nombre canonico del iniciador es `initiatorIdentityId`; el alias
+ * legacy `identityId` NO se resuelve aqui (lo hace `AuthJsonCodec` en km-core,
+ * con la regla del dialecto).
+ */
+data class AuthOkWireFields(
+    /** Dialecto literal del frame, o `null` si no vino. Nunca se castea a Int. */
+    val protocolVersion: String?,
+    val initiatorIdentityId: String,
+    val responderIdentityId: String,
+    val sessionId: String,
+    val serverNonce: ByteArray,
+    val responderPublicKey: ByteArray,
+    val serverSignature: ByteArray,
+) {
+    override fun equals(other: Any?): Boolean =
+        other is AuthOkWireFields &&
+            protocolVersion == other.protocolVersion &&
+            initiatorIdentityId == other.initiatorIdentityId &&
+            responderIdentityId == other.responderIdentityId &&
+            sessionId == other.sessionId &&
+            serverNonce.contentEquals(other.serverNonce) &&
+            responderPublicKey.contentEquals(other.responderPublicKey) &&
+            serverSignature.contentEquals(other.serverSignature)
+
+    override fun hashCode(): Int {
+        var result = protocolVersion?.hashCode() ?: 0
+        result = 31 * result + initiatorIdentityId.hashCode()
+        result = 31 * result + responderIdentityId.hashCode()
+        result = 31 * result + sessionId.hashCode()
+        result = 31 * result + serverNonce.contentHashCode()
+        result = 31 * result + responderPublicKey.contentHashCode()
+        result = 31 * result + serverSignature.contentHashCode()
+        return result
+    }
+}
+
 /** Campos de un `AUTH_REQUEST` ya validados en su forma. */
 data class AuthRequestFields(
     val identityId: IdentityId,
@@ -480,6 +561,8 @@ data class IncomingSignal(
 // Constantes del dialecto. Vivas aqui, no dispersas: el nombre canonico de un
 // campo del cable se declara en un solo fichero.
 const val IDENTITY_ID_HEX: Int = 64
+const val SESSION_ID_HEX: Int = 40
+const val NONCE_BYTES: Int = 16
 const val ED25519_PUBLIC_KEY_BYTES: Int = 32
 const val ED25519_SIGNATURE_BYTES: Int = 64
 private val HEX = "0123456789abcdefABCDEF".toSet()
