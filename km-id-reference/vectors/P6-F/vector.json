@@ -1,0 +1,45 @@
+{
+  "artifacts": {
+    "auth_ok.json": {
+      "length": 522,
+      "sha256": "41c3bec897086aff91a5170851258c09b5c9e034f0e193b328c7f01fab6b3271"
+    },
+    "challenge.json": {
+      "length": 235,
+      "sha256": "cd18c3bfd21674804b714df6a5ab6abf917dbf6cf31f2e83d55d04cbcf82e9cf"
+    },
+    "response.json": {
+      "length": 309,
+      "sha256": "f6502cab2214825ac05a7ec9e4854150e029c279b71ace58913a22e810b600ce"
+    },
+    "server_transcript.bin": {
+      "length": 120,
+      "sha256": "65c41b28e499c6d7a179e5b0f3b4d0c81150dfa904f0eb37c55d226207e4099c"
+    },
+    "transcript.bin": {
+      "length": 152,
+      "sha256": "4138cb16e202fc2976f21596beb3e4b410717b97080ba4eede835d0218ed0d93"
+    }
+  },
+  "description": "el byte 0 del transcript de 152 B fue alterado tras firmar",
+  "expectations": [
+    {
+      "artifact": "auth_ok.json",
+      "crypto": "INITIATOR_SIGNATURE",
+      "errorCode": "INVALID_SIGNATURE",
+      "outcome": "REJECT",
+      "stage": "CRYPTO_REJECT"
+    }
+  ],
+  "expected": "REJECT_INVALID_SIGNATURE",
+  "id": "P6-F",
+  "inputs": {
+    "dialect": "2.0",
+    "initiatorIdentityId": "7add69bd30b028ce2c7838680066069d2709b47a01cc480034a8f9677c22237f",
+    "nonce": "6faf91447b51d9a2d14c84d665494f2a",
+    "responderIdentityId": "d5fccc09836e6a78aac2eaccb4f04011197515177f3db102017d6ee39feb764b",
+    "sessionId": "b2aeff36f46a697d3287794e39ac64ed1dd3e7d0",
+    "timestamp": "1721827200000"
+  },
+  "title": "P6-F tampered transcript"
+}

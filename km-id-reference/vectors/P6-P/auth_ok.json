@@ -1,0 +1,9 @@
+{
+  "initiatorIdentityId": "7add69bd30b028ce2c7838680066069d2709b47a01cc480034a8f9677c22237f",
+  "responderIdentityId": "d5fccc09836e6a78aac2eaccb4f04011197515177f3db102017d6ee39feb764b",
+  "responderPublicKey": "mDo4IQ6bRA2ahHRpeGPf-7-9T1XenN8hJXE82oZumvM",
+  "serverNonce": "IYoenlGkVa12ihR9aDTHiA",
+  "serverSignature": "ZCH9OweNslm5IR8swOgaGPlca_QbLPgi8WG092Z0iIJpKImfKOd6jWZ9UObGovbYvhNRfRPzS4a4N8UzXTrmDw",
+  "sessionId": "b2aeff36f46a697d3287794e39ac64ed1dd3e7d0",
+  "type": "AUTH_OK"
+}

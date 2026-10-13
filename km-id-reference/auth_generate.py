@@ -167,32 +167,26 @@ def emit_auth(
 
     for name, value in (artifacts or {}).items():
         path = os.path.join(d, name)
+        # El checksum que se publica en vector.json/AUTH_MANIFEST debe cubrir
+        # EXACTAMENTE los bytes que quedan en disco: si se hashea una
+        # serializacion distinta (compacta vs indentada) el checksum no sirve
+        # para que los consumidores comparen los bytes que cargan. Por eso el
+        # blob se construye una vez y se escribe tal cual.
         if isinstance(value, dict):
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(value, f, indent=2, sort_keys=True, ensure_ascii=False)
-                f.write("\n")
+            blob = (json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8")
         elif isinstance(value, str):
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(value)
-            if name.endswith(".txt") or name.endswith(".json"):
-                pass  # texto
-            elif name.endswith(".bin"):
-                with open(path, "wb") as f:
-                    f.write(value.encode("utf-8"))
+            if name.endswith(".bin"):
                 raise ValueError("no usar .bin para texto")
+            blob = value.encode("utf-8")
         elif isinstance(value, bytes):
-            with open(path, "wb") as f:
-                f.write(value)
+            blob = value
         else:
             raise TypeError(f"tipo no soportado: {type(value)} para {name}")
 
-        if name.endswith(".bin"):
-            meta.setdefault("artifacts", {})[name] = {
-                "length": len(value),
-                "sha256": hashlib.sha256(value if isinstance(value, bytes) else value.encode("utf-8")).hexdigest(),
-            }
-        elif name.endswith(".json"):
-            blob = json.dumps(value).encode("utf-8") if isinstance(value, dict) else value.encode("utf-8")
+        with open(path, "wb") as f:
+            f.write(blob)
+
+        if name.endswith(".bin") or name.endswith(".json"):
             meta.setdefault("artifacts", {})[name] = {
                 "length": len(blob),
                 "sha256": hashlib.sha256(blob).hexdigest(),
@@ -598,9 +592,428 @@ def _patched_encode(data: bytes) -> str:
 base64url_encode = _patched_encode
 
 
+
 # ---------------------------------------------------------------------------
-# MANIFEST
+# P6 Vectors P6-A..P6-T
 # ---------------------------------------------------------------------------
+
+def build_p6_vectors(sc: Scenario) -> list[dict]:
+    """Vectores P6-A..P6-T (relay mutual authentication).
+
+    ESQUEMA CANONICO (R1/R15/R16/R31/R34, ruling del owner obs #184):
+
+      AUTH_CHALLENGE  -> `protocolVersion` string ("2.0"/"2.1") ademas del
+                         `version` numerico de KM-0002 (campo DISTINTO).
+      AUTH_RESPONSE   -> `protocolVersion` string.
+      AUTH_OK         -> `protocolVersion` string, `initiatorIdentityId` (64
+                         hex), `responderIdentityId` (64 hex), `sessionId`
+                         (40 hex), `serverNonce` (Base64URL, 16 B),
+                         `responderPublicKey` (Base64URL, 32 B Ed25519) y
+                         `serverSignature` (Base64URL, 64 B). NUNCA el nombre
+                         legacy `signature` ni el alias `identityId` como forma
+                         canonica (el alias solo se usa para ejercitar la
+                         transicion de 2.0 / la retirada de 2.1).
+      server transcript -> 120 B = sessionId(40) || serverNonce(16) || initiatorIdentityId(64).
+
+    Cada `vector.json` publica `expectations`: la lista de decisiones que el
+    consumidor real (DialectNegotiation + AuthJsonCodec.parseAuthOkForDialect,
+    y para los vectores criptograficos el verificador de referencia) debe
+    reproducir sobre los MISMOS bytes. `stage` dice que capa decide:
+      DIALECT         -> rechazo en la negociacion de dialecto.
+      STRUCTURE       -> el parseo lanza (campo canonico ausente/mal formado).
+      FIELDS_REJECT   -> la regla de campos del dialecto rechaza.
+      FIELDS_ACCEPT   -> la regla de campos acepta.
+      CRYPTO_REJECT   -> campos ok; la verificacion de referencia falla.
+      VERIFIED        -> dialecto, campos y criptografia de referencia pasan.
+    """
+    out: list[dict] = []
+
+    init = sc.initiator_id
+    relay = sc.responder_id
+    session = sc.session_id
+    snonce = sc.server_nonce
+
+    init_pub = base64url_encode(sc.pub["initiator.sign.v1"])
+    relay_pub = base64url_encode(sc.pub["responder.sign.v1"])
+
+    # Clave "de otra identidad" para los vectores de anclaje PIN (K).
+    other_pk, _other_sk = ed.keypair_from_seed(seed_of("relay.alternate.v1"))
+    other_pub = base64url_encode(other_pk)
+
+    # Firma canonica del rele sobre el server transcript de 120 B.
+    canonical_server_tr = server_auth_transcript(session, snonce, init)
+    canonical_server_sig = ed.sign(canonical_server_tr, sc.priv["responder.sign.v1"])
+
+    def challenge(dialect="2.0", *, responder=relay, timestamp=None, omit_pv=False):
+        ch = {
+            "type": "AUTH_CHALLENGE",
+            "nonce": base64url_encode(sc.nonce),
+            "timestamp": sc.timestamp if timestamp is None else timestamp,
+            "version": 3,          # version del RFC KM-0002 (numerica), NO el dialecto
+            "responderIdentityId": responder,
+        }
+        if not omit_pv:
+            ch["protocolVersion"] = dialect   # dialecto string (R31/R34)
+        return ch
+
+    def response(*, responder=relay, timestamp=None, transcript_override=None):
+        ts = sc.timestamp if timestamp is None else timestamp
+        tr = auth_transcript(sc.nonce, ts, responder, init)
+        if transcript_override is not None:
+            tr = transcript_override
+        return {
+            "type": "AUTH_RESPONSE",
+            "identityId": init,
+            "publicKey": init_pub,
+            "signature": base64url_encode(ed.sign(tr, sc.priv["initiator.sign.v1"])),
+            "protocolVersion": "2.0",
+        }, tr
+
+    def auth_ok(*, dialect="2.0", initiator=init, responder=relay, session_id=None,
+                server_nonce=None, responder_public_key=None, signature=None,
+                omit=(), alias=None):
+        sid = session if session_id is None else session_id
+        sn = snonce if server_nonce is None else server_nonce
+        rpk = relay_pub if responder_public_key is None else responder_public_key
+        sig = canonical_server_sig if signature is None else signature
+        ok = {
+            "type": "AUTH_OK",
+            "initiatorIdentityId": initiator,
+            "responderIdentityId": responder,
+            "sessionId": sid,
+            "serverNonce": base64url_encode(sn),
+            "responderPublicKey": rpk,
+            "serverSignature": base64url_encode(sig),
+        }
+        if dialect is not None:
+            ok["protocolVersion"] = dialect
+        if alias is not None:
+            ok["identityId"] = alias
+        for key in omit:
+            ok.pop(key, None)
+        return ok
+
+    def art(challenge_json, response_json, ok_json, transcript_bytes, server_tr=None):
+        return {
+            "challenge.json": challenge_json,
+            "response.json": response_json,
+            "auth_ok.json": ok_json,
+            "transcript.bin": transcript_bytes,
+            "server_transcript.bin": canonical_server_tr if server_tr is None else server_tr,
+        }
+
+    def base_inputs(dialect, extra=None):
+        data = {
+            "dialect": dialect,
+            "nonce": sc.nonce.hex(),
+            "timestamp": str(sc.timestamp),
+            "sessionId": session,
+            "responderIdentityId": relay,
+            "initiatorIdentityId": init,
+        }
+        if extra:
+            data.update(extra)
+        return data
+
+    # --- P6-A: handshake valido (ACCEPT, criptografia de referencia valida) ---
+    ch_a = challenge("2.0")
+    resp_a, tr_a = response()
+    out.append(emit_auth(
+        "P6-A", "P6-A valid handshake", "Valid",
+        artifacts=art(ch_a, resp_a, auth_ok(dialect="2.0"), tr_a),
+        expected="ACCEPT",
+        inputs=base_inputs("2.0"),
+        meta_extra={"expectations": [
+            {"artifact": "auth_ok.json", "stage": "VERIFIED", "outcome": "ACCEPT",
+             "crypto": "SERVER_SIGNATURE_VALID"},
+        ]},
+    ))
+
+    # --- P6-B: serverSignature incorrecta -> INVALID_SERVER_SIGNATURE ---
+    out.append(emit_auth(
+        "P6-B", "P6-B wrong serverSignature", "serverSignature con 64 bytes cero sobre el transcript correcto",
+        artifacts=art(ch_a, resp_a, auth_ok(dialect="2.0", signature=bytes(64)), tr_a),
+        expected="REJECT_INVALID_SERVER_SIGNATURE",
+        inputs=base_inputs("2.0"),
+        meta_extra={"expectations": [
+            {"artifact": "auth_ok.json", "stage": "CRYPTO_REJECT", "outcome": "REJECT",
+             "errorCode": "INVALID_SERVER_SIGNATURE", "crypto": "SERVER_SIGNATURE"},
+        ]},
+    ))
+
+    # --- P6-C: responderPublicKey que no ancla al pin -> PIN_MISMATCH ---
+    out.append(emit_auth(
+        "P6-C", "P6-C responderPublicKey not hashing to pin", "la clave del AUTH_OK es la del iniciador, no la del rele",
+        artifacts=art(ch_a, resp_a, auth_ok(dialect="2.0", responder_public_key=init_pub), tr_a),
+        expected="REJECT_PIN_MISMATCH",
+        inputs=base_inputs("2.0"),
+        meta_extra={"expectations": [
+            {"artifact": "auth_ok.json", "stage": "CRYPTO_REJECT", "outcome": "REJECT",
+             "errorCode": "PIN_MISMATCH", "crypto": "IDENTITY_ANCHOR"},
+        ]},
+    ))
+
+    # --- P6-D: responderIdentityId del challenge discrepante con el pin -> PIN_MISMATCH ---
+    ch_d = challenge("2.0", responder=init)
+    resp_d, tr_d = response(responder=init)
+    out.append(emit_auth(
+        "P6-D", "P6-D challenge responderIdentityId discrepant", "el claim del challenge no es el pin",
+        artifacts=art(ch_d, resp_d, auth_ok(dialect="2.0"), tr_d),
+        expected="REJECT_PIN_MISMATCH",
+        inputs=base_inputs("2.0"),
+        meta_extra={"expectations": [
+            {"artifact": "auth_ok.json", "stage": "CRYPTO_REJECT", "outcome": "REJECT",
+             "errorCode": "PIN_MISMATCH", "crypto": "CHALLENGE_CLAIM"},
+        ]},
+    ))
+
+    # --- P6-E: timestamp fuera de la ventana -> INVALID_TIMESTAMP ---
+    stale_ts = sc.timestamp - 600_001
+    ch_e = challenge("2.0", timestamp=stale_ts)
+    resp_e, tr_e = response(timestamp=stale_ts)
+    out.append(emit_auth(
+        "P6-E", "P6-E wrong/reused nonce or timestamp", "timestamp del challenge fuera de la ventana de 300000 ms",
+        artifacts=art(ch_e, resp_e, auth_ok(dialect="2.0"), tr_e),
+        expected="REJECT_INVALID_TIMESTAMP_OR_REPLAY",
+        inputs=base_inputs("2.0", {"timestamp": str(stale_ts), "timestampWindowMs": "300000"}),
+        meta_extra={"expectations": [
+            {"artifact": "auth_ok.json", "stage": "CRYPTO_REJECT", "outcome": "REJECT",
+             "errorCode": "INVALID_TIMESTAMP", "crypto": "CHALLENGE_TIMESTAMP"},
+        ]},
+    ))
+
+    # --- P6-F: transcript de autenticacion manipulado -> INVALID_SIGNATURE ---
+    tampered_tr = bytearray(tr_a)
+    tampered_tr[0] ^= 0xFF
+    resp_f, _ = response(transcript_override=bytes(tampered_tr))
+    out.append(emit_auth(
+        "P6-F", "P6-F tampered transcript", "el byte 0 del transcript de 152 B fue alterado tras firmar",
+        artifacts=art(ch_a, resp_f, auth_ok(dialect="2.0"), bytes(tampered_tr)),
+        expected="REJECT_INVALID_SIGNATURE",
+        inputs=base_inputs("2.0"),
+        meta_extra={"expectations": [
+            {"artifact": "auth_ok.json", "stage": "CRYPTO_REJECT", "outcome": "REJECT",
+             "errorCode": "INVALID_SIGNATURE", "crypto": "INITIATOR_SIGNATURE"},
+        ]},
+    ))
+
+    # --- P6-G: AUTH_OK reproducido con otro sessionId -> fallo de binding de sesion ---
+    out.append(emit_auth(
+        "P6-G", "P6-G replayed AUTH_OK", "sessionId antiguo; la firma no cubre el nuevo transcript de 120 B",
+        artifacts=art(ch_a, resp_a, auth_ok(dialect="2.0", session_id="a" * 40), tr_a),
+        expected="REJECT",
+        inputs=base_inputs("2.0", {"replayedSessionId": "a" * 40}),
+        meta_extra={"expectations": [
+            {"artifact": "auth_ok.json", "stage": "CRYPTO_REJECT", "outcome": "REJECT",
+             "errorCode": "INVALID_SERVER_SIGNATURE", "crypto": "SERVER_SIGNATURE"},
+        ]},
+    ))
+
+    # --- P6-H: AUTH_OK firmado sobre un transcript de otro challenge ---
+    other_server_tr = bytearray(canonical_server_tr)
+    other_server_tr[0] ^= 0x01
+    ok_h = auth_ok(
+        dialect="2.0",
+        signature=ed.sign(bytes(other_server_tr), sc.priv["responder.sign.v1"]),
+    )
+    out.append(emit_auth(
+        "P6-H", "P6-H AUTH_OK from different challenge", "firma valida sobre un transcript que no es el de este challenge",
+        artifacts=art(ch_a, resp_a, ok_h, tr_a, server_tr=bytes(other_server_tr)),
+        expected="REJECT_INVALID_SERVER_SIGNATURE",
+        inputs=base_inputs("2.0"),
+        meta_extra={"expectations": [
+            {"artifact": "auth_ok.json", "stage": "CRYPTO_REJECT", "outcome": "REJECT",
+             "errorCode": "INVALID_SERVER_SIGNATURE", "crypto": "SERVER_SIGNATURE"},
+        ]},
+    ))
+
+    # --- P6-I: AUTH_OK sin serverNonce ni responderPublicKey -> MALFORMED_MESSAGE ---
+    ok_i = auth_ok(dialect="2.0", omit=("serverNonce", "responderPublicKey"))
+    out.append(emit_auth(
+        "P6-I", "P6-I missing serverNonce/responderPublicKey", "faltan campos obligatorios del AUTH_OK",
+        artifacts=art(ch_a, resp_a, ok_i, tr_a),
+        expected="REJECT_MALFORMED_MESSAGE",
+        inputs=base_inputs("2.0"),
+        meta_extra={"expectations": [
+            {"artifact": "auth_ok.json", "stage": "STRUCTURE", "outcome": "REJECT",
+             "errorCode": "MALFORMED_MESSAGE"},
+        ]},
+    ))
+
+    # --- P6-J: modo omision (AUTH_REQUEST sin responderIdentityId) -> ACCEPT ---
+    out.append(emit_auth(
+        "P6-J", "P6-J omission mode", "AUTH_REQUEST sin responderIdentityId; el pin coincide con el claim del challenge",
+        artifacts=art(ch_a, resp_a, auth_ok(dialect="2.0"), tr_a),
+        expected="ACCEPT",
+        inputs=base_inputs("2.0", {"requestResponderIdentityId": "omitted"}),
+        meta_extra={"expectations": [
+            {"artifact": "auth_ok.json", "stage": "VERIFIED", "outcome": "ACCEPT",
+             "crypto": "SERVER_SIGNATURE_VALID"},
+        ]},
+    ))
+
+    # --- P6-K: clave del cable de otra identidad -> PIN_MISMATCH ---
+    out.append(emit_auth(
+        "P6-K", "P6-K wire key of different identity", "responderPublicKey de una identidad distinta del pin",
+        artifacts=art(ch_a, resp_a, auth_ok(dialect="2.0", responder_public_key=other_pub), tr_a),
+        expected="REJECT_PIN_MISMATCH",
+        inputs=base_inputs("2.0"),
+        meta_extra={"expectations": [
+            {"artifact": "auth_ok.json", "stage": "CRYPTO_REJECT", "outcome": "REJECT",
+             "errorCode": "PIN_MISMATCH", "crypto": "IDENTITY_ANCHOR"},
+        ]},
+    ))
+
+    # --- P6-L: gracia dual-pin (43200 s) -> ACCEPT dentro de la ventana ---
+    out.append(emit_auth(
+        "P6-L", "P6-L dual-pin grace", "ACCEPT dentro de la ventana de 43200 s; tras ella el pin viejo deja de valer",
+        artifacts=art(ch_a, resp_a, auth_ok(dialect="2.0"), tr_a),
+        expected="ACCEPT",
+        inputs=base_inputs("2.0", {"graceSeconds": "43200"}),
+        meta_extra={"expectations": [
+            {"artifact": "auth_ok.json", "stage": "VERIFIED", "outcome": "ACCEPT",
+             "crypto": "SERVER_SIGNATURE_VALID"},
+        ]},
+    ))
+
+    # --- P6-M: AUTH_CHALLENGE sin dialecto -> MALFORMED_MESSAGE ---
+    ch_m = challenge(omit_pv=True)
+    out.append(emit_auth(
+        "P6-M", "P6-M challenge dialect absent", "el AUTH_CHALLENGE no trae protocolVersion",
+        artifacts=art(ch_m, resp_a, auth_ok(dialect="2.0"), tr_a),
+        expected="REJECT_MALFORMED_MESSAGE",
+        inputs=base_inputs("2.0", {"challengeDialect": "missing"}),
+        meta_extra={"expectations": [
+            {"artifact": "auth_ok.json", "stage": "DIALECT", "outcome": "REJECT",
+             "errorCode": "MALFORMED_MESSAGE"},
+        ]},
+    ))
+
+    # --- P6-N: AUTH_CHALLENGE con dialecto desconocido -> UNSUPPORTED_PROTOCOL_VERSION ---
+    ch_n = challenge("9.9")
+    out.append(emit_auth(
+        "P6-N", "P6-N challenge unknown dialect", "el AUTH_CHALLENGE declara '9.9'",
+        artifacts=art(ch_n, resp_a, auth_ok(dialect="2.0"), tr_a),
+        expected="REJECT_UNSUPPORTED_PROTOCOL_VERSION",
+        inputs=base_inputs("2.0", {"challengeDialect": "9.9"}),
+        meta_extra={"expectations": [
+            {"artifact": "auth_ok.json", "stage": "DIALECT", "outcome": "REJECT",
+             "errorCode": "UNSUPPORTED_PROTOCOL_VERSION"},
+        ]},
+    ))
+
+    # --- P6-O: challenge 2.0 + AUTH_OK 2.1 (inconsistencia intra-handshake) ---
+    out.append(emit_auth(
+        "P6-O", "P6-O challenge 2.0 AUTH_OK 2.1", "el challenge confirma 2.0 y el AUTH_OK declara 2.1",
+        artifacts=art(challenge("2.0"), resp_a, auth_ok(dialect="2.1"), tr_a),
+        expected="REJECT_UNSUPPORTED_PROTOCOL_VERSION",
+        inputs=base_inputs("2.0", {"authOkDialect": "2.1"}),
+        meta_extra={"expectations": [
+            {"artifact": "auth_ok.json", "stage": "DIALECT", "outcome": "REJECT",
+             "errorCode": "UNSUPPORTED_PROTOCOL_VERSION"},
+        ]},
+    ))
+
+    # --- P6-P: AUTH_OK sin dialecto -> MALFORMED_MESSAGE ---
+    out.append(emit_auth(
+        "P6-P", "P6-P AUTH_OK dialect absent", "el AUTH_OK no trae protocolVersion",
+        artifacts=art(challenge("2.0"), resp_a, auth_ok(dialect=None), tr_a),
+        expected="REJECT_MALFORMED_MESSAGE",
+        inputs=base_inputs("2.0", {"authOkDialect": "missing"}),
+        meta_extra={"expectations": [
+            {"artifact": "auth_ok.json", "stage": "DIALECT", "outcome": "REJECT",
+             "errorCode": "MALFORMED_MESSAGE"},
+        ]},
+    ))
+
+    # --- P6-Q: AUTH_OK con dialecto desconocido -> UNSUPPORTED_PROTOCOL_VERSION ---
+    out.append(emit_auth(
+        "P6-Q", "P6-Q AUTH_OK bad dialect", "el AUTH_OK declara '9.9'",
+        artifacts=art(challenge("2.0"), resp_a, auth_ok(dialect="9.9"), tr_a),
+        expected="REJECT_UNSUPPORTED_PROTOCOL_VERSION",
+        inputs=base_inputs("2.0", {"authOkDialect": "9.9"}),
+        meta_extra={"expectations": [
+            {"artifact": "auth_ok.json", "stage": "DIALECT", "outcome": "REJECT",
+             "errorCode": "UNSUPPORTED_PROTOCOL_VERSION"},
+        ]},
+    ))
+
+    # --- P6-R: AUTH_OK 2.1 a un consumidor 2.0-only -> UNSUPPORTED_PROTOCOL_VERSION ---
+    out.append(emit_auth(
+        "P6-R", "P6-R AUTH_OK 2.1 to 2.0-only consumer", "un cliente que solo implementa 2.0 recibe 2.1",
+        artifacts=art(challenge("2.0"), resp_a, auth_ok(dialect="2.1"), tr_a),
+        expected="REJECT_UNSUPPORTED_PROTOCOL_VERSION",
+        inputs=base_inputs("2.0", {"consumerDialect": "2.0", "authOkDialect": "2.1"}),
+        meta_extra={"expectations": [
+            {"artifact": "auth_ok.json", "stage": "DIALECT", "outcome": "REJECT",
+             "errorCode": "UNSUPPORTED_PROTOCOL_VERSION"},
+        ]},
+    ))
+
+    # --- P6-S: dialecto 2.1, alias identityId retirado en CUALQUIER forma ---
+    #   La retirada es del NOMBRE: alias solo, alias IGUAL al canonico y alias
+    #   DISTINTO del canonico se rechazan todos con UNKNOWN_PROTOCOL (ruling).
+    ch_s = challenge("2.1")
+    ok_s_only = auth_ok(dialect="2.1", omit=("initiatorIdentityId",), alias=init)
+    ok_s_equal = auth_ok(dialect="2.1", alias=init)
+    ok_s_conflict = auth_ok(dialect="2.1", alias="0" * 64)
+    out.append(emit_auth(
+        "P6-S", "P6-S AUTH_OK legacy identityId at 2.1",
+        "en 2.1 CUALQUIER presencia del alias identityId -solo, junto al canonico con valor "
+        "igual o distinto- se rechaza UNKNOWN_PROTOCOL",
+        artifacts={
+            "challenge.json": ch_s,
+            "response.json": resp_a,
+            "auth_ok.json": ok_s_only,
+            "auth_ok_alias_equal.json": ok_s_equal,
+            "auth_ok_conflict.json": ok_s_conflict,
+            "transcript.bin": tr_a,
+            "server_transcript.bin": canonical_server_tr,
+        },
+        expected="REJECT_UNKNOWN_PROTOCOL",
+        inputs=base_inputs("2.1", {"authOkDialect": "2.1"}),
+        meta_extra={"expectations": [
+            {"artifact": "auth_ok.json", "stage": "FIELDS_REJECT", "outcome": "REJECT",
+             "errorCode": "UNKNOWN_PROTOCOL"},
+            {"artifact": "auth_ok_alias_equal.json", "stage": "FIELDS_REJECT", "outcome": "REJECT",
+             "errorCode": "UNKNOWN_PROTOCOL"},
+            {"artifact": "auth_ok_conflict.json", "stage": "FIELDS_REJECT", "outcome": "REJECT",
+             "errorCode": "UNKNOWN_PROTOCOL"},
+        ]},
+    ))
+
+    # --- P6-T: transicion 2.0 (alias solo / ambos iguales / ambos distintos) ---
+    #   En 2.0 el alias se acepta solo, y junto al canonico solo si son
+    #   IGUALES; con valores distintos es MALFORMED_MESSAGE (R3).
+    ch_t = challenge("2.0")
+    ok_t_conflict = auth_ok(dialect="2.0", alias="0" * 64)
+    ok_t_equal = auth_ok(dialect="2.0", alias=init)
+    ok_t_only = auth_ok(dialect="2.0", omit=("initiatorIdentityId",), alias=init)
+    out.append(emit_auth(
+        "P6-T", "P6-T alias identityId transition at 2.0",
+        "en 2.0 el alias solo y el alias igual al canonico se ACEPTAN; ambos con valores "
+        "distintos es MALFORMED_MESSAGE",
+        artifacts={
+            "challenge.json": ch_t,
+            "response.json": resp_a,
+            "auth_ok.json": ok_t_conflict,
+            "auth_ok_equal.json": ok_t_equal,
+            "auth_ok_alias_only.json": ok_t_only,
+            "transcript.bin": tr_a,
+            "server_transcript.bin": canonical_server_tr,
+        },
+        expected="REJECT_MALFORMED_MESSAGE",
+        inputs=base_inputs("2.0", {"authOkDialect": "2.0"}),
+        meta_extra={"expectations": [
+            {"artifact": "auth_ok.json", "stage": "FIELDS_REJECT", "outcome": "REJECT",
+             "errorCode": "MALFORMED_MESSAGE"},
+            {"artifact": "auth_ok_equal.json", "stage": "FIELDS_ACCEPT", "outcome": "ACCEPT"},
+            {"artifact": "auth_ok_alias_only.json", "stage": "FIELDS_ACCEPT", "outcome": "ACCEPT"},
+        ]},
+    ))
+
+    return out
+
 
 def write_manifest(vectors: list[dict], invalid: list[dict], sc: Scenario) -> None:
     manifest = {
@@ -627,7 +1040,7 @@ def main() -> int:
     os.makedirs(INVALID_DIR, exist_ok=True)
 
     sc = Scenario()
-    vectors = build_auth_vectors(sc)
+    vectors = build_auth_vectors(sc) + build_p6_vectors(sc)
     invalid = build_invalid_fixtures(sc)
     write_manifest(vectors, invalid, sc)
 

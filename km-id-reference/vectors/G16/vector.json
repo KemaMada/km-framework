@@ -1,8 +1,8 @@
 {
   "artifacts": {
     "auth_ok.json": {
-      "length": 270,
-      "sha256": "8ac23a61f9c387390d5fef184b1ad54ddce33de2420bd9d86ca8bfdb763152cf"
+      "length": 281,
+      "sha256": "d1be7dd8dad20ffa375a9b9226f6c7946b9e0a2fb6e44f6464dc4d2867604590"
     },
     "transcript.bin": {
       "length": 120,

@@ -1,20 +1,20 @@
 {
   "artifacts": {
     "auth_ok.json": {
-      "length": 270,
-      "sha256": "8ac23a61f9c387390d5fef184b1ad54ddce33de2420bd9d86ca8bfdb763152cf"
+      "length": 281,
+      "sha256": "d1be7dd8dad20ffa375a9b9226f6c7946b9e0a2fb6e44f6464dc4d2867604590"
     },
     "challenge.json": {
-      "length": 168,
-      "sha256": "e465e82c5b881a5747463a37b4242aed733ba21483ec30e2b4b389a9bb9af7fa"
+      "length": 179,
+      "sha256": "8ceeef33d43044a7848c373451ce0d8b925142c0d4bab8156833150e6146abf7"
     },
     "response.json": {
-      "length": 267,
-      "sha256": "5d83532686e6400a2679e1921e66e4c5669b3f4e27047478b1fb4e27f3ada10e"
+      "length": 278,
+      "sha256": "0e99bb2f9b457a96388cd241d248a268402d8214e4e40b58816f165cd60a74bf"
     },
     "verification.json": {
-      "length": 1484,
-      "sha256": "f4f75f1069b40c787fb9d8ffd1619b9dcdde9cbd75a421830cb094cdb08e112c"
+      "length": 1515,
+      "sha256": "d134e46a780bfc2eac9aadfaea9fb93bcb68f453523c7d0d07d1320ba938e965"
     }
   },
   "base64urlInitiatorKey": "0Lomds0flXRFGQFKkxqHV_qeekVnFKzT60CN0Uds_QM",

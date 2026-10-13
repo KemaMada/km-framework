@@ -6,8 +6,13 @@
 # Generador unico: km-id-reference/auth_generate.py
 # Total: 20 vectores -> P6-A..P6-L (12) + P6-M..P6-T (8).
 #
-# OJO: esta lista es el INVENTARIO (los identificadores). La generacion y el
-# congelado de los ficheros son la task 1.4; aqui no se generan fixtures.
+# Estos identificadores apuntan a artefactos REALES con checksums REALES:
+# cada `vectors/<id>/` existe, y los sha256 de sus ficheros estan en
+# AUTH_MANIFEST.json (mapa `artifacts` por vector) y en FROZEN.sha256. Un
+# consumidor NO duplica la lista: carga el vector y comprueba su checksum.
+# El gate de km-core (P6VectorConformanceTest) abre cada auth_ok.json y lo
+# pasa por el codec de produccion; un vector con esquema incorrecto lo hace
+# fallar.
 P6-A
 P6-B
 P6-C

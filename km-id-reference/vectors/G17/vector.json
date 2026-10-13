@@ -1,12 +1,12 @@
 {
   "artifacts": {
     "challenge.json": {
-      "length": 168,
-      "sha256": "e465e82c5b881a5747463a37b4242aed733ba21483ec30e2b4b389a9bb9af7fa"
+      "length": 179,
+      "sha256": "8ceeef33d43044a7848c373451ce0d8b925142c0d4bab8156833150e6146abf7"
     },
     "response.json": {
-      "length": 267,
-      "sha256": "5d83532686e6400a2679e1921e66e4c5669b3f4e27047478b1fb4e27f3ada10e"
+      "length": 278,
+      "sha256": "0e99bb2f9b457a96388cd241d248a268402d8214e4e40b58816f165cd60a74bf"
     },
     "transcript.bin": {
       "length": 152,

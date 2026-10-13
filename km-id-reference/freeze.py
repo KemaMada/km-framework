@@ -43,6 +43,7 @@ CODE = [
     "schemas.py",
     "selfcheck.py",
     "verification.py",
+    "auth_generate.py",
 ]
 
 

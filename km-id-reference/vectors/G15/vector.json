@@ -1,8 +1,8 @@
 {
   "artifacts": {
     "response.json": {
-      "length": 267,
-      "sha256": "5d83532686e6400a2679e1921e66e4c5669b3f4e27047478b1fb4e27f3ada10e"
+      "length": 278,
+      "sha256": "0e99bb2f9b457a96388cd241d248a268402d8214e4e40b58816f165cd60a74bf"
     },
     "transcript.bin": {
       "length": 152,

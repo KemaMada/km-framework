@@ -1,8 +1,8 @@
 {
   "artifacts": {
     "challenge.json": {
-      "length": 168,
-      "sha256": "e465e82c5b881a5747463a37b4242aed733ba21483ec30e2b4b389a9bb9af7fa"
+      "length": 179,
+      "sha256": "8ceeef33d43044a7848c373451ce0d8b925142c0d4bab8156833150e6146abf7"
     },
     "transcript.bin": {
       "length": 152,
