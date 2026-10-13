@@ -540,11 +540,11 @@ private fun sendFrame(data: ByteArray, to: IdentityId? = null, ack: Boolean): Re
     /**
      * `AUTH_OK`.
      *
-     * Sobre `serverSignature`: NO se verifica, y se dice por que. El transcript
-     * de 120 B necesita el `serverNonce`, que la tabla de campos de la seccion
-     * 9.6 no lista, asi que la firma llega sin material verificable. Es la
-     * divergencia P6 del propio documento, no una omision de este modulo: el
-     * cliente Android tampoco la verifica.
+     * Sobre `serverSignature`: NO se verifica todavia, y se dice por que. El
+     * relé YA emite el `serverNonce` y el `responderPublicKey` (task 1.2), asi
+     * que el material verificable existe; lo que falta es que este cliente
+     * rehaga el transcript de 120 B, ancore la clave al pin y verifique la
+     * firma. Eso es P6 / task 5.2; aqui no se activa.
      *
      * Lo que SI se comprueba es la FORMA de `sessionId`: 40 hex. Sin ese dato no
      * hay sesion que distinguir de la de otro peer.

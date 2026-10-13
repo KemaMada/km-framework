@@ -54,7 +54,9 @@ object AuthJsonCodec {
         node.put("identityId", response.identityId)
         node.put("publicKey", Base64Url.encode(response.publicKey))
         node.put("signature", Base64Url.encode(response.signature))
-        node.put("protocolVersion", response.protocolVersion)
+        // El dialecto SIEMPRE viaja como string (R34). El `version` numerico de
+        // KM-0002 no se emite aqui.
+        node.put("protocolVersion", response.protocolVersion.wire)
         return mapper.writeValueAsString(node)
     }
 
@@ -64,18 +66,27 @@ object AuthJsonCodec {
             identityId = textField(n, "identityId"),
             publicKey = bytes(n, "publicKey"),
             signature = bytes(n, "signature"),
-            protocolVersion = intField(n, "protocolVersion"),
+            protocolVersion = dialectField(n, "protocolVersion"),
         )
     }
 
     // --- AUTH_OK -----------------------------------------------------------
 
+    /**
+     * Campos canonicos del `AUTH_OK` (R15/R16), con las MISMAS claves que el
+     * codec del daemon `JsonWireCodec.authOk`: `initiatorIdentityId`,
+     * `responderIdentityId`, `sessionId`, `serverNonce`, `responderPublicKey`,
+     * `serverSignature`. Sin `identityId`, `publicKey` ni `signature` (nombres
+     * retirados).
+     */
     fun authOkWire(authOk: AuthOk): String {
         val node = mapper.createObjectNode()
+        node.put("initiatorIdentityId", authOk.initiatorIdentityId)
+        node.put("responderIdentityId", authOk.responderIdentityId)
         node.put("sessionId", authOk.sessionId)
         node.put("serverNonce", Base64Url.encode(authOk.serverNonce))
-        node.put("publicKey", Base64Url.encode(authOk.responderPublicKey))
-        node.put("signature", Base64Url.encode(authOk.signature))
+        node.put("responderPublicKey", Base64Url.encode(authOk.responderPublicKey))
+        node.put("serverSignature", Base64Url.encode(authOk.signature))
         return mapper.writeValueAsString(node)
     }
 
@@ -84,8 +95,10 @@ object AuthJsonCodec {
         return AuthOk(
             sessionId = textField(n, "sessionId"),
             serverNonce = bytes(n, "serverNonce"),
-            responderPublicKey = bytes(n, "publicKey"),
-            signature = bytes(n, "signature"),
+            responderPublicKey = bytes(n, "responderPublicKey"),
+            signature = bytes(n, "serverSignature"),
+            initiatorIdentityId = textField(n, "initiatorIdentityId"),
+            responderIdentityId = textField(n, "responderIdentityId"),
         )
     }
 
@@ -121,6 +134,19 @@ object AuthJsonCodec {
         val v = n.get(field)
         require(v != null && v.isIntegralNumber) { "campo '$field' debe ser un entero presente" }
         return v.asInt()
+    }
+
+    /**
+     * Campo dialecto: un string JSON que mapea a un [Dialect] conocido.
+     *
+     * Un valor ausente, de tipo no-string o que no corresponde a ningun
+     * dialecto implementado falla cerrado (R34): el dialecto nunca es un numero.
+     */
+    private fun dialectField(n: JsonNode, field: String): Dialect {
+        val v = n.get(field)
+        require(v != null && v.isTextual) { "campo '$field' debe ser un string dialecto presente" }
+        return Dialect.fromWireOrNull(v.asText())
+            ?: throw IllegalArgumentException("campo '$field' no es un dialecto conocido: '${v.asText()}'")
     }
 
     /** Solo para tests: un objeto JSON con el mismo contenido reordenado. */

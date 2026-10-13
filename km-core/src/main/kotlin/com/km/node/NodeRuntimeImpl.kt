@@ -447,6 +447,8 @@ class NodeRuntimeImpl(
             serverNonce = serverNonce,
             signature = serverSig.bytes,
             responderPublicKey = kp.publicKey,
+            initiatorIdentityId = response.identityId,
+            responderIdentityId = identity.nodeId.value,
         )
 
         // Verificar el AUTH_OK localmente

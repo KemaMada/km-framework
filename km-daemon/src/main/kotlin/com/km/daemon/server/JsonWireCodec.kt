@@ -227,13 +227,19 @@ class JsonWireCodec(
         )
 
     /**
-     * `AUTH_OK` (§9.6, §19.4).
+     * `AUTH_OK` (§9.6, §19.4). Campos canonicos (R15/R16): `protocolVersion`,
+     * `initiatorIdentityId`, `responderIdentityId`, `sessionId`, `serverNonce`,
+     * `responderPublicKey`, `serverSignature`.
      *
      * `serverSignature` es la firma de `RelayServer` sobre el transcript de
-     * 120 B: `sessionId || serverNonce || initiatorIdentityId`. El
-     * `serverNonce` NO viaja: §9.6 no lo lista, y la tabla es la norma. En la
-     * practica eso deja la firma sin material verificable para el cliente, que
-     * ya hoy no la comprueba (P6 de §18.2); no se resuelve aqui.
+     * 120 B: `sessionId || serverNonce || initiatorIdentityId`. Los DOS campos
+     * que antes se omitian y dejaban la firma sin material verificable viajan ya
+     * (task 1.2): `serverNonce` (Base64URL, 16 B) y `responderPublicKey`
+     * (Base64URL, 32 B Ed25519). Que viajen NO significa que el cliente los
+     * verifique todavia; la verificacion de `serverSignature` es P6 (4.1/5.2).
+     *
+     * El nombre del iniciador es `initiatorIdentityId` (canonico), no el alias
+     * legacy `identityId`. La aceptacion del alias en dialecto 2.0 es task 1.3.
      *
      * `protocolVersion` SI viaja: es la confirmacion que §17.2.3 pide para que
      * un cliente antiguo y un rele nuevo no se finjan entendidos. Su valor es
@@ -247,6 +253,8 @@ class JsonWireCodec(
         initiatorIdentityId: String,
         responderIdentityId: String,
         dialect: String,
+        serverNonce: ByteArray,
+        responderPublicKey: ByteArray,
     ): String =
         mapper.writeValueAsString(
             frame {
@@ -254,9 +262,13 @@ class JsonWireCodec(
                 put("messageId", newMessageId().toString())
                 put("timestamp", now())
                 put("protocolVersion", dialect)
-                put("identityId", initiatorIdentityId)
+                put("initiatorIdentityId", initiatorIdentityId)
                 put("responderIdentityId", responderIdentityId)
                 put("sessionId", sessionId)
+                // Base64URL sin padding: entran en el transcript de 120 B y no
+                // pueden llevar '=' (§9.6, RFC 4648 §5).
+                put("serverNonce", Base64Url.encode(serverNonce))
+                put("responderPublicKey", Base64Url.encode(responderPublicKey))
                 put("serverSignature", Base64Url.encode(serverSignature))
             }
         )

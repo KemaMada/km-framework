@@ -321,8 +321,9 @@ internal fun JsonObject.identityId(field: String): IdentityId? {
  * `responderIdentityId` de un `AUTH_CHALLENGE` o un `AUTH_OK`, normalizado a
  * minuscula, o `null` si no viene o no tiene forma valida.
  *
- * Vive fuera de las dos clases a proposito. En `AUTH_OK` conviven `identityId` —el
- * iniciador, o sea el cliente— y `responderIdentityId` —el rele—, y confundirlos
+ * Vive fuera de las dos clases a proposito. En `AUTH_OK` conviven
+ * `initiatorIdentityId` —el iniciador, o sea el cliente— y `responderIdentityId`
+ * —el rele—, y confundirlos
  * no falla en el primer arranque: el primer `AUTH_REQUEST` ya ocurrio antes de
  * leer el `AUTH_OK`. Falla en la PRIMERA reconexion, que se anuncia con la
  * identidad equivocada y recibe `AUTH_FAIL RELAY_IDENTITY_MISMATCH`. Una funcion

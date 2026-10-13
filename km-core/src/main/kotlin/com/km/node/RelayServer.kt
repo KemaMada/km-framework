@@ -209,6 +209,8 @@ class RelayServer(
             serverNonce = serverNonce,
             responderPublicKey = relayKeyPair.publicKey,
             signature = sig.bytes,
+            initiatorIdentityId = clientIdentityId.value,
+            responderIdentityId = relayIdentityId.value,
         )
 
         sessions[clientIdentityId] = session

@@ -123,7 +123,9 @@ class AuthSession(
             identityId = localIdentityId,
             publicKey = localKeyPair.publicKey,
             signature = sig.bytes,
-            protocolVersion = 3,
+            // Dialecto implementado por el iniciador (fuente unica `Dialect`),
+            // ya no el Int ambiguo de KM-0002 (task 1.2 / P11 / R34).
+            protocolVersion = Dialect.V2_0,
         )
     }
 

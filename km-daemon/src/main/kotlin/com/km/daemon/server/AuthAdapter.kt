@@ -144,17 +144,15 @@ class AuthAdapter(
                 )
             )
 
-        // `protocolVersion` de AuthResponse es un Int (campo INTERNO de
-        // KM-0002, jamas el dialecto del cable) y el cliente manda el string
-        // "2.0" (§9.7). Ni `AuthVerifier` ni `RelayServer` lo miran: la
-        // reconciliacion del Int con el dialecto es P11/task 1.2, no una
-        // decision de este modulo. El dialecto del cable que viaja en el
-        // `AUTH_OK` sale de `dialect`, NO de este Int.
+        // `protocolVersion` de AuthResponse es el dialecto del cable (fuente
+        // unica `Dialect`, task 1.2 / P11 / R34). El `version` NUMERICO de
+        // KM-0002 no participa: el dialecto efectivo ya se derivo arriba del
+        // `AUTH_REQUEST` y es el que viaja en el `AUTH_OK`.
         val response = AuthResponse(
             identityId = request.identityId.value,
             publicKey = request.publicKey,
             signature = signature,
-            protocolVersion = DIALECT_VERSION_NUMBER,
+            protocolVersion = dialect,
         )
 
         return when (val result = relayServer.authenticate(request.identityId, response)) {
@@ -167,6 +165,10 @@ class AuthAdapter(
                         initiatorIdentityId = request.identityId.value,
                         responderIdentityId = relayIdentityId.value,
                         dialect = dialect.wire,
+                        // Material de verificacion del transcript de 120 B (R15):
+                        // el cliente lo necesita para verificar `serverSignature`.
+                        serverNonce = authOk.serverNonce,
+                        responderPublicKey = authOk.responderPublicKey,
                     ),
                     sessionId = session.sessionId,
                 )
@@ -191,16 +193,6 @@ class AuthAdapter(
         // inalcanzable hoy; si `authenticate` empieza a devolver otra cosa,
         // este `when` no compila y obliga a decidir el codigo a proposito.
         else -> ErrorCode.INVALID_AUTH_FLOW
-    }
-
-    private companion object {
-        /**
-         * Rellena el Int `AuthResponse.protocolVersion`, campo INTERNO de
-         * KM-0002 que hoy nadie lee. NO es el dialecto del cable: el dialecto
-         * es un string y viaja por `Dialect`. La reconciliacion de ambos
-         * espacios es task 1.2 / P11.
-         */
-        const val DIALECT_VERSION_NUMBER: Int = 2
     }
 }
 
