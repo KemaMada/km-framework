@@ -304,7 +304,7 @@ Ambos tamaños son **constantes**, no aproximaciones (`km-core/.../auth/Transcri
 | `serverNonce` | string (Base64URL, 16 B) | **Sí** | Nonce del servidor; entra en el transcript de 120 B (§9.5) y es el material de verificación de `serverSignature` |
 | `responderPublicKey` | string (Base64URL, 32 B Ed25519) | **Sí** | Clave pública del relé con la que el cliente verifica `serverSignature` |
 | `serverSignature` | string (Base64URL, 64 B Ed25519) | Sí (según KM-0002) | Firma sobre el transcript de 120 B |
-| `identityId` | string (64 hex) | Solo dialecto `2.0` | **Alias retirado** de `initiatorIdentityId`. Se acepta únicamente en dialecto `2.0` y se retira en `2.1` (§9.7, R2). Si convive con `initiatorIdentityId`, MUST ser igual; si difiere, `MALFORMED_MESSAGE` (R3) |
+| `identityId` | string (64 hex) | **Pendiente (task 1.3); NO implementado** | Alias **retirado** de `initiatorIdentityId`. Su aceptación en dialecto `2.0` y su retirada en `2.1` están **especificadas** (§9.7, R2), pero **NO implementadas** todavía (task 1.3): hoy ningún codec lee ni emite `identityId` en `AUTH_OK`, y el relé solo sirve `2.0` con el nombre **canónico** `initiatorIdentityId`. Cuando 1.3 aterrice, si convive con `initiatorIdentityId`, MUST ser igual; si difiere, `MALFORMED_MESSAGE` (R3) |
 
 > **Longitudes y codificación (task 1.2).** `serverNonce` son exactamente 16 bytes y
 > `responderPublicKey` 32 bytes Ed25519, ambos en Base64URL **sin padding** (`=` no aparece en
