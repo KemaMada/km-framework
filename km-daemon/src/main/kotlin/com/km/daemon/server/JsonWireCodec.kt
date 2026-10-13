@@ -238,8 +238,11 @@ class JsonWireCodec(
      * (Base64URL, 32 B Ed25519). Que viajen NO significa que el cliente los
      * verifique todavia; la verificacion de `serverSignature` es P6 (4.1/5.2).
      *
-     * El nombre del iniciador es `initiatorIdentityId` (canonico), no el alias
-     * legacy `identityId`. La aceptacion del alias en dialecto 2.0 es task 1.3.
+     * El nombre del iniciador es SIEMPRE `initiatorIdentityId` (canonico) al
+     * emitir; el rele nunca escribe el alias legacy `identityId` en el cable.
+     * La ACEPTACION de ese alias es cosa de la LECTURA: `2.0` lo admite y `2.1`
+     * lo retira (task 1.3, R2/R3), regla que vive en `AuthOkAliasRules` /
+     * `AuthJsonCodec.parseAuthOkForDialect`.
      *
      * `protocolVersion` SI viaja: es la confirmacion que §17.2.3 pide para que
      * un cliente antiguo y un rele nuevo no se finjan entendidos. Su valor es

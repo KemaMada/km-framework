@@ -29,28 +29,38 @@ import com.km.node.RelayServerResult
  * Eso es de km-core. Lo unico que NEGOCIA es el dialecto del cable (task 1.1):
  * acepta el declarado si este rele lo sirve, lo confirma en `AUTH_CHALLENGE` y
  * en `AUTH_OK`, y lo transporta a los codecs como `Dialect`, nunca como literal
- * ni como Int.
+ * ni como Int. Desde la task 1.3 sirve `{2.0, 2.1}`: la retirada del alias
+ * `identityId` de `2.1` esta implementada en la lectura del `AUTH_OK`
+ * (`AuthOkAliasRules`), de modo que confirmar `2.1` es una promesa que el
+ * sistema cumple.
  */
 class AuthAdapter(
     private val relayServer: RelayServer,
     private val relayIdentityId: IdentityId,
     private val codec: JsonWireCodec,
-) {
-
     /**
-     * Dialectos que este rele sabe SERVIR de verdad (task 1.1, N1).
+     * Dialectos que este rele sabe SERVIR de verdad.
      *
-     * La politica de transicion aprobada es `Dialect.TRANSITIONAL` = {2.0, 2.1},
-     * pero `2.1` retira el alias `identityId` de `AUTH_OK` (tasks 1.2/1.3), que
-     * aun no estan implementadas: confirmar `2.1` seria mentir sobre el
-     * dialecto servido. Por eso el conjunto EFECTIVO se estrecha a los
-     * dialectos cuyas reglas de campo estan implementadas. Al aterrizar 1.2/1.3
-     * basta con añadir `Dialect.V2_1` aqui.
+     * La politica de transicion aprobada es `Dialect.TRANSITIONAL`
+     * = `{2.0, 2.1}`. Desde la task 1.3 el rele sirve los DOS: `2.1` retira el
+     * alias `identityId` del `AUTH_OK`, y esa regla de campo ya esta
+     * implementada (`AuthOkAliasRules` / `AuthJsonCodec.parseAuthOkForDialect`),
+     * asi que confirmar `2.1` ya no miente sobre el dialecto servido. La
+     * coherencia del dialecto a lo largo del handshake (`AUTH_REQUEST` ->
+     * `AUTH_CHALLENGE` -> `AUTH_OK`) la garantiza este adaptador, que deriva el
+     * dialecto EFECTIVO del `AUTH_REQUEST` y lo ecoa identico en el challenge y
+     * en el OK.
+     *
+     * El parametro es inyectable para poder ejercitar la matriz de
+     * compatibilidad (un rele que solo sirve `2.0`, o solo `2.1`) y para el gate
+     * de retirada de `"2.0"` de KM-WIRE-RELAY seccion 17.4, que recorta el
+     * conjunto efectivo sin cambiar codigo.
      *
      * El eco del dialecto en `AUTH_CHALLENGE` y `AUTH_OK` sale SIEMPRE de este
      * conjunto efectivo, nunca de un literal ni de un Int.
      */
-    private val supportedDialects: Set<Dialect> = setOf(Dialect.V2_0)
+    private val supportedDialects: Set<Dialect> = Dialect.TRANSITIONAL,
+) {
 
     /** Codigos de `AUTH_FAIL`. El cliente los lee como string, sin enum. */
     object ErrorCode {

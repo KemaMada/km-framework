@@ -2,8 +2,10 @@ package com.km.daemon.server
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.databind.node.ObjectNode
+import com.km.auth.AuthFieldError
 import com.km.auth.AuthJsonCodec
 import com.km.auth.AuthOk
+import com.km.auth.AuthOkFields
 import com.km.auth.Base64Url
 import com.km.auth.Dialect
 import com.km.daemon.util.Base64Standard
@@ -11,6 +13,7 @@ import com.km.model.IdentityId
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertInstanceOf
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -233,6 +236,79 @@ class JsonWireCodecMessageTest {
                 coreFrame.get(f).asText(),
                 "el valor de $f debe coincidir entre ambos codecs",
             )
+        }
+    }
+
+    // =====================================================================
+    // Task 1.3 — la transicion del alias identityId (R2/R3) en el daemon
+    // =====================================================================
+
+    /**
+     * R16: el frame que emite el daemon (con el nombre canonico
+     * `initiatorIdentityId`) es leido por `AuthJsonCodec.parseAuthOkForDialect`
+     * tanto en `2.0` como en `2.1`. El rele nunca emite el alias.
+     */
+    @Test
+    fun `el AUTH_OK del daemon se lee en 2_0 y en 2_1 sin alias`() {
+        for (dialect in listOf(Dialect.V2_0, Dialect.V2_1)) {
+            val wire = codec.authOk(
+                sessionId = "c".repeat(40),
+                serverSignature = ByteArray(64) { (it * 3).toByte() },
+                initiatorIdentityId = from.value,
+                responderIdentityId = to.value,
+                dialect = dialect.wire,
+                serverNonce = serverNonce16,
+                responderPublicKey = responderPub32,
+            )
+            val parsed = AuthJsonCodec.parseAuthOkForDialect(wire, dialect)
+            val accepted = assertInstanceOf(AuthOkFields.Accepted::class.java, parsed)
+            assertEquals(from.value, accepted.authOk.initiatorIdentityId)
+        }
+    }
+
+    private fun authOkAliasFrame(initiatorFields: String): String {
+        val node = mapper.createObjectNode()
+        node.put("sessionId", "c".repeat(40))
+        node.put("serverNonce", Base64Url.encode(serverNonce16))
+        node.put("responderPublicKey", Base64Url.encode(responderPub32))
+        node.put("serverSignature", Base64Url.encode(ByteArray(64) { (it * 3).toByte() }))
+        node.put("responderIdentityId", to.value)
+        // Campos del iniciador inyectados: canonico y/o alias legacy.
+        val extra = mapper.readTree("{$initiatorFields}")
+        extra.fields().forEachRemaining { (k, v) -> node.set<com.fasterxml.jackson.databind.JsonNode>(k, v) }
+        return node.toString()
+    }
+
+    /** R2/S15: en 2.1 el alias en solitario se rechaza con UNKNOWN_PROTOCOL. */
+    @Test
+    fun `en 2_1 el alias identityId en solitario es UNKNOWN_PROTOCOL`() {
+        val wire = authOkAliasFrame(""""identityId":"${from.value}"""")
+        val parsed = AuthJsonCodec.parseAuthOkForDialect(wire, Dialect.V2_1)
+        val rejected = assertInstanceOf(AuthOkFields.Rejected::class.java, parsed)
+        assertEquals(AuthFieldError.UNKNOWN_PROTOCOL, rejected.error)
+    }
+
+    /** R2/S13: en 2.0 el mismo frame se acepta por el alias. */
+    @Test
+    fun `en 2_0 el alias identityId en solitario se acepta`() {
+        val wire = authOkAliasFrame(""""identityId":"${from.value}"""")
+        val parsed = AuthJsonCodec.parseAuthOkForDialect(wire, Dialect.V2_0)
+        val accepted = assertInstanceOf(AuthOkFields.Accepted::class.java, parsed)
+        assertEquals(from.value, accepted.authOk.initiatorIdentityId)
+    }
+
+    /** R3/S14/P6-T: ambos presentes y distintos -> MALFORMED_MESSAGE. */
+    @Test
+    fun `ambos campos distintos son MALFORMED_MESSAGE`() {
+        val wire = authOkAliasFrame(
+            """"initiatorIdentityId":"${from.value}","identityId":"${to.value}"""",
+        )
+        for (dialect in listOf(Dialect.V2_0, Dialect.V2_1)) {
+            val rejected = assertInstanceOf(
+                AuthOkFields.Rejected::class.java,
+                AuthJsonCodec.parseAuthOkForDialect(wire, dialect),
+            )
+            assertEquals(AuthFieldError.MALFORMED_MESSAGE, rejected.error)
         }
     }
 
