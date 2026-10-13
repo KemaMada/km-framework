@@ -424,11 +424,14 @@ El **Relay** confirma la autenticación exitosa mediante **AUTH_OK**, que incluy
 ```
 
 El campo del iniciador es `initiatorIdentityId` (**canónico**, R1). La aceptación del alias
-legacy `identityId` en dialecto `"2.0"` y su retirada en `"2.1"` están **especificadas** (R2)
-pero **NO implementadas** todavía (task 1.3): hoy ningún codec lee ni emite `identityId` en
-`AUTH_OK`, y el **Relay** solo sirve `"2.0"` con el nombre **canónico** `initiatorIdentityId`.
-Cuando 1.3 aterrice, si ambos campos conviven **DEBEN** ser iguales; si difieren,
-`MALFORMED_MESSAGE` (R3). (La task 1.2 dejó la forma canónica; la transición del alias es 1.3.)
+legacy `identityId` en dialecto `"2.0"` y su retirada en `"2.1"` están **implementadas**
+(task 1.3, `AuthOkAliasRules` / `AuthJsonCodec.parseAuthOkForDialect`): en `"2.0"` el alias
+en solitario se **acepta**; en `"2.1"` el alias en solitario se rechaza con `UNKNOWN_PROTOCOL`.
+Si ambos campos conviven **DEBEN** ser iguales; si difieren, `MALFORMED_MESSAGE` (R3). El
+**Relay** nunca **emite** el alias: escribe siempre el nombre **canónico** `initiatorIdentityId`
+(KM-WIRE-RELAY §9.6), y sirve los dos dialectos de la política de transición `{2.0, 2.1}`. El
+rechazo del alias es **local del cliente**: ningún consumidor de producción invoca todavía esa
+lectura (llega con la verificación de `serverSignature`, 4.1/5.2).
 El `AUTH_OK` transporta ya `serverNonce` y `responderPublicKey` (task 1.2): son el material con
 el que el **Client** rehace el transcript de 120 B para verificar `serverSignature`. **Que
 viajen no equivale a que se verifiquen**: la verificación en el cliente sigue siendo P6
@@ -478,6 +481,13 @@ El `protocolVersion` en un `AUTH_FAIL` es **opcional y solo diagnóstico** (N6):
 
 No hay **downgrade**: si el **Relay** no sirve el dialecto pedido, **rechaza**; nunca
 responde con un dialecto distinto del declarado por el **Client** (KM-WIRE-RELAY §17.2).
+
+> **Rechazo LOCAL del `AUTH_OK` (task 1.3).** Aparte de los rechazos del **Relay** de la
+> tabla, el **Client** rechaza **localmente** un `AUTH_OK` mal formado **sin** emitir
+> `AUTH_FAIL` (no hay frame de vuelta): ausencia del campo canónico `initiatorIdentityId`
+> o alias `identityId` **en conflicto** → `MALFORMED_MESSAGE`; alias `identityId` **en
+> solitario** en dialecto `"2.1"` → `UNKNOWN_PROTOCOL` (KM-WIRE-RELAY §16.5, §17.1,
+> `AuthOkAliasRules`). Son fallos de **forma de campo**, no de firma.
 
 ### 9.10 — Estado interno
 

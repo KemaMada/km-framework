@@ -322,7 +322,7 @@ La **Response** **DEBE** contener:
 |-------|-----------|-------------|
 | type | MUST | `AUTH_OK` o `AUTH_FAIL`. |
 | protocolVersion | MUST (OK) | Dialecto del transporte confirmado, SIEMPRE string (`"2.0"` / `"2.1"`). **DEBE** coincidir con el del **Challenge** del mismo handshake; si no, el **Initiator** **DEBE** rechazar el `AUTH_OK` (KM-WIRE-RELAY §17.2). |
-| initiatorIdentityId | MUST (OK) | `identityId` del **Initiator**. Nombre **canónico**. En dialecto `"2.0"` el alias legacy `identityId` se acepta; en `"2.1"` se retira. Si conviven, **DEBEN** ser iguales (KM-WIRE-RELAY §9.6). |
+| initiatorIdentityId | MUST (OK) | `identityId` del **Initiator**. Nombre **canónico**. En dialecto `"2.0"` el alias legacy `identityId` se **acepta**; en `"2.1"` se **retira** (alias en solitario → `UNKNOWN_PROTOCOL`). Si conviven, **DEBEN** ser iguales; si difieren → `MALFORMED_MESSAGE`. Implementado en la lectura (`AuthOkAliasRules` / `AuthJsonCodec.parseAuthOkForDialect`, task 1.3); el **Responder** nunca emite el alias (KM-WIRE-RELAY §9.6/§17.1). |
 | responderIdentityId | MUST (OK) | `identityId` del **Responder**. |
 | sessionId | MUST (OK) | Identificador único de la **Session** generado por el **Responder**. |
 | serverNonce | MUST (OK) | Nuevo nonce del servidor (128 bits, codificado en Base64URL) para futuros mensajes de la **Session** y parte del **Server Authentication Transcript** (§10.4). |
@@ -481,7 +481,7 @@ Los parámetros `serialization`, `compression` y `cryptoSuites` se definen en KM
 | Código | Descripción | Causa probable |
 |--------|-------------|----------------|
 | `INVALID_SIGNATURE` | La firma no corresponde a la clave pública declarada. | Clave privada incorrecta o mensaje modificado. |
-| `UNKNOWN_PROTOCOL` | La versión del protocolo no es compatible. | El **Client** usa una versión que el otro extremo no soporta. |
+| `UNKNOWN_PROTOCOL` | La versión del protocolo no es compatible, o un campo se presentó en una **forma que el dialecto no admite** (alias legacy `identityId` en `2.1`). | El **Client** usa una versión que el otro extremo no soporta; o el **Responder** emite el alias retirado en dialecto `2.1` (KM-WIRE-RELAY §17.1, task 1.3). |
 | `UNSUPPORTED_PROTOCOL_VERSION` | El dialecto del transporte (`protocolVersion`) es desconocido, no servido por el otro extremo, o **inconsistente entre los frames del mismo handshake** (KM-WIRE-RELAY §17.2, N2). | Cliente y relé no comparten dialecto, o un handshake mezcla dialectos. Nombre canónico en el cable del relé; equivale a `UNKNOWN_PROTOCOL` en el habla de auth. |
 | `TIMEOUT` | La autenticación no se completó en el tiempo máximo. | Conexión lenta, ataque DoS, o **Client** malicioso. |
 | `INVALID_TIMESTAMP` | El timestamp está fuera de la ventana de tolerancia. | Relojes desincronizados o **Replay Attack**. |

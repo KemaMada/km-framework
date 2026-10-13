@@ -304,7 +304,7 @@ Ambos tamaños son **constantes**, no aproximaciones (`km-core/.../auth/Transcri
 | `serverNonce` | string (Base64URL, 16 B) | **Sí** | Nonce del servidor; entra en el transcript de 120 B (§9.5) y es el material de verificación de `serverSignature` |
 | `responderPublicKey` | string (Base64URL, 32 B Ed25519) | **Sí** | Clave pública del relé con la que el cliente verifica `serverSignature` |
 | `serverSignature` | string (Base64URL, 64 B Ed25519) | Sí (según KM-0002) | Firma sobre el transcript de 120 B |
-| `identityId` | string (64 hex) | **Pendiente (task 1.3); NO implementado** | Alias **retirado** de `initiatorIdentityId`. Su aceptación en dialecto `2.0` y su retirada en `2.1` están **especificadas** (§9.7, R2), pero **NO implementadas** todavía (task 1.3): hoy ningún codec lee ni emite `identityId` en `AUTH_OK`, y el relé solo sirve `2.0` con el nombre **canónico** `initiatorIdentityId`. Cuando 1.3 aterrice, si convive con `initiatorIdentityId`, MUST ser igual; si difiere, `MALFORMED_MESSAGE` (R3) |
+| `identityId` | string (64 hex) | **Implementado (task 1.3)** | Alias **legacy** de `initiatorIdentityId`. Se **acepta SOLO en dialecto `2.0`** (S13/P6-S); en `2.1` está **retirado** y un `AUTH_OK` que lo traiga en solitario se rechaza con `UNKNOWN_PROTOCOL` (S15). Si convive con `initiatorIdentityId` **DEBEN ser iguales**; si difieren, `MALFORMED_MESSAGE` (R3, S14/P6-T). El **relé nunca lo emite** (escribe siempre el canónico `initiatorIdentityId`); la regla vive en la **lectura** (`AuthOkAliasRules` / `AuthJsonCodec.parseAuthOkForDialect`). Rechazo **local del cliente**: ningún consumidor de producción invoca todavía esa lectura (llega con la verificación de `serverSignature`, 4.1/5.2) |
 
 > **Longitudes y codificación (task 1.2).** `serverNonce` son exactamente 16 bytes y
 > `responderPublicKey` 32 bytes Ed25519, ambos en Base64URL **sin padding** (`=` no aparece en
@@ -714,7 +714,8 @@ pertenece a la sesión ya establecida y no debe usarse para negociar el dialecto
 | `AUTH_FAILED` | Firma o identidad inválida | `km daemon` |
 | `RELAY_IDENTITY_MISMATCH` | `responderIdentityId` no es el del relé | `km daemon` |
 | `INVALID_AUTH_FLOW` | `AUTH_RESPONSE` sin `AUTH_REQUEST` previo, o sin dialecto negociado válido | `km daemon` |
-| `MALFORMED_MESSAGE` | Campo ausente o del tipo equivocado (p. ej. `protocolVersion` numérico) | Cliente (fallo local, ver §17.2) |
+| `MALFORMED_MESSAGE` | Campo ausente o del tipo equivocado (p. ej. `protocolVersion` numérico), o **alias `identityId` en conflicto** con `initiatorIdentityId` (task 1.3, R3) | Cliente (fallo local, ver §17.2) |
+| `UNKNOWN_PROTOCOL` | El alias legacy `identityId` del `AUTH_OK` aparece en **dialecto `2.1`**, donde está retirado (task 1.3, R2/S15). Es un fallo **local del cliente** | Cliente (fallo local) |
 
 > **`PIN_MISMATCH` (N5):** el pin es una decisión **local del cliente** (KM-0003 §9.2) y
 > NO forma parte de este catálogo de errores del cable. El cliente que no reproduce su pin
@@ -733,6 +734,19 @@ relé. KM-0002 tiene su propio campo `version` numérico dentro del challenge
 (`AuthJsonCodec.kt:35`), y `RelayServer.createChallenge` lo pone a `3`
 (`RelayServer.kt:132`). Son campos distintos con valores distintos. Que `"2.0"` sea un
 string y `version` sea un int 3 es otra expresión de la divergencia de §9.7.
+
+**Tabla de dialectos (NORMATIVE, A2 / task 1.3).** Los valores canónicos son **dos**,
+strings JSON (nunca números, §9.7), y `protocolVersion` viaja en `AUTH_REQUEST`, en
+`AUTH_CHALLENGE` y en `AUTH_OK` (ambos sentidos, §17.2):
+
+| Dialecto | Comportamiento de campo del `AUTH_OK` |
+|----------|----------------------------------------|
+| `"2.0"` | `initiatorIdentityId` es **canónico**; el alias legacy `identityId` se **acepta**. Si ambos conviven **DEBEN** ser iguales; si difieren, `MALFORMED_MESSAGE`. La compatibilidad **NO** permite saltarse la verificación criptográfica (§17.2, N5). |
+| `"2.1"` | Solo `initiatorIdentityId`. El alias `identityId` está **retirado**: presente **en solitario** -> `UNKNOWN_PROTOCOL`; presente **junto al canónico** -> debe ser igual o `MALFORMED_MESSAGE` (R2/R3). |
+
+La retirada del alias es la única diferencia de campo entre `2.0` y `2.1`; el dialecto
+**no** altera los bytes firmados del transcript (§9.5) ni decide **si** se verifica la
+firma (§17.2, N5). Implementado en `AuthOkAliasRules` / `AuthJsonCodec.parseAuthOkForDialect`.
 
 ### 17.2 — Cómo se negocia (NORMATIVE, task 1.1)
 
@@ -779,6 +793,14 @@ verificación de `serverSignature` la manda la posesión del pin anclado a
 contra un dialecto que no conocía; y el punto 6 porque sin él el cliente podía pasar a
 `ONLINE` con un `AUTH_OK` de otro dialecto.
 
+**Conjunto efectivo servido (task 1.3).** La política de transición es `{2.0, 2.1}` y el
+relé **sirve ambos** desde la task 1.3: la regla de campo que retira el alias en `2.1`
+(`AuthOkAliasRules`) está implementada, de modo que confirmar `2.1` ya no es una promesa
+vacía. El relé **NO** anuncia un dialecto que no sepa servir: el conjunto efectivo sale de
+`AuthAdapter.supportedDialects` (= `Dialect.TRANSITIONAL`), y sólo se confirma el dialecto
+que el cliente **declaró** y que ese conjunto contiene. Un relé que sólo sirviera `2.1`
+rechazaría un `AUTH_REQUEST` `2.0` sin bajarse de dialecto (§17.4).
+
 ### 17.3 — Compatibilidad
 
 Un campo `type` desconocido MUST ser ignorado (§7.1). Esto da compatibilidad hacia
@@ -811,6 +833,16 @@ que MEZCLA dialectos" son cosas distintas:
 | 2.0 | solo 2.1 | Rechazo explícito, `UNSUPPORTED_PROTOCOL_VERSION` | — (sin downgrade) |
 | 2.1 | solo 2.0 (o sin negociación) | Rechazo explícito, **sin downgrade** a 2.0 | — (nunca `ONLINE`) |
 | cualquiera | challenge sin `protocolVersion` | `MALFORMED_MESSAGE`, nunca `ONLINE` | — |
+
+> **Ejecutable (task 1.3, control 4).** Esta matriz se produce como **resultados de
+> test**, no como prosa: `P6CompatibilityMatrixTest` (km-daemon) recorre las filas con
+> los componentes reales (`AuthAdapter.begin`/`complete`, `DialectNegotiation`) y afirma
+> **por separado** los dos ejes que importan: **`connects`** (¿completa el handshake?) y
+> **`p6Protected`** (¿queda autenticación mutua?). Un cliente antiguo que **conecta** bajo
+> `2.0` **NO** queda protegido por P6. Como la verificación de `serverSignature` en el
+> cliente aún no existe (4.1/5.2), el test afirma además que **ningún cliente entregado
+> hoy es P6-protegido** en ninguna fila; la fila `2.1`/`2.1` describe un cliente **conforme
+> de la especificación**, no uno entregado.
 
 **Retirada de `"2.0"` (N1).** La política es transitoria `{2.0, 2.1}`. El trabajo **no
 cierra** sin un criterio de retirada **verificable** y un procedimiento de **confirmación
@@ -881,7 +913,7 @@ de la columna «Implementado» requiere actualizar esta tabla.
 | P4 | Store-and-forward persistente | Solo `InMemoryRelayStore`, en memoria, sin límites efectivos. |
 | P5 | `MESSAGE` con campo `data` | El cliente reenvía bytes opacos; no nombra el campo (§10.1). |
 | P6 | Verificación de `serverSignature` en `AUTH_OK` | El cliente pasa a `ONLINE` sin verificar (§9.6). Los campos de verificación (`serverNonce`, `responderPublicKey`) YA viajan en el `AUTH_OK` (task 1.2), pero ningún cliente rehace el transcript de 120 B ni verifica la firma todavía (4.1/5.2). **Serializar bien ≠ verificar.** |
-| P7 | Negociación de `protocolVersion` | **Mecanismo implementado (task 1.1):** el relé confirma el dialecto efectivo en `AUTH_CHALLENGE` y `AUTH_OK` (`JsonWireCodec.authChallenge`/`authOk`) y ambos clientes lo verifican antes de firmar y antes de `ONLINE`; ausencia → `MALFORMED_MESSAGE`, valor desconocido, no implementado o inconsistente entre frames → `UNSUPPORTED_PROTOCOL_VERSION`, sin downgrade ni upgrade. **Abierto:** el conjunto efectivo servido hoy es `{2.0}` (`AuthAdapter.supportedDialects`); servir `2.1` (reglas de campo y retirada del alias) es 1.2/1.3. La verificación de `serverSignature` en el cliente es P6 (4.1/5.2). |
+| P7 | Negociación de `protocolVersion` | **Mecanismo implementado (task 1.1); dialecto `2.1` servido (task 1.3):** el relé confirma el dialecto efectivo en `AUTH_CHALLENGE` y `AUTH_OK` (`JsonWireCodec.authChallenge`/`authOk`) y ambos clientes lo verifican antes de firmar y antes de `ONLINE`; ausencia → `MALFORMED_MESSAGE`, valor desconocido, no implementado o inconsistente entre frames → `UNSUPPORTED_PROTOCOL_VERSION`, sin downgrade ni upgrade. El conjunto efectivo servido es `{2.0, 2.1}` (`AuthAdapter.supportedDialects` = `Dialect.TRANSITIONAL`); la retirada del alias `identityId` en `2.1` está implementada (`AuthOkAliasRules` / `AuthJsonCodec.parseAuthOkForDialect`). **Abierto:** ningún consumidor de producción invoca todavía la lectura dialectal del `AUTH_OK` (llega con 4.1/5.2) y la verificación de `serverSignature` en el cliente es P6 (4.1/5.2). |
 | P8 | Emisión de `PEER_ONLINE` / `PEER_OFFLINE` | El cliente los lee; el relé no los serializa (§12.1). |
 | P9 | Tratamiento de `RELAY_ERROR` en el cliente | Cuerpo vacío (`RelayClient.kt:272-273`). |
 | P10 | Mapeo `RelayServerError` → `RelayErrorCode` | Indefinido (§16.3). |
