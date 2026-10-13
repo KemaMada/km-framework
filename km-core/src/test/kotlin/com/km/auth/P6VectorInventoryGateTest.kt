@@ -1,53 +1,70 @@
 package com.km.auth
 
+import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
-import java.io.File
-import java.nio.file.Paths
+import java.security.MessageDigest
 
 /**
- * CONFORMANCE GATE de la familia de vectores P6 (task 1.1).
+ * CONFORMANCE GATE del INVENTARIO de la familia de vectores P6 (task 1.1, ampliado en 1.4).
  *
  * POR QUE EXISTE
  * --------------
  * El inventario P6 se cito durante el diseno como 12 vectores (P6-A..P6-L)
- * cuando el total REAL es 20 (P6-A..P6-L = 12, mas P6-M..P6-T = 8). El error
- * estaba en la spec, en la matriz de trazabilidad y por tanto en el gate. Este
- * test fija el numero REAL y FALLA si alguien vuelve a divergir.
+ * cuando el total REAL es 20 (P6-A..P6-L = 12, mas P6-M..P6-T = 8). Este test
+ * fija el numero REAL y FALLA si alguien vuelve a divergir.
+ *
+ * LO QUE CAMBIO EN LA TASK 1.4 (anti-falso-verde)
+ * -----------------------------------------------
+ * La version anterior localizaba el directorio `km-id-reference/` subiendo
+ * rutas relativas (`../km-id-reference`, ...). Eso solo funciona en el checkout
+ * del repositorio y NUNCA en la app Android. Ahora el inventario, el manifiesto
+ * y el congelado se cargan del CLASSPATH (`/p6-vectors/...`), porque viajan
+ * DENTRO del artefacto km-core (ver `km-core/build.gradle.kts`). Los cuatro
+ * consumidores leen asi los MISMOS bytes.
+ *
+ * Ademas, este gate YA NO se limita a comprobar el numero: comprueba que cada
+ * uno de los 20 vector IDs apunta a un artefacto REAL cuyo sha256 coincide con
+ * el declarado en `AUTH_MANIFEST.json` (checksum real, no solo el nombre). La
+ * verificacion de ESQUEMA y de RESULTADO por vector vive en
+ * [P6VectorConformanceTest].
  *
  * QUE NO HACE
  * -----------
- * NO genera ni congela fixtures: eso es la task 1.4. Aqui solo se verifica el
- * INVENTARIO y que la FUENTE es unica, con checksums.
- *
- * El inventario canonico vive en `km-id-reference/P6_VECTOR_INVENTORY.txt`.
- * Ningun componente duplica la lista: todos la leen.
+ * NO genera ni congela fixtures: eso es la task 1.4 (responsabilidad de
+ * `km-id-reference/auth_generate.py` + `freeze.py`).
  */
 class P6VectorInventoryGateTest {
 
     private val mapper = ObjectMapper()
 
-    private val referenceRoot: File by lazy {
-        val candidates = listOf(
-            Paths.get("km-id-reference").toFile(),
-            Paths.get("../km-id-reference").toFile(),
-            Paths.get("../../km-id-reference").toFile(),
-            Paths.get("../../../km-id-reference").toFile(),
-        )
-        candidates.firstOrNull { File(it, "P6_VECTOR_INVENTORY.txt").isFile }
-            ?: error("no se encuentra km-id-reference/P6_VECTOR_INVENTORY.txt (busque en: $candidates)")
-    }
+    private fun resourceBytes(path: String): ByteArray =
+        checkNotNull(javaClass.getResourceAsStream(path)) {
+            "falta el recurso de clase '$path' (¿esta km-core empaquetando km-id-reference/vectors?)"
+        }.use { it.readBytes() }
+
+    private fun resourceText(path: String): String = resourceBytes(path).toString(Charsets.UTF_8)
+
+    private fun sha256Hex(bytes: ByteArray): String =
+        MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 
     private val inventoryIds: List<String> by lazy {
-        File(referenceRoot, "P6_VECTOR_INVENTORY.txt").readLines()
+        resourceText("/p6-vectors/P6_VECTOR_INVENTORY.txt")
+            .lines()
             .map { it.trim() }
             .filter { it.isNotEmpty() && !it.startsWith("#") }
     }
 
-    private fun expectedIds(): List<String> =
-        ('A'..'T').map { "P6-$it" }
+    private val manifest: JsonNode by lazy {
+        mapper.readTree(resourceText("/p6-vectors/AUTH_MANIFEST.json"))
+    }
+
+    private fun manifestVectorIds(): List<String> =
+        manifest.path("vectors").map { it.path("id").asText() }.filter { it.startsWith("P6-") }
+
+    private fun expectedIds(): List<String> = ('A'..'T').map { "P6-$it" }
 
     @Test
     fun `el inventario real es de 20 vectores P6-A a P6-T`() {
@@ -70,45 +87,67 @@ class P6VectorInventoryGateTest {
 
     @Test
     fun `la fuente de fixtures es unica y tiene checksums`() {
-        // Generador unico.
-        val generators = referenceRoot.listFiles { f ->
-            f.isFile && f.name.contains("auth_generate") && f.name.endsWith(".py")
-        } ?: emptyArray()
-        assertEquals(1, generators.size, "debe haber UN generador de vectores de auth, no ${generators.size}")
-
-        val authGenerator = File(referenceRoot, "auth_generate.py")
-        assertTrue(authGenerator.isFile, "falta km-id-reference/auth_generate.py")
-
-        // Manifest y checksums como fuente de verdad de los hashes.
-        val manifest = File(referenceRoot, "AUTH_MANIFEST.json")
-        assertTrue(manifest.isFile, "falta km-id-reference/AUTH_MANIFEST.json")
-        val frozen = File(referenceRoot, "FROZEN.sha256")
-        assertTrue(frozen.isFile, "falta km-id-reference/FROZEN.sha256")
-
-        // El manifest declara al MISMO generador: una sola fuente.
-        val generatedBy = mapper.readTree(manifest).path("generatedBy").asText()
+        // El manifiesto declara al MISMO generador: una sola fuente (R18).
+        val generatedBy = manifest.path("generatedBy").asText()
         assertEquals(
             "km-id-reference/auth_generate.py",
             generatedBy,
             "el AUTH_MANIFEST debe declarar el generador unico",
         )
+
+        // El inventario y el manifiesto NO pueden divergir: ambos apuntan a la
+        // misma lista (una sola fuente de verdad, sin duplicar el inventario).
+        assertEquals(
+            inventoryIds,
+            manifestVectorIds(),
+            "los IDs del AUTH_MANIFEST deben coincidir EXACTAMENTE con el inventario",
+        )
+
+        // El congelado viaja tambien en el artefacto.
+        assertTrue(
+            resourceBytes("/p6-vectors/FROZEN.sha256").isNotEmpty(),
+            "el congelado FROZEN.sha256 debe viajar en el artefacto km-core",
+        )
     }
 
     @Test
-    fun `no hay una segunda fuente con el inventario P6`() {
-        // Si alguien duplicara la lista en otro fichero de la referencia, el
-        // gate cae: la fuente canonica es una y solo una.
-        val labelled = referenceRoot.walkTopDown()
-            .filter { it.isFile && it.name != "P6_VECTOR_INVENTORY.txt" }
-            // `vectors/` e `invalid/` son FIXTURES generadas (task 1.4): citar
-            // "P6-A" dentro de un vector no es duplicar el inventario.
-            .filter { it.parentFile?.name !in setOf("vectors", "invalid") }
-            .filter { it.extension in setOf("txt", "json", "md") }
-            .filter { f -> runCatching { f.readText().contains("P6-A") }.getOrDefault(false) }
-            .toList()
-        assertTrue(
-            labelled.isEmpty(),
-            "la lista P6 no debe duplicarse fuera de P6_VECTOR_INVENTORY.txt; encontrada en: $labelled",
+    fun `cada vector apunta a artefactos reales con checksums reales`() {
+        for (id in inventoryIds) {
+            val vectorJson = manifest.path("vectors").first { it.path("id").asText() == id }
+            val artifacts = vectorJson.path("artifacts")
+            assertTrue(artifacts.isObject && artifacts.size() > 0) {
+                "$id no declara artefactos con checksums en el AUTH_MANIFEST"
+            }
+            for (entry in artifacts.properties()) {
+                val name = entry.key
+                val resourcePath = "/p6-vectors/$id/$name"
+                val realBytes = resourceBytes(resourcePath)
+                val declared = entry.value
+                assertEquals(
+                    declared.path("length").asInt(),
+                    realBytes.size,
+                    "$id/$name: la longitud real no coincide con la declarada",
+                )
+                assertEquals(
+                    declared.path("sha256").asText(),
+                    sha256Hex(realBytes),
+                    "$id/$name: el sha256 real no coincide con el declarado (checksum falso)",
+                )
+            }
+            // El AUTH_OK canonico de cada vector debe existir como recurso.
+            assertTrue(
+                resourceBytes("/p6-vectors/$id/auth_ok.json").isNotEmpty(),
+                "$id no tiene auth_ok.json empaquetado",
+            )
+        }
+    }
+
+    @Test
+    fun `el inventario no duplica IDs`() {
+        assertEquals(
+            inventoryIds.size,
+            inventoryIds.toSet().size,
+            "el inventario tiene IDs repetidos: fuente ambigua",
         )
     }
 }
