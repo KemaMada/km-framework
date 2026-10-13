@@ -413,13 +413,23 @@ El **Relay** confirma la autenticación exitosa mediante **AUTH_OK**, que incluy
   "messageId",
   "timestamp",
   "protocolVersion",
-  "identityId": "<identityId del Client>",
+  "initiatorIdentityId": "<identityId del Client>",
   "responderIdentityId": "<identityId del Relay>",
   "sessionId",
-  "serverSignature": "<Ed25519 signature del Relay>",
+  "serverNonce": "<nonce de 16 B, Base64URL>",
+  "responderPublicKey": "<clave publica Ed25519 del Relay, 32 B Base64URL>",
+  "serverSignature": "<Ed25519 signature del Relay sobre el transcript de 120 B, 64 B Base64URL>",
   "capabilities": ["<capabilities acordadas>"]
 }
 ```
+
+El campo del iniciador es `initiatorIdentityId` (**canónico**). En dialecto `"2.0"` se acepta
+además el alias legacy `identityId` (con el mismo valor si ambos están presentes); en `"2.1"`
+el alias se retira (task 1.2 deja la forma canónica; la transición del alias es task 1.3).
+El `AUTH_OK` transporta ya `serverNonce` y `responderPublicKey` (task 1.2): son el material con
+el que el **Client** rehace el transcript de 120 B para verificar `serverSignature`. **Que
+viajen no equivale a que se verifiquen**: la verificación en el cliente sigue siendo P6
+(KM-WIRE-RELAY §18.2).
 
 A partir de este momento, el **Relay** considera al **Client** como **REGISTERED** y puede emitir **PEER_ONLINE** a otros **Peers**.
 

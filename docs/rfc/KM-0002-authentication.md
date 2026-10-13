@@ -322,9 +322,12 @@ La **Response** **DEBE** contener:
 |-------|-----------|-------------|
 | type | MUST | `AUTH_OK` o `AUTH_FAIL`. |
 | protocolVersion | MUST (OK) | Dialecto del transporte confirmado, SIEMPRE string (`"2.0"` / `"2.1"`). **DEBE** coincidir con el del **Challenge** del mismo handshake; si no, el **Initiator** **DEBE** rechazar el `AUTH_OK` (KM-WIRE-RELAY §17.2). |
+| initiatorIdentityId | MUST (OK) | `identityId` del **Initiator**. Nombre **canónico**. En dialecto `"2.0"` el alias legacy `identityId` se acepta; en `"2.1"` se retira. Si conviven, **DEBEN** ser iguales (KM-WIRE-RELAY §9.6). |
+| responderIdentityId | MUST (OK) | `identityId` del **Responder**. |
 | sessionId | MUST (OK) | Identificador único de la **Session** generado por el **Responder**. |
-| serverNonce | MUST (OK) | Nuevo nonce del servidor (128 bits, codificado en Base64URL) para futuros mensajes de la **Session**. |
-| signature | MUST (OK) | Firma Ed25519 del **Responder** sobre el **Server Authentication Transcript** (§10.4). |
+| serverNonce | MUST (OK) | Nuevo nonce del servidor (128 bits, codificado en Base64URL) para futuros mensajes de la **Session** y parte del **Server Authentication Transcript** (§10.4). |
+| responderPublicKey | MUST (OK) | Clave pública Ed25519 del **Responder** (32 bytes, Base64URL), con la que el **Initiator** verifica `serverSignature`. |
+| serverSignature | MUST (OK) | Firma Ed25519 del **Responder** (64 bytes, Base64URL) sobre el **Server Authentication Transcript** (§10.4). |
 | errorCode | MUST (FAIL) | Código de error según §13 (Failure Modes). |
 | errorMessage | SHOULD (FAIL) | Mensaje legible del error. |
 | protocolVersion | MAY (FAIL) | **Solo diagnóstico.** En un `AUTH_FAIL` puede aparecer el dialecto con el que se intentó el handshake; su presencia **NUNCA** debe interpretarse como que el dialecto fue aceptado (N6). |
@@ -653,10 +656,12 @@ Todos los mensajes de autenticación **DEBEN** incluir los siguientes campos de 
   "messageId": "0190f5a2-5d6e-7f8a-9b01-234567890abc",
   "timestamp": 1721827201000,
   "protocolVersion": "2.0",
-  "identityId": "f9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a2f1e0a1b2c3d4e5f6a7b8c9d0e1f2",
+  "initiatorIdentityId": "f9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a2f1e0a1b2c3d4e5f6a7b8c9d0e1f2",
+  "responderIdentityId": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2",
   "sessionId": "b0a9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b2a1",
-  "serverNonce": "zYxWvUtSrQpOnMlKjIhGfEdCbA987654321",
-  "signature": "MEUCIQD..."
+  "serverNonce": "IYoenlGkVa12ihR9aDTHiA",
+  "responderPublicKey": "0Lomds0flXRFGQFKkxqHV_qeekVnFKzT60CN0Uds_QM",
+  "serverSignature": "DSJUY7nhrNbzGilssixonPro9pAjRSU7qkOImX7tqSZ-PYMvtM9Sx7ymUvpB-RpOnKfXYdmdjVHqo8Fb2TU7Dg"
 }
 ```
 

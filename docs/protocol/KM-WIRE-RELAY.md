@@ -298,9 +298,21 @@ Ambos tamaños son **constantes**, no aproximaciones (`km-core/.../auth/Transcri
 |-------|------|-------------|-------|
 | `type` | string | Sí | `"AUTH_OK"` |
 | `protocolVersion` | string | **Sí** | Dialecto efectivo confirmado; **debe coincidir con el del `AUTH_CHALLENGE`** del mismo handshake (§17.2) |
+| `initiatorIdentityId` | string (64 hex) | **Sí** | `identityId` del iniciador (el cliente). Nombre **canónico** (R1, KM-0003 §9.8) |
+| `responderIdentityId` | string (64 hex) | **Sí** | `identityId` del relé (el responder) |
 | `sessionId` | string (40 hex) | Sí | |
-| `serverSignature` | string (Base64URL) | Sí (según KM-0002) | Firma sobre el transcript de 120 B |
-| `identityId` | string (64 hex) | Dialecto 2.0 | Iniciador; alias de `initiatorIdentityId` (§9.7, KM-0003 §9.8) |
+| `serverNonce` | string (Base64URL, 16 B) | **Sí** | Nonce del servidor; entra en el transcript de 120 B (§9.5) y es el material de verificación de `serverSignature` |
+| `responderPublicKey` | string (Base64URL, 32 B Ed25519) | **Sí** | Clave pública del relé con la que el cliente verifica `serverSignature` |
+| `serverSignature` | string (Base64URL, 64 B Ed25519) | Sí (según KM-0002) | Firma sobre el transcript de 120 B |
+| `identityId` | string (64 hex) | Solo dialecto `2.0` | **Alias retirado** de `initiatorIdentityId`. Se acepta únicamente en dialecto `2.0` y se retira en `2.1` (§9.7, R2). Si convive con `initiatorIdentityId`, MUST ser igual; si difiere, `MALFORMED_MESSAGE` (R3) |
+
+> **Longitudes y codificación (task 1.2).** `serverNonce` son exactamente 16 bytes y
+> `responderPublicKey` 32 bytes Ed25519, ambos en Base64URL **sin padding** (`=` no aparece en
+> el alfabeto); `serverSignature`, 64 bytes Ed25519 en Base64URL sin padding. `sessionId` son
+> 40 hex; `initiatorIdentityId` y `responderIdentityId`, 64 hex. El transcript de 120 B **no se
+> serializa** en el frame: se reconstruye como `sessionId_ascii(40) ‖ serverNonce(16) ‖
+> initiatorIdentityId_ascii(64)` (§9.5). El codec del daemon (`JsonWireCodec.authOk`) y el de
+> km-core (`AuthJsonCodec.authOkWire`/`parseAuthOk`) usan las MISMAS claves (R16).
 
 | `AUTH_FAIL` campo | Tipo | Obligatorio | Notas |
 |-------|------|-------------|-------|
@@ -311,10 +323,12 @@ Ambos tamaños son **constantes**, no aproximaciones (`km-core/.../auth/Transcri
 
 > **Nota de honestidad (normativa por proyecto, honesta por estado):**
 > `RelayClient.handleAuthOk` **no verifica** `serverSignature`. La verificación del transcript
-> de 120 bytes existe en km-core (`AuthVerifier.verifyAuthOk`) y está probada, pero el cliente
-> Android aún no la invoca, porque la tabla de `AUTH_OK` no lista todavía el `serverNonce` que
-> el transcript necesita (§18). **La verificación de `serverSignature` NO es opcional por
-> dialecto**: el dialecto decide QUÉ se firma y con qué nombres, nunca SI se verifica (N5). La
+> de 120 bytes existe en km-core (`AuthVerifier.verifyAuthOk`) y está probada, pero **ningún
+> cliente la invoca todavía**. Desde la task 1.2 el `AUTH_OK` **sí transporta** el material que
+> la verificación necesita (`serverNonce` y `responderPublicKey`): que los campos viajen **no**
+> equivale a que la firma se verifique — sigue siendo P6 (4.1/5.2). **La verificación de
+> `serverSignature` NO es opcional por dialecto**: el dialecto decide QUÉ se firma y con qué
+> nombres, nunca SI se verifica (N5). La
 > posesión del pin anclado al `responderPublicKey` es lo que decide la verificación, no el
 > campo de dialecto.
 
@@ -336,11 +350,13 @@ tipos sin reconciliar. La resolución es una **única fuente de verdad**:
 | `Dialect.TRANSITIONAL` | idem | El conjunto de la política de transición `{2.0, 2.1}` (§17.4). |
 | `DialectNegotiation` | idem | La verificación del dialecto en la dirección de respuesta (§17.2). |
 
-El campo **numérico** `AuthChallenge.version` (hoy `3`, `RelayServer.createChallenge`) y el
-campo `AuthResponse.protocolVersion: Int` **son otra cosa**: la versión del RFC KM-0002,
-no el dialecto. Se documentan como tales en KM-0002 §10 y **nunca** se interpretan como
-dialecto. La reconciliación del código de km-core que aún los usa (task 1.2 / P11) no
-cambia esta norma: el dialecto del cable es el string de `Dialect`.
+El campo **numérico** `AuthChallenge.version` (hoy `3`, `RelayServer.createChallenge`) es la
+versión del propio RFC KM-0002, **otra cosa** que el dialecto: se documenta como tal en
+KM-0002 §10 y **nunca** se interpreta como dialecto. La reconciliación P11 quedó **cerrada** en
+la task 1.2: `AuthResponse.protocolVersion` es de tipo `Dialect` (al serializar emite
+`Dialect.wire`, un string) en vez del `Int` sintetizado, y `AuthJsonCodec.parseResponse` exige
+un dialecto **textual** (un número falla cerrado). `AuthChallenge.version` conserva su
+significado numérico de KM-0002 y no viaja como dialecto.
 
 ---
 
@@ -864,12 +880,12 @@ de la columna «Implementado» requiere actualizar esta tabla.
 | P3 | Transporte de datos por el relé | `RelayServer.deliverData` existe como lógica, pero **nada lo conecta a un socket**. No hay camino de datos operativo. |
 | P4 | Store-and-forward persistente | Solo `InMemoryRelayStore`, en memoria, sin límites efectivos. |
 | P5 | `MESSAGE` con campo `data` | El cliente reenvía bytes opacos; no nombra el campo (§10.1). |
-| P6 | Verificación de `serverSignature` en `AUTH_OK` | El cliente pasa a `ONLINE` sin verificar (§9.6). |
+| P6 | Verificación de `serverSignature` en `AUTH_OK` | El cliente pasa a `ONLINE` sin verificar (§9.6). Los campos de verificación (`serverNonce`, `responderPublicKey`) YA viajan en el `AUTH_OK` (task 1.2), pero ningún cliente rehace el transcript de 120 B ni verifica la firma todavía (4.1/5.2). **Serializar bien ≠ verificar.** |
 | P7 | Negociación de `protocolVersion` | **Mecanismo implementado (task 1.1):** el relé confirma el dialecto efectivo en `AUTH_CHALLENGE` y `AUTH_OK` (`JsonWireCodec.authChallenge`/`authOk`) y ambos clientes lo verifican antes de firmar y antes de `ONLINE`; ausencia → `MALFORMED_MESSAGE`, valor desconocido, no implementado o inconsistente entre frames → `UNSUPPORTED_PROTOCOL_VERSION`, sin downgrade ni upgrade. **Abierto:** el conjunto efectivo servido hoy es `{2.0}` (`AuthAdapter.supportedDialects`); servir `2.1` (reglas de campo y retirada del alias) es 1.2/1.3. La verificación de `serverSignature` en el cliente es P6 (4.1/5.2). |
 | P8 | Emisión de `PEER_ONLINE` / `PEER_OFFLINE` | El cliente los lee; el relé no los serializa (§12.1). |
 | P9 | Tratamiento de `RELAY_ERROR` en el cliente | Cuerpo vacío (`RelayClient.kt:272-273`). |
 | P10 | Mapeo `RelayServerError` → `RelayErrorCode` | Indefinido (§16.3). |
-| P11 | Reconciliación `protocolVersion` string vs int | §9.7. |
+| P11 | Reconciliación `protocolVersion` string vs int | **Cerrada en task 1.2:** `AuthResponse.protocolVersion` es `Dialect` (emite string) y el codec rechaza un número; `AuthChallenge.version` conserva su entero KM-0002 (§9.7). |
 | P12 | Canal WebSocket binario | §6.4. |
 | P13 | `AUTH_SESSION_TIMEOUT` | El cliente no lo maneja; `sessionExpiryMs` existe solo como parámetro interno. |
 
@@ -951,15 +967,19 @@ las claves reordenadas no invalida nada — por diseño (`AuthJsonCodec.kt:10-17
   "messageId": "d4e5f607-1a2b-4c3d-8e4f-5061728394a5",
   "timestamp": 1790000001150,
   "protocolVersion": "2.0",
-  "identityId": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f40516273849a5b6c",
+  "initiatorIdentityId": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f40516273849a5b6c",
   "responderIdentityId": "f9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a2f1e0d9c8b7a6958473625140f3e2d",
   "sessionId": "7f3a9b2c1d4e5f60718293a4b5c6d7e8f90a1b2c3",
-  "serverSignature": "B2nQ4wE6rT8yU0iO2pA4sD6fG8hJ0kL2mN4pQ6rS8u"
+  "serverNonce": "IYoenlGkVa12ihR9aDTHiA",
+  "responderPublicKey": "0Lomds0flXRFGQFKkxqHV_qeekVnFKzT60CN0Uds_QM",
+  "serverSignature": "DSJUY7nhrNbzGilssixonPro9pAjRSU7qkOImX7tqSZ-PYMvtM9Sx7ymUvpB-RpOnKfXYdmdjVHqo8Fb2TU7Dg"
 }
 ```
 
 `sessionId` son 40 hex (= 20 bytes), requisito de `AuthVerifier.isValidHex40`
-(`AuthVerifier.kt:120-121`). Entra en el transcript de 120 B.
+(`AuthVerifier.kt:120-121`). Entra en el transcript de 120 B. `serverNonce` (16 B) y
+`responderPublicKey` (32 B) son el material con el que el cliente **podría** verificar
+`serverSignature`; que viajen no implica que hoy se verifiquen (task 1.2 / P6).
 
 ### 19.5 — Mensaje de ida (el `SecureFrame` viaja opaco)
 
