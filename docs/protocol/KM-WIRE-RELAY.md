@@ -304,7 +304,7 @@ Ambos tamaños son **constantes**, no aproximaciones (`km-core/.../auth/Transcri
 | `serverNonce` | string (Base64URL, 16 B) | **Sí** | Nonce del servidor; entra en el transcript de 120 B (§9.5) y es el material de verificación de `serverSignature` |
 | `responderPublicKey` | string (Base64URL, 32 B Ed25519) | **Sí** | Clave pública del relé con la que el cliente verifica `serverSignature` |
 | `serverSignature` | string (Base64URL, 64 B Ed25519) | Sí (según KM-0002) | Firma sobre el transcript de 120 B |
-| `identityId` | string (64 hex) | **Implementado (task 1.3)** | Alias **legacy** de `initiatorIdentityId`. Se **acepta SOLO en dialecto `2.0`** (S13/P6-S); en `2.1` está **retirado** y un `AUTH_OK` que lo traiga en solitario se rechaza con `UNKNOWN_PROTOCOL` (S15). Si convive con `initiatorIdentityId` **DEBEN ser iguales**; si difieren, `MALFORMED_MESSAGE` (R3, S14/P6-T). El **relé nunca lo emite** (escribe siempre el canónico `initiatorIdentityId`); la regla vive en la **lectura** (`AuthOkAliasRules` / `AuthJsonCodec.parseAuthOkForDialect`). Rechazo **local del cliente**: ningún consumidor de producción invoca todavía esa lectura (llega con la verificación de `serverSignature`, 4.1/5.2) |
+| `identityId` | string (64 hex) | **Implementado (task 1.3)** | Alias **legacy** de `initiatorIdentityId`. Se **acepta SOLO en dialecto `2.0`** (S13/P6-S). En `2.1` el nombre está **retirado**: **cualquier** presencia del alias —en solitario, o junto al canónico, con valor igual o distinto— se rechaza con `UNKNOWN_PROTOCOL` (S15, ruling del owner 2026-10-13); `MALFORMED_MESSAGE` queda reservado para la inconsistencia o la ausencia de la ventana `2.0`. Solo en `2.0`, si convive con `initiatorIdentityId` **DEBEN ser iguales**; si difieren, `MALFORMED_MESSAGE` (R3, S14/P6-T). El **relé nunca lo emite** (escribe siempre el canónico `initiatorIdentityId`); la regla vive en la **lectura** (`AuthOkAliasRules` / `AuthJsonCodec.parseAuthOkForDialect`). Rechazo **local del cliente**: ningún consumidor de producción invoca todavía esa lectura (llega con la verificación de `serverSignature`, 4.1/5.2) |
 
 > **Longitudes y codificación (task 1.2).** `serverNonce` son exactamente 16 bytes y
 > `responderPublicKey` 32 bytes Ed25519, ambos en Base64URL **sin padding** (`=` no aparece en
@@ -714,8 +714,8 @@ pertenece a la sesión ya establecida y no debe usarse para negociar el dialecto
 | `AUTH_FAILED` | Firma o identidad inválida | `km daemon` |
 | `RELAY_IDENTITY_MISMATCH` | `responderIdentityId` no es el del relé | `km daemon` |
 | `INVALID_AUTH_FLOW` | `AUTH_RESPONSE` sin `AUTH_REQUEST` previo, o sin dialecto negociado válido | `km daemon` |
-| `MALFORMED_MESSAGE` | Campo ausente o del tipo equivocado (p. ej. `protocolVersion` numérico), o **alias `identityId` en conflicto** con `initiatorIdentityId` (task 1.3, R3) | Cliente (fallo local, ver §17.2) |
-| `UNKNOWN_PROTOCOL` | El alias legacy `identityId` del `AUTH_OK` aparece en **dialecto `2.1`**, donde está retirado (task 1.3, R2/S15). Es un fallo **local del cliente** | Cliente (fallo local) |
+| `MALFORMED_MESSAGE` | Campo ausente o del tipo equivocado (p. ej. `protocolVersion` numérico), o —**solo en dialecto `2.0`**— **alias `identityId` en conflicto** con `initiatorIdentityId` (task 1.3, R3) | Cliente (fallo local, ver §17.2) |
+| `UNKNOWN_PROTOCOL` | **Cualquier** presencia del alias legacy `identityId` del `AUTH_OK` en **dialecto `2.1`**, donde el nombre está retirado: en solitario, o junto al canónico `initiatorIdentityId`, con valor igual o distinto (task 1.3, R2/S15; ruling del owner 2026-10-13). Es un fallo **local del cliente** | Cliente (fallo local) |
 
 > **`PIN_MISMATCH` (N5):** el pin es una decisión **local del cliente** (KM-0003 §9.2) y
 > NO forma parte de este catálogo de errores del cable. El cliente que no reproduce su pin
@@ -741,12 +741,15 @@ strings JSON (nunca números, §9.7), y `protocolVersion` viaja en `AUTH_REQUEST
 
 | Dialecto | Comportamiento de campo del `AUTH_OK` |
 |----------|----------------------------------------|
-| `"2.0"` | `initiatorIdentityId` es **canónico**; el alias legacy `identityId` se **acepta**. Si ambos conviven **DEBEN** ser iguales; si difieren, `MALFORMED_MESSAGE`. La compatibilidad **NO** permite saltarse la verificación criptográfica (§17.2, N5). |
-| `"2.1"` | Solo `initiatorIdentityId`. El alias `identityId` está **retirado**: presente **en solitario** -> `UNKNOWN_PROTOCOL`; presente **junto al canónico** -> debe ser igual o `MALFORMED_MESSAGE` (R2/R3). |
+| `"2.0"` | `initiatorIdentityId` es **canónico**; el alias legacy `identityId` se **acepta** (en solitario, o junto al canónico si ambos son **iguales**). Si ambos conviven y **difieren**, `MALFORMED_MESSAGE`. La compatibilidad **NO** permite saltarse la verificación criptográfica (§17.2, N5). |
+| `"2.1"` | Solo `initiatorIdentityId`. El alias `identityId` está **retirado**: **cualquier** presencia —en solitario, o junto al canónico, con valor igual o distinto— -> `UNKNOWN_PROTOCOL` (R2, ruling del owner 2026-10-13). La obligación de igualdad de R3 solo rige en la ventana `2.0`: en `2.1` el alias no se compara, se retira. |
 
 La retirada del alias es la única diferencia de campo entre `2.0` y `2.1`; el dialecto
 **no** altera los bytes firmados del transcript (§9.5) ni decide **si** se verifica la
-firma (§17.2, N5). Implementado en `AuthOkAliasRules` / `AuthJsonCodec.parseAuthOkForDialect`.
+firma (§17.2, N5). La retirada es del **nombre**: en `2.1` el alias no se acepta en
+ninguna forma, ni siquiera coincidiendo con el canónico; `MALFORMED_MESSAGE` queda para
+la inconsistencia o la ausencia de la ventana `2.0`. Implementado en `AuthOkAliasRules` /
+`AuthJsonCodec.parseAuthOkForDialect`.
 
 ### 17.2 — Cómo se negocia (NORMATIVE, task 1.1)
 

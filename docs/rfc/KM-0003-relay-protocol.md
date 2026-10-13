@@ -426,8 +426,10 @@ El **Relay** confirma la autenticación exitosa mediante **AUTH_OK**, que incluy
 El campo del iniciador es `initiatorIdentityId` (**canónico**, R1). La aceptación del alias
 legacy `identityId` en dialecto `"2.0"` y su retirada en `"2.1"` están **implementadas**
 (task 1.3, `AuthOkAliasRules` / `AuthJsonCodec.parseAuthOkForDialect`): en `"2.0"` el alias
-en solitario se **acepta**; en `"2.1"` el alias en solitario se rechaza con `UNKNOWN_PROTOCOL`.
-Si ambos campos conviven **DEBEN** ser iguales; si difieren, `MALFORMED_MESSAGE` (R3). El
+en solitario se **acepta**; en `"2.1"` el nombre está **retirado** y **cualquier** presencia
+del alias —en solitario, o junto al canónico, con valor igual o distinto— se rechaza con
+`UNKNOWN_PROTOCOL` (ruling del owner 2026-10-13). Solo en `"2.0"`, si ambos campos conviven
+**DEBEN** ser iguales; si difieren, `MALFORMED_MESSAGE` (R3). El
 **Relay** nunca **emite** el alias: escribe siempre el nombre **canónico** `initiatorIdentityId`
 (KM-WIRE-RELAY §9.6), y sirve los dos dialectos de la política de transición `{2.0, 2.1}`. El
 rechazo del alias es **local del cliente**: ningún consumidor de producción invoca todavía esa
@@ -446,8 +448,8 @@ distinto del challenge, **DEBE** rechazarlo y **NUNCA** pasar a **REGISTERED**/`
 
 La transición de alias **aplica solo al `AUTH_OK`** (N4): el campo canónico del iniciador es
 `initiatorIdentityId` en todo dialecto; la aceptación del alias legacy `identityId` en
-dialecto `"2.0"` y su retirada en `"2.1"` están **especificadas** pero **NO implementadas**
-(task 1.3). Hoy no se acepta ni se retira nada: ningún codec lee ni emite el alias. El alias
+dialecto `"2.0"` y su retirada en `"2.1"` están **implementadas en la lectura** (task 1.3,
+`AuthOkAliasRules` / `AuthJsonCodec.parseAuthOkForDialect`). El alias
 **no** aplica a ningún otro frame del handshake.
 
 ### 9.9 — Rechazo
@@ -485,9 +487,12 @@ responde con un dialecto distinto del declarado por el **Client** (KM-WIRE-RELAY
 > **Rechazo LOCAL del `AUTH_OK` (task 1.3).** Aparte de los rechazos del **Relay** de la
 > tabla, el **Client** rechaza **localmente** un `AUTH_OK` mal formado **sin** emitir
 > `AUTH_FAIL` (no hay frame de vuelta): ausencia del campo canónico `initiatorIdentityId`
-> o alias `identityId` **en conflicto** → `MALFORMED_MESSAGE`; alias `identityId` **en
-> solitario** en dialecto `"2.1"` → `UNKNOWN_PROTOCOL` (KM-WIRE-RELAY §16.5, §17.1,
-> `AuthOkAliasRules`). Son fallos de **forma de campo**, no de firma.
+> → `MALFORMED_MESSAGE`; y **cualquier** presencia del alias `identityId` en dialecto
+> `"2.1"` —en solitario, o junto al canónico, con valor igual o distinto— →
+> `UNKNOWN_PROTOCOL` (el nombre está retirado; ruling del owner 2026-10-13). Solo en
+> dialecto `"2.0"` un alias `identityId` **en conflicto** con el canónico es
+> `MALFORMED_MESSAGE` (KM-WIRE-RELAY §16.5, §17.1, `AuthOkAliasRules`). Son fallos de
+> **forma de campo**, no de firma.
 
 ### 9.10 — Estado interno
 
