@@ -59,7 +59,17 @@ class SecureMessagingSession(
 
     init {
         // El transporte entrega bytes opacos; la sesion decide si son plaintext.
-        transport.onData { _, data -> onTransportBytes(data) }
+        //
+        // FILTRAR POR PAR NO ES UNA OPTIMIZACION, ES AISLAMIENTO. El manager
+        // multiplexa: `sendData` notifica a TODOS los handlers con la identidad
+        // del par. Sin el filtro, el frame de B entra en la sesion de A, intenta
+        // descifrarlo, y lo que hace el ratchet con un frame que no es suyo ya
+        // esta medido en `TransportMigrationTest`: abrir una epoch que no debia
+        // y generar una clave de mas. Estado de dos pares mezclado no es "un
+        // mensaje perdido": es criptografia corrompida.
+        transport.onData { from, data ->
+            if (from == remotePeerId) onTransportBytes(data)
+        }
     }
 
     /**
@@ -83,7 +93,37 @@ class SecureMessagingSession(
         }
         // 3. Solo ahora se entrega al transporte.
         val result = transport.sendData(localIdentity, peerContext, wire)
-        return if (result.isSuccess) SendResult.Ok(wire.size)
+        return if (result.isSuccess) SendResult.Ok(wire.size, wire)
+        else SendResult.Rejected(SendReject.TRANSPORT_REJECTED)
+    }
+
+    /**
+     * Reenvia bytes YA CIFRADOS, sin volver a cifrar.
+     *
+     * Es el unico camino honesto de reintento, y la razon es `MAX_RESEND` /
+     * KM-0004: re-cifrar el mismo sobre produce un frame DISTINTO, con otro `N`
+     * y otra clave de mensaje. El `messageId` del sobre seguiria siendo el
+     * mismo —va DENTRO del plaintext cifrado—, asi que el receptor lo
+     * deduplicaria por identidad; pero habria tenido que DESCIFRARLO dos veces
+     * y el emisor habria quemado dos mensajes de la cadena del ratchet por un
+     * solo reintento. Un reintento que consume estado criptografico no es un
+     * reintento: es un mensaje nuevo disfrazado.
+     *
+     * Lo que NO hace, y es lo que la hace segura:
+     *
+     * - **no llama a `protocol.encrypt`**, luego no toca el ratchet;
+     * - no inventa plaintext ni re-decodifica el sobre;
+     * - pasa por las MISMAS guardas que [send] —cerrada, `AUTHENTICATED` y
+     *   binding que el manager ya exigio—, con lo que un reintento no puede
+     *   abrir una puerta que el envio original no tenia.
+     */
+    fun sendTranscript(wire: ByteArray): SendResult {
+        if (closed) return SendResult.Rejected(SendReject.CLOSED)
+        if (peerContext.authSession.state != AuthSessionState.AUTHENTICATED) {
+            return SendResult.Rejected(SendReject.NOT_AUTHENTICATED)
+        }
+        val result = transport.sendData(localIdentity, peerContext, wire)
+        return if (result.isSuccess) SendResult.Ok(wire.size, wire)
         else SendResult.Rejected(SendReject.TRANSPORT_REJECTED)
     }
 
@@ -165,7 +205,28 @@ class SecureMessagingSession(
 
 /** Resultado de [SecureMessagingSession.send]. */
 sealed class SendResult {
-    data class Ok(val bytes: Int) : SendResult()
+    /**
+     * Los bytes SALIERON, y aqui estan.
+     *
+     * [wire] es exactamente el `ByteArray` que se entrego al transporte, no una
+     * re-codificacion: es lo que hace posible [SecureMessagingSession.sendTranscript]
+     * sin volver a cifrar. [bytes] sigue siendo el tamano, porque es el dato que
+     * el resto del framework ya consumia y no tiene por que cambiar.
+     *
+     * `equals` compara el contenido del wire y no su identidad, para que dos
+     * envios del mismo contenido sean el mismo resultado. Sin eso, comparar dos
+     * `Ok` mediria el allocator.
+     */
+    data class Ok(val bytes: Int, val wire: ByteArray = ByteArray(0)) : SendResult() {
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (other !is Ok) return false
+            return bytes == other.bytes && wire.contentEquals(other.wire)
+        }
+
+        override fun hashCode(): Int = 31 * bytes + wire.contentHashCode()
+    }
+
     data class Rejected(val reason: SendReject) : SendResult()
 }
 

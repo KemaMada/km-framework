@@ -35,6 +35,19 @@ import java.util.concurrent.ConcurrentHashMap
  * consumidor ha pedido, y fijarlo aqui seria inventarlo: un registro que
  * descarta una sesion por antigüedad y otro que la conserva son ambos
  * defendibles, y la eleccion es de quien lo usa.
+ *
+ * ## LIMITE DECLARADO
+ *
+ * **Las claves privadas y el estado del ratchet NO se persisten aqui.** Una
+ * sesion que se pierde se vuelve a establecer; una sesion que se reconstituye a
+ * mano con material incompleto es peor que no tenerla. Por eso este registro
+ * guarda EN MEMORIA y no tiene copia en disco, y por eso [install] sustituye
+ * en vez de fusionar.
+ *
+ * Y lo que el registro ancla no es la garantia de que exista un camino de
+ * produccion que lo use: km-desktop no puede establecer sesion todavia porque
+ * no tiene origen de `VerifiedContactBundle`, asi que su envio sigue saliendo
+ * EN CLARO por el camino legado. Ver `SecureOutboundImpl` y el CHANGELOG.
  */
 class SecureSessionRegistry(
     /** Identidad local cuyas sesiones se registran. Solo para trazas y mensajes. */
@@ -54,6 +67,9 @@ class SecureSessionRegistry(
     fun install(session: SecureMessagingSession): SecureMessagingSession {
         val peer = session.remotePeerId
         sessions[peer] = session
+        // Despues de escribir, nunca antes: un observer que consultara el
+        // registro durante la notificacion tiene que ver la sesion ya puesta.
+        observers.forEach { it(session) }
         return session
     }
 
@@ -92,4 +108,27 @@ class SecureSessionRegistry(
 
     /** Vacia el registro. No cierra las sesiones: quien las posee decide eso. */
     fun clear() = sessions.clear()
+
+    /**
+     * Observa cada sesion que entra en el registro, incluidas las que ya estan.
+     *
+     * Existe por una garantia de ORDEN, no por comodidad. Una sesion se
+     * suscribio al `PeerTransportManager` en su propio `init`, es decir ANTES de
+     * poder aparecer aqui. Quien necesite mirar los bytes que salen de la sesion
+     * —el puente de recepcion de `KeyMessageCoreImpl`— tiene que registrar su
+     * handler DESPUES de esa suscripcion, y por eso no puede hacerlo desde el
+     * `PeerTransportManager` en general: lo hace desde aqui, en el instante en
+     * que la sesion entra. Suscribirse antes de que exista la sesion daria un
+     * handler que se ejecuta el PRIMERO y veria el ratchet todavia intacto.
+     *
+     * @return un token para dejar de observar. Sin observers el registro se
+     *   comporta EXACTAMENTE igual que antes.
+     */
+    fun onInstall(observer: (SecureMessagingSession) -> Unit): () -> Unit {
+        observers.add(observer)
+        sessions.values.toList().forEach(observer)
+        return { observers.remove(observer) }
+    }
+
+    private val observers = java.util.concurrent.CopyOnWriteArrayList<(SecureMessagingSession) -> Unit>()
 }

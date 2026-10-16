@@ -2,7 +2,12 @@ package com.km.api
 
 import com.km.codec.*
 import com.km.crypto.*
+import com.km.messaging.LegacyInboundObservation
+import com.km.messaging.SecureInbound
+import com.km.messaging.SecureOutboundImpl
+import com.km.messaging.SecureSessionRegistry
 import com.km.model.*
+import com.km.node.PeerTransportManager
 import com.km.protocol.*
 import com.km.storage.*
 import java.time.Instant
@@ -33,7 +38,67 @@ class KeyMessageCoreImpl(
      * lo tenga, y que por tanto no puede autenticar ningun `ACK`, recibe el
      * comportamiento documentado: `onAckReceived` no procesa nada.
      */
-    private val peerPublicKeyResolver: (IdentityId) -> ByteArray? = { null }
+    private val peerPublicKeyResolver: (IdentityId) -> ByteArray? = { null },
+    /**
+     * R1 — REGISTRO DE SESIONES, OPCIONAL Y AUSENTE POR DEFECTO.
+     *
+     * **Si es `null`, el envio sale EN CLARO por el camino legado.** Es una
+     * decision de COMPATIBILIDAD, no una garantia de nada: ningun consumidor
+     * actual construye el registro, y romperlos todos no demostraria cifrado,
+     * demostraria rotura. Ese camino no puede presentarse nunca como
+     * "cifrado": lo que se presenta es lo que hay, un `Message` codificado por
+     * `Encoder` y entregado a `Transport.send`.
+     *
+     * Si es `null` pero `peerTransportManager` no lo es, el nucleo no descifra
+     * nada: sin registro no hay a quien preguntar por el par, y adivinar seria
+     * tratar bytes de sesion como si fueran JSON.
+     *
+     * Si NO es `null` y no hay sesion con el destinatario, el envio se RECHAZA
+     * de forma observable (estado `FAILED` con codigo de fallo, sin encolar y
+     * sin llamar a `Transport.send`). Nunca hay reintento en claro.
+     *
+     * En RECEPCION el mismo registro cierra el camino legado: con el registro
+     * presente, un `MESSAGE` en claro no llega al handler. Ver
+     * [allowLegacyCleartextReceive], que es el unico modo de reabrirlo.
+     */
+    private val secureSessionRegistry: SecureSessionRegistry? = null,
+    /**
+     * R1 — RECEPCION: EL OTRO LADO DE LA REGLA, Y EL QUE FALTABA.
+     *
+     * El envio ya tenia punto de decision: con el registro presente nunca se
+     * degrada a `Transport.send`. La recepcion no lo tenia, y por eso con el
+     * registro presente un `MESSAGE` EN CLARO del camino legado llegaba igual al
+     * handler de la aplicacion que un mensaje E2E, sin ninguna marca de origen.
+     * Un consumidor que hubiera inyectado el registro creyendo estar cifrado
+     * no tenia ninguna forma de saberlo. Eso es lo que este parametro cierra.
+     *
+     * **Registro presente y este valor en `false` (el valor por defecto) —> el
+     * camino legado de RECEPTION esta DESACTIVADO.** Un `MESSAGE` en claro no
+     * llega al handler, y el rechazo se ve por API publica en
+     * [legacyInbound].rejectedCleartext, igual que el del envio se ve en el
+     * estado `FAILED` del mensaje.
+     *
+     * **Registro ausente -> el camino legado se conserva tal cual**, en claro y
+     * sin marcar, porque es el camino de COMPATIBILIDAD y ningun consumidor
+     * actual construye el registro. Es lo que hace el espejo de la regla de
+     * envio, y por eso `allowLegacyCleartextReceive` no cambia NADA cuando no
+     * hay registro: el opt-in solo existe para el caso con registro.
+     *
+     * **El valor en `true` es un opt-in EXPLICITO y NO es E2E.** Acepta claro
+     * con el registro activo, y ademas lo deja marcado en
+     * [legacyInbound].deliveredCleartext para que no se pueda confundir con un
+     * mensaje descifrado. Se declara aqui porque un opt-in que solo esta en el
+     * CHANGELOG no es un opt-in: es un rumor.
+     */
+    private val allowLegacyCleartextReceive: Boolean = false,
+    /**
+     * Gestor de transporte entre pares, opcional y ausente por defecto.
+     *
+     * Es la otra mitad del camino cifrado: por el van los `SecureFrame`. Sin
+     * el no hay suscripcion de recepcion, porque el nucleo no tendria por donde
+     * enterarse de que llego un wire.
+     */
+    private val peerTransportManager: PeerTransportManager? = null,
 ) : KeyMessageCore {
 
     private val orderingManager: OrderingManagerImpl = OrderingManagerImpl()
@@ -42,10 +107,40 @@ class KeyMessageCoreImpl(
     private lateinit var sender: SenderImpl
     private lateinit var receiver: ReceiverImpl
 
+    /**
+     * Puente de RECEPCION cifrada, o `null` si no se inyectaron las dos piezas.
+     *
+     * Exponerlo es para observabilidad: los pruebas del slice 4 necesitan
+     * distinguir "no llego" de "llego y se rechazo", que con la API publica
+     * son el mismo silencio.
+     */
+    val secureInbound: SecureInbound? =
+        if (secureSessionRegistry != null && peerTransportManager != null) {
+            SecureInbound(localIdentity, secureSessionRegistry, peerTransportManager) { message ->
+                receiver.onMessageReceived(message)
+            }
+        } else {
+            null
+        }
+
+    /**
+     * R1 — Lo que ha hecho el CAMINO LEGADO de recepcion. Observable por API
+     * publica, y no un log: con el registro activo el camino legado esta
+     * cerrado, y "cerrado" tiene que poder distinguirse de "nunca llego".
+     *
+     * [legacyReceiveEnabled] vale `false` cuando hay registro y el consumidor no
+     * ha pedido el opt-in, y `true` en los otros dos casos: sin registro
+     * (compatibilidad) o con el opt-in explicito.
+     */
+    val legacyInbound: LegacyInboundObservation = LegacyInboundObservation(
+        legacyReceiveEnabled = secureSessionRegistry == null || allowLegacyCleartextReceive,
+    )
+
     init {
         sender = SenderImpl(
             messageStore, offlineQueue, encoder, validator, ed25519,
-            transport, ackManager, retryManager, localIdentity, localPrivateKey
+            transport, ackManager, retryManager, localIdentity, localPrivateKey,
+            secureOutbound = secureSessionRegistry?.let { SecureOutboundImpl(it) },
         )
         receiver = ReceiverImpl(
             messageStore, duplicateStore, decoder, encoder, validator, ed25519,
@@ -55,6 +150,7 @@ class KeyMessageCoreImpl(
             // mismo objeto y no dos construcciones que puedan divergir.
             ackEmitter = ::emitAck
         )
+        secureInbound?.attach()
 
         retryManager.onRetry { messageId, attempt ->
             sender.onRetryExpired(messageId, attempt)
@@ -63,6 +159,16 @@ class KeyMessageCoreImpl(
             sender.onPeerOnline(peerId)
         }
         transport.setMessageHandler { data ->
+            // R1 — RECEPCION. El camino legado de `MESSAGE` esta cerrado si hay
+            // registro, y el cierre es OBSERVABLE: cuenta en
+            // `legacyInbound.rejectedCleartext` en vez de tragarse los bytes. Un
+            // silencio aqui es exactamente lo que hace que un mensaje inyectado
+            // en claro sea indistinguible de uno que nunca llego.
+            if (!legacyInbound.legacyReceiveEnabled) {
+                legacyInbound.rejectCleartext()
+                return@setMessageHandler
+            }
+            legacyInbound.markDeliveredCleartext()
             receiver.onMessageBytesReceived(data)
         }
         transport.setAckHandler { data ->
@@ -155,6 +261,21 @@ class KeyMessageCoreImpl(
             SendResult(message.messageId, MessageState.FAILED, FailureCode.INTERNAL_ERROR)
         }
     }
+
+    /**
+     * Reintenta un mensaje YA enviado, por el camino que le corresponde.
+     *
+     * No esta en [KeyMessageCore] a proposito: el motor de reintentos ya es
+     * quien decide CUANDO reintentar (programa el temporizador y acaba llamando
+     * aqui), y exponerlo por el API publico invita a que un consumidor dispare
+     * reintentos por su cuenta.
+     *
+     * Lo que si hacia falta era poder OBSERVARLA: hasta ahora no habia ninguna
+     * puerta desde fuera al camino de reintento, y sin ella la unica evidencia
+     * de que el reintento reenvia el MISMO wire era leer el codigo. Con esta,
+     * la evidencia es el segundo frame que sale por el cable.
+     */
+    fun retryMessage(messageId: MessageId): Result<Unit> = sender.retry(messageId)
 
     override fun getMessageState(messageId: MessageId): Result<MessageState> {
         return messageStore.get(messageId).map { it?.state ?: MessageState.FAILED }
