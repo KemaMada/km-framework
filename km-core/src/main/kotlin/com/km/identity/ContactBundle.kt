@@ -131,6 +131,32 @@ object ContactBundle {
      * construccion el bundle que dice una cosa y contiene otra.
      */
     @Suppress("UNCHECKED_CAST")
+    /**
+     * Extrae una firma de un mapa como bstr64 con rechazo TIPADO.
+     *
+     * Antes este CAST era directo (`x["signature"] as ByteArray`) y producia
+     * NullPointerException ante una clave ausente o un tipo incorrecto. Un
+     * importador necesita distinguir "rechazo" de "fallo del verificador".
+     *
+     * - ausente            -> MISSING_FIELD
+     * - tipo o tamano mal  -> INVALID_SIGNATURE
+     */
+    private fun signatureOf(
+        source: Map<String, Any?>,
+        what: String,
+    ): ByteArray {
+        val raw = source["signature"]
+            ?: throw KmIdVerificationException(
+                "MISSING_FIELD", "$what no lleva firma de raiz",
+            )
+        if (raw !is ByteArray || raw.size != KmIdConstants.SIG_BYTES) {
+            throw KmIdVerificationException(
+                "INVALID_SIGNATURE", "la firma de $what no es un bstr64",
+            )
+        }
+        return raw
+    }
+
     fun buildBundle(
         identityRootPublicKey: ByteArray,
         signedRoster: Map<String, Any?>,
@@ -291,7 +317,7 @@ object ContactBundle {
                 "PREKEY_BINDING_MISMATCH", "signedPrekey.deviceId != subjectDeviceId"
             )
         }
-        val prekeySignature = Signature(spk["signature"] as ByteArray)
+        val prekeySignature = Signature(signatureOf(spk, "el signed prekey"))
         val deviceSigningKey = entry["signingKey"] as ByteArray
         if (!ed25519.verify(deviceSigningKey, signablePrekeyBytes(spk), prekeySignature)) {
             throw KmIdVerificationException("INVALID_SIGNATURE", "la firma del signed prekey no verifica")
@@ -314,7 +340,7 @@ object ContactBundle {
         }
 
         // 4. Autenticidad del bundle por la raiz.
-        val bundleSignature = Signature(bundle["signature"] as ByteArray)
+        val bundleSignature = Signature(signatureOf(bundle, "el bundle"))
         if (!ed25519.verify(
                 bundle["identityRoot"] as ByteArray,
                 signableBytes(bundle),

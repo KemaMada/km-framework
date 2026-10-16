@@ -312,7 +312,16 @@ object DeviceRoster {
         // verify(publicKey, data, signature), al reves que la firma
         // ed25519.verify(signature, data, publicKey) de la referencia. Son
         // los mismos tres valores en otro orden, y cruzarlos compila igual.
-        val signature = Signature(roster["signature"] as ByteArray)
+        val rawSignature = roster["signature"]
+                ?: throw KmIdVerificationException(
+                    "MISSING_FIELD", "el roster no lleva firma de raiz",
+                )
+            if (rawSignature !is ByteArray || rawSignature.size != KmIdConstants.SIG_BYTES) {
+                throw KmIdVerificationException(
+                    "INVALID_SIGNATURE", "la firma del roster no es un bstr64",
+                )
+            }
+            val signature = Signature(rawSignature)
         if (!ed25519.verify(identityRoot, signableBytes(roster), signature)) {
             throw KmIdVerificationException("INVALID_SIGNATURE", "la firma de la raiz no verifica")
         }

@@ -292,6 +292,85 @@ class ContactBundleGoldenVectorsTest {
     }
 
     @Test
+    fun `un bundle sin la clave signature se rechaza con MISSING_FIELD`() {
+        val sinClave = buildBundleContact().toMutableMap()
+        sinClave.remove("signature")
+        val e = assertFailsWith<KmIdVerificationException> {
+            ContactBundle.verifyBundle(sinClave)
+        }
+        assertEquals("MISSING_FIELD", e.code)
+    }
+
+    @Test
+    fun `un bundle con signature de tipo incorrecto se rechaza`() {
+        val malo = buildBundleContact().toMutableMap()
+        malo["signature"] = "no-es-un-bstr64"
+        val e = assertFailsWith<KmIdVerificationException> {
+            ContactBundle.verifyBundle(malo)
+        }
+        assertEquals("INVALID_SIGNATURE", e.code)
+    }
+
+    @Test
+    fun `un bundle con signature de longitud incorrecta se rechaza`() {
+        val corto = buildBundleContact().toMutableMap()
+        corto["signature"] = ByteArray(32)
+        val e = assertFailsWith<KmIdVerificationException> {
+            ContactBundle.verifyBundle(corto)
+        }
+        assertEquals("INVALID_SIGNATURE", e.code)
+    }
+
+    @Test
+    fun `un roster sin la clave signature se rechaza con MISSING_FIELD`() {
+        val rosterSinFirma = buildRoster2().toMutableMap()
+        rosterSinFirma.remove("signature")
+        val e = assertFailsWith<KmIdVerificationException> {
+            DeviceRoster.verify(rosterSinFirma, requireChain = false)
+        }
+        assertEquals("MISSING_FIELD", e.code)
+    }
+
+    @Test
+    fun `un roster con signature de longitud incorrecta se rechaza`() {
+        val rosterCorto = buildRoster2().toMutableMap()
+        rosterCorto["signature"] = ByteArray(10)
+        val e = assertFailsWith<KmIdVerificationException> {
+            DeviceRoster.verify(rosterCorto, requireChain = false)
+        }
+        assertEquals("INVALID_SIGNATURE", e.code)
+    }
+
+    @Test
+    fun `un bundle sin firmar (placeholder de ceros) se rechaza`() {
+        // Bundle estructuralmente valido cuya firma raiz es 64 ceros.
+        // buildBundle NO devuelve la firma (solo la usa para validar el
+        // esquema), asi que se firma y luego se sustituye por el placeholder.
+        val sinFirmar = buildBundleContact().toMutableMap()
+        sinFirmar["signature"] = ByteArray(64)
+        val e = assertFailsWith<KmIdVerificationException> {
+            ContactBundle.verifyBundle(sinFirmar)
+        }
+        assertEquals("INVALID_SIGNATURE", e.code)
+    }
+
+    @Test
+    fun `un bundle modificado despues de firmarse se rechaza por la firma`() {
+        val firmado = buildBundleContact().toMutableMap()
+        // Se altera SOLO un campo valido del esquema y de tipo valido
+        // (capabilities es uint -> Long). Todos los demas campos quedan intactos.
+        firmado["capabilities"] = 0b001L
+        // El esquema SIGUE siendo valido, luego el rechazo no puede provenir de
+        // una comprobacion estructural, solo de la firma sobre signableBytes().
+        // signableFields = ["signature"], asi que capabilities ESTA firmado.
+        KmSchemas.validate(KmSchemas.CONTACT_BUNDLE, firmado, "ContactBundle.")
+        val e = assertFailsWith<KmIdVerificationException> {
+            ContactBundle.verifyBundle(firmado)
+        }
+        assertEquals("INVALID_SIGNATURE", e.code)
+    }
+
+    @Test
     fun `un bundle con identityRoot embebido distinto se rechaza`() {
         // Roster de otra identidad, firmado por rootV2, que NO contiene aliceMobileId
         val rosterOtra = DeviceRoster.sign(
