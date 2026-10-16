@@ -350,4 +350,39 @@ object ContactBundle {
             throw KmIdVerificationException("INVALID_SIGNATURE", "la firma de la raiz sobre el bundle no verifica")
         }
     }
+
+    /**
+     * Verifica un bundle transportado en un sobre base64url(KCE): QR o `.kmc`.
+     *
+     * Punto de entrada UNICO para clientes. Existe para que ningun importador
+     * pueda decodificar bytes y registrar el contacto sin pasar por
+     * [verifyBundle]: la verificacion no es un paso opcional que se pueda
+     * saltar por Convenience.
+     *
+     * @return el bundle verificado, como [VerifiedContactBundle]
+     * @throws Kce.KceException si el sobre esta malformado o no es canonico
+     * @throws KmIdVerificationException si el bundle no verifica
+     */
+    fun decodeAndVerify(
+        text: String,
+        expectedIdentityRoot: ByteArray? = null,
+    ): VerifiedContactBundle {
+        val bundle = KceEnvelope.decodeMap(text)
+        return verified(bundle, expectedIdentityRoot)
+    }
+
+    /**
+     * Verifica un bundle ya decodificado y lo devuelve como [VerifiedContactBundle].
+     *
+     * Es el UNICO constructor de ese tipo. Un [VerifiedContactBundle] no puede
+     * existir sin haber pasado por aqui, que es justo el invariante que hace
+     * seguro derivar de el material criptografico.
+     *
+     * @throws KmIdVerificationException si el bundle no verifica
+     */
+    fun verified(
+        bundle: Map<String, Any?>,
+        expectedIdentityRoot: ByteArray? = null,
+    ): VerifiedContactBundle =
+        VerifiedContactBundle.verified(bundle, expectedIdentityRoot)
 }

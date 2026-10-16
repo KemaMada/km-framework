@@ -9,7 +9,7 @@ import com.km.auth.TranscriptBuilder
 import com.km.negotiation.NegotiationResult
 import com.km.negotiation.Km7Negotiation
 import com.km.negotiation.CapabilitySet
-import com.km.identity.ContactBundle
+import com.km.identity.VerifiedContactBundle
 import com.km.model.IdentityId
 import com.km.model.NodeAnnouncement
 import com.km.model.NodeIdentity
@@ -27,7 +27,7 @@ data class PeerContext(
     val authSession: AuthSession,
     val negotiationResult: NegotiationResult? = null,
     val negotiationHash: ByteArray? = null,
-    val contactBundle: ContactBundle? = null,
+    val contactBundle: VerifiedContactBundle? = null,
 ) {
     companion object {
         /**
@@ -76,9 +76,14 @@ data class PeerContext(
     }
 
     /**
-     * Vincula un ContactBundle al contexto autenticado.
+     * Vincula un ContactBundle VERIFICADO al contexto autenticado.
+     *
+     * El tipo del parametro es la garantia: no se puede enlazar aqui un
+     * bundle que no haya pasado [ContactBundle.verifyBundle], porque no hay
+     * ninguna forma de construir un [VerifiedContactBundle] que no lo haya
+     * hecho.
      */
-    fun withContactBundle(bundle: ContactBundle): PeerContext {
+    fun withContactBundle(bundle: VerifiedContactBundle): PeerContext {
         return copy(contactBundle = bundle)
     }
 }
