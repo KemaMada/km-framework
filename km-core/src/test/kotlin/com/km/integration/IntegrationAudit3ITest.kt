@@ -260,7 +260,7 @@ class IntegrationAudit3ITest {
             makePeerAnnouncement(bobKP.publicKey), session,
         )
         val mutated = ctx.copy(remotePeerId = IdentityId(charlieId))
-        assertNotEquals(mutated.announcement.identity.nodeId, mutated.remotePeerId)
+        assertNotEquals(mutated.announcement!!.identity.nodeId, mutated.remotePeerId)
     }
 
     // ===================================================================

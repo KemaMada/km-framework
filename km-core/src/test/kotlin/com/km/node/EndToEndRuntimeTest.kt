@@ -483,8 +483,8 @@ class EndToEndRuntimeTest {
         val expectedBobId = deriveId(bobKP.publicKey)
         assertEquals(expectedBobId, bobId.value)
         assertEquals(bobId, ctxAlice.remotePeerId)
-        assertEquals(bobId, ctxAlice.announcement.identity.nodeId)
-        assertContentEquals(bobKP.publicKey, ctxAlice.announcement.identity.publicKey)
+        assertEquals(bobId, ctxAlice.announcement!!.identity.nodeId)
+        assertContentEquals(bobKP.publicKey, ctxAlice.announcement!!.identity.publicKey)
 
         // Binding remotePeerId == PeerContext.remotePeerId
         val binding = aliceMgr.getBinding(aliceId, bobId)!!

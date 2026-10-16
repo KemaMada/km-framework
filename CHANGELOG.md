@@ -246,6 +246,106 @@ en claro. Cerrar el `MESSAGE` en claro no cierra el canal `ACK`.
 - **`km-core` no depende de Android ni de `dev.onvoid`**, y compila con toolchain
   JVM 11.
 
+### Added — sesión E2E con un contacto, sin handshake de nodo (km-core)
+
+Un `ContactBundle` verificado ya basta para abrir una sesión de mensajería
+cifrada y usarla. Antes, el camino de aplicación exigía un `AuthSession` en
+`AUTHENTICATED` aunque el par fuese una persona y no un nodo, así que el
+"hablar con un contacto" solo se podía probar en el guion de pruebas, que
+fabricaba en nombre del par el `AuthSession`, el `AuthOk` y el `NodeAnnouncement`
+que en producción exigen el handshake completo.
+
+- **`PeerAuthority`** (`com.km.node`, nuevo): tipo sumo cerrado, dentro de
+  `PeerContext`, con dos casos y solo dos — `NodeAuthenticated` (handshake
+  KM-0002 completo, con anuncio firmado) y `ContactVerified` (bundle que pasó
+  `ContactBundle.verifyBundle`). `PeerContext` pierde `authSession`,
+  `announcement` y `contactBundle` como campos: pasan a lecturas derivadas de la
+  autoridad, y por eso son **nullables**, porque un contacto no tiene sesión de
+  autenticación ni anuncio. `PeerContext.authenticated(...)` conserva firma y
+  orden; `withContactBundle` se **elimina** (cero llamantes de producción) y su
+  sustituto es `PeerContext.forContact(bundle)`.
+- **El guard cambió de forma explícita y tipada**, no en silencio. Los cuatro
+  sitios que leían `authSession.state` preguntan ahora
+  `authority.authorizesPeerSession()`: `SecureMessagingSession.send`,
+  `sendTranscript`, `PeerTransportManager.createBinding` y el `init` de
+  `PeerTransportBinding`. Los rechazos observables no cambian
+  (`SendReject.NOT_AUTHENTICATED`,
+  `TransportError.PEER_CONTEXT_NOT_AUTHENTICATED`).
+- **`authorizesPeerSession()` consulta el estado VIVO**, no una foto: un
+  `AuthSession` que recibe `AUTH_FAIL` después de construir el contexto deja de
+  autorizar en el instante. No existe ningún predicado que responda "está
+  autenticado", ni `isNode`, ni `capabilities`: el único booleano se llama por
+  lo que **autoriza**, que es la sesión 1:1 y su binding, nunca por lo que el
+  par "es".
+- **La no-negociabilidad es estructural.** Las superficies de rol
+  (`PeerRoleDirectory.record`) consumen `NodeAnnouncement`, y `ContactVerified`
+  ni lo contiene ni lo produce: `directory.record(autoridadDeContacto)` no
+  compila. No hay conversión de `ContactVerified` a `NodeAuthenticated`.
+- **`forContact` deriva el `remotePeerId`** del `identityRoot` con
+  `KmIds.identityId` y no lo acepta como parámetro, así que el llamante no
+  puede colar un `subjectDeviceId` como clave de enrutado. La granularidad es la
+  **conversación**: una raíz por par, nunca compartida.
+- **El grano de raíz gobierna los dos indexadores de la superficie 1:1**, no
+  solo la rama de contacto: `SecureSessionRegistry` y `PeerTransportBinding`
+  indexan por `remotePeerId`, y ese `remotePeerId` es la raíz en todo lo que este
+  cambio construye con `forContact`. Lo que la fábrica de contacto **garantiza**
+  es que *su* puerta produce siempre clave de raíz; `PeerContext.authenticated`
+  no restringe la granularidad en absoluto y recibe la que le pase el llamante,
+  que puede ser de dispositivo. Que las dos ramas coincidedan hoy en grano de
+  raíz es consecuencia de dónde sale cada contexto, no de un invariante del tipo.
+- **Cambio de comportamiento del `ACK` en el camino de núcleo.** El `ACK` lo firma
+  `ReceiverImpl` con el `localIdentity` **del núcleo que lo recibe**, y
+  `AckManagerImpl` lo correlaciona con `ack.from != message.to`, descartando en
+  silencio si no coinciden. Como `message.to` es la raíz con la que se indexó la
+  sesión, un consumidor que alimente su `KeyMessageCoreImpl` con un
+  `localIdentity` de **dispositivo** deja de cerrar el ciclo de entrega: el `ACK`
+  se descarta y no hay error. El mundo de pruebas (`SecureWorld`) pasa ahora a
+  `localIdentity = root.identityId` —antes `device.identityId`— y por eso
+  `EncryptedSendReceiveIntegrationTest` afirma que `ack.from` es la raíz del
+  receptor. Es un cambio de comportamiento **del fixture y del contrato que
+  exige**, no un parche cosmético: el emparejamiento raíz → clave de firma del
+  dispositivo sigue siendo del consumidor.
+- **`publicKey` de un contexto de contacto no está fijado por ninguna
+  aserción.** `forContact` lo toma de `bundle.subjectSigningKey`, pero nada en la
+  suite impide que sea otro valor: es dato *write-only*. El camino de nodo sí
+  está fijado (`EndToEndRuntimeTest` afirma la clave del anuncio). Un consumidor
+  que lo lea como "la clave del par" no tiene garantía.
+
+Fuera de alcance, declarado: rediseño y cableado de la app Android, TUI y CLI;
+federación relé-a-relé; DHT nuevo; cifrado at-rest; ACK cifrado (el ACK sigue
+firmado **y en claro**).
+
+#### Limitaciones activas que introduce este cambio
+
+No son detalles de implementación: son el alcance real de lo que existe.
+
+1. **Una sesión por raíz significa un dispositivo por conversación.** La clave
+   de registro y la del binding son el `remotePeerId` del `PeerContext`, que con
+   `forContact` es el `identityId` de la raíz y no el del dispositivo. Hablar con
+   dos dispositivos de la misma persona desde un mismo proceso no está resuelto.
+2. **Dos dispositivos de la misma raíz sustituyen la sesión anterior.**
+   `SecureSessionRegistry.install` guarda una sesión por clave, luego la segunda
+   sustituye a la primera; y el binding del segundo falla con
+   `BINDING_ALREADY_EXISTS` mientras el del primero siga activo.
+3. **El filtro `from == remotePeerId` admite el frame del otro dispositivo.**
+   Con dos dispositivos de una misma raíz, la sesión de A admite el frame
+   emitido para B. El ratchet lo rechaza, pero ese rechazo puede **avanzar
+   estado**: es justamente el "estado de dos pares mezclado" contra el que avisa
+   el KDoc de `SecureMessagingSession`.
+4. **La selección de dispositivo queda pendiente.** Resolverla exige una clave
+   compuesta `(identityRoot, subjectDeviceId)` en el registro y en el binding.
+   `BootstrapPrekeys.fromVerified` ya ata la sesión a un `subjectDeviceId`
+   concreto, luego la clave por raíz descarta información que el material sí
+   distingue.
+5. **`VerifiedContactBundle` no comprueba vigencia temporal.**
+   `ContactBundle.verifyBundle` valida estructura, invariantes de binding y
+   firma, pero no mira el reloj. La expiración de un bundle es una decisión de
+   protocolo que todavía no está tomada.
+
+Caveat preexistente que no se toca: `NodeIdentity.fromKeyPair` deriva `nodeId`
+con `identityId(pubKey)` en vez de `KmIds.nodeId`, así que un par que sea nodo
+y persona a la vez coincide por construcción solo si comparte clave de identidad.
+
 ### Limitaciones conocidas
 
 Declaradas en el [README](README.md) y en [SECURITY.md](SECURITY.md), y en el

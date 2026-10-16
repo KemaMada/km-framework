@@ -11,6 +11,7 @@ import com.km.model.MessageId
 import com.km.model.NodeAnnouncement
 import com.km.model.NodeAnnouncementJsonCodec
 import com.km.model.NodeIdentity
+import com.km.node.PeerAuthority
 import com.km.node.PeerContext
 import com.km.auth.Clock
 import java.util.UUID
@@ -18,6 +19,7 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -134,14 +136,23 @@ class VerifiedContactBundleTest {
     // ===================================================================
 
     @Test
-    fun `PeerContext admite un bundle verificado`() {
-        // El campo antes era del tipo singleton y no podia llevar un bundle.
-        // Aqui se comprueba que el valor llega intacto y que es el mismo.
+    fun `un PeerContext de nodo no lleva bundle y el de contacto si`() {
         val bundle = verified()
-        val ctx = authenticatedContext()
-        val conBundle = ctx.withContactBundle(bundle)
-        assertEquals(bundle, conBundle.contactBundle)
-        assertNull(ctx.contactBundle, "withContactBundle no debe mutar el original")
+
+        // Autoridad de NODO: handshake completo, y por tanto ningun bundle. Es
+        // la comprobacion que sustituye al viejo `withContactBundle`, que hacia
+        // justo lo contrario: anadir un bundle a un contexto de nodo.
+        val deNodo = authenticatedContext()
+        assertNull(deNodo.contactBundle, "un contexto de nodo no lleva bundle de contacto")
+        assertTrue(deNodo.authority is PeerAuthority.NodeAuthenticated)
+        assertNotNull(deNodo.announcement, "y su anuncio de nodo si, con handshake completo")
+
+        // Autoridad de CONTACTO: el bundle llega intacto y es el mismo.
+        val deContacto = PeerContext.forContact(bundle)
+        assertEquals(bundle, deContacto.contactBundle)
+        assertNull(deContacto.authSession, "el camino de contacto no inventa sesion de nodo")
+        assertNull(deContacto.announcement, "ni anuncio de nodo")
+        assertTrue(deContacto.authority is PeerAuthority.ContactVerified)
     }
 
     // ===================================================================

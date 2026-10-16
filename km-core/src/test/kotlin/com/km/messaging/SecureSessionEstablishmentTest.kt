@@ -62,7 +62,7 @@ class SecureSessionEstablishmentTest {
     // Topologia
     // ===================================================================
 
-    private inner class Party(val device: KmTestDevice) {
+    private inner class Party(val device: KmTestDevice, val root: KmTestIdentityRoot) {
         val transport = PeerTransportManager(FakeTransportBackend(), now = { 0L })
 
         fun initiatorKeys() = LocalInitiatorKeys(device.deviceId, device.agreementKey)
@@ -86,16 +86,22 @@ class SecureSessionEstablishmentTest {
     }
 
     /**
-     * Un mundo con A y B, cada uno con su PeerContext AUTENTICADO y el bundle
+     * Un mundo con A y B, cada uno con su PeerContext de CONTACTO y el bundle
      * VERIFICADO del otro ya vinculado.
      *
-     * El bundle entra por [PeerContext.withContactBundle], que solo acepta un
+     * El bundle entra por [PeerContext.forContact], que solo acepta un
      * `VerifiedContactBundle`: no hay forma de colar un documento sin verificar
      * en el camino del establecimiento.
+     *
+     * UNA RAIZ POR PAR. Antes se creaba una raiz nueva en CADA llamada, lo que
+     * hacia que el mismo par obtuviera dos `remotePeerId` distintos entre
+     * `initiate` y `accept`, y dos contextos que no hablan. Con la clave derivada
+     * de la raiz, hace falta que la raiz sea estable: es la identidad que firman
+     * los bundles y la que indexa la sesion.
      */
     private inner class World(bobOpkIds: List<Long>) {
-        val alice = Party(KmTestDevice("alice"))
-        val bob = Party(KmTestDevice("bob"))
+        val alice = Party(KmTestDevice("alice"), KmTestIdentityRoot())
+        val bob = Party(KmTestDevice("bob"), KmTestIdentityRoot())
         val establishment = SecureSessionEstablishment(x25519, kdf, protector)
 
         val aliceToBob: PeerContext
@@ -103,8 +109,8 @@ class SecureSessionEstablishmentTest {
 
         init {
             bobOpkIds.forEach { bob.device.issueOneTimePreKey(it) }
-            aliceToBob = alice.contextTowards(bob, KmTestIdentityRoot(), bobOpkIds)
-            bobToAlice = bob.contextTowards(alice, KmTestIdentityRoot(), emptyList())
+            aliceToBob = alice.contextTowards(bob, bob.root, bobOpkIds)
+            bobToAlice = bob.contextTowards(alice, alice.root, emptyList())
         }
 
         fun handshake(oneTimePrekeyIndex: Int? = 0, driveToConnected: Boolean = true): Handshake {
@@ -140,7 +146,29 @@ class SecureSessionEstablishmentTest {
         val b: SecureMessagingSession get() = accepted.session
     }
 
-    private fun Party.contextTowards(other: Party, otherRoot: KmTestIdentityRoot, otherOpkIds: List<Long>): PeerContext {
+    /**
+     * `PeerContext` de CONTACTO de esta parte hacia `other`: la autoridad es el
+     * bundle de [other], verificado de verdad.
+     *
+     * No hay `AuthSession` ni `NodeAnnouncement` en ninguna linea: con la
+     * autoridad de contacto no hacen falta, y colarlos aqui seria volver a
+     * fabricar en nombre del par el material de nodo que en produccion exige el
+     * handshake completo.
+     */
+    private fun Party.contextTowards(other: Party, otherRoot: KmTestIdentityRoot, otherOpkIds: List<Long>): PeerContext =
+        PeerContext.forContact(
+            ContactBundle.verified(otherRoot.bundleFor(listOf(other.device), other.device, otherOpkIds)),
+        )
+
+    /**
+     * `PeerContext` de NODO hacia `other`, con handshake completo de verdad.
+     *
+     * Existe para los escenarios "sin bundle verificado": un contexto de nodo es
+     * exactamente un contexto SIN material de contacto, y es la unica forma
+     * honesta de expresarlo ahora que `contactBundle` es derivado de la
+     * autoridad y no un campo que se pueda poner a `null` con `copy`.
+     */
+    private fun Party.nodeContextTowards(other: Party): PeerContext {
         val session = AuthSession.initiator(
             keyPair = device.signingKeyPair,
             identityId = device.identityId.value,
@@ -174,15 +202,11 @@ class SecureSessionEstablishmentTest {
         val announcement = partial.copy(
             signature = other.device.signWith(NodeAnnouncementJsonCodec.signableJson(partial)),
         )
-
-        val base = PeerContext.authenticated(
+        return PeerContext.authenticated(
             remotePeerId = other.device.identityId,
             publicKey = other.device.signingKeyPair.publicKey,
             announcement = announcement,
             authSession = session,
-        )
-        return base.withContactBundle(
-            ContactBundle.verified(otherRoot.bundleFor(listOf(other.device), other.device, otherOpkIds)),
         )
     }
 
@@ -378,7 +402,9 @@ class SecureSessionEstablishmentTest {
     @Test
     fun `iniciar sin bundle verificado LANZA`() {
         val mundo = World(listOf(1000))
-        val sinBundle = mundo.aliceToBob.copy(contactBundle = null)
+        // Un contexto de NODO no lleva bundle: no hay material remoto que
+        // verificar, y por tanto no hay nada que arrancar.
+        val sinBundle = mundo.alice.nodeContextTowards(mundo.bob)
         assertNull(sinBundle.contactBundle)
 
         val e = assertFailsWith<IllegalArgumentException> {
@@ -401,7 +427,7 @@ class SecureSessionEstablishmentTest {
         val e = assertFailsWith<IllegalArgumentException> {
             mundo.establishment.accept(
                 localIdentity = mundo.bob.device.identityId,
-                peerContext = mundo.bobToAlice.copy(contactBundle = null),
+                peerContext = mundo.bob.nodeContextTowards(mundo.alice),
                 localKeys = mundo.bob.responderKeys(1000),
                 prekeyFrameWire = h.initiated.prekeyFrame,
                 transport = mundo.bob.transport,

@@ -1,11 +1,6 @@
 package com.km.messaging
 
 import com.km.api.KeyMessageCoreImpl
-import com.km.auth.AuthChallenge
-import com.km.auth.AuthOk
-import com.km.auth.AuthSession
-import com.km.auth.Clock
-import com.km.auth.TranscriptBuilder
 import com.km.codec.JsonDecoder
 import com.km.codec.JsonEncoder
 import com.km.codec.ValidatorImpl
@@ -20,11 +15,6 @@ import com.km.identity.ContactBundle
 import com.km.identity.KmTestDevice
 import com.km.identity.KmTestIdentityRoot
 import com.km.model.IdentityId
-import com.km.model.MessageId
-import com.km.model.NodeAnnouncement
-import com.km.model.NodeAnnouncementJsonCodec
-import com.km.model.NodeCapability
-import com.km.model.NodeIdentity
 import com.km.node.FakeTransportBackend
 import com.km.node.PeerContext
 import com.km.node.PeerTransportManager
@@ -32,8 +22,6 @@ import com.km.protocol.ConnectionState
 import com.km.protocol.Transport
 import com.km.storage.InMemoryMessageStore
 import com.km.storage.InMemoryOfflineQueue
-import java.security.MessageDigest
-import java.util.UUID
 
 /**
  * FIXTURE COMPARTIDA del slice 4: dos dispositivos, dos pilas de transporte y
@@ -98,6 +86,7 @@ object SecureWorld {
      */
     class Party(
         val device: KmTestDevice,
+        val root: KmTestIdentityRoot,
         secure: Boolean,
         legacyCleartextReceive: Boolean = false,
         peerSigningKey: (IdentityId) -> ByteArray? = { null },
@@ -117,7 +106,22 @@ object SecureWorld {
         val offlineQueue: InMemoryOfflineQueue = InMemoryOfflineQueue()
 
         val core: KeyMessageCoreImpl = KeyMessageCoreImpl(
-            localIdentity = device.identityId,
+            // LA IDENTIDAD DE LA APLICACION ES LA RAIZ, no el dispositivo.
+            //
+            // No es una eleccion estetica: `AckManagerImpl.onAckReceived`
+            // correlaciona con `ack.from != message.to`, y `ack.from` lo pone
+            // `ReceiverImpl` con la `localIdentity` de ESTE nucleo. Como
+            // `message.to` es el id de RAIZ que Alice uso para indexar la sesion,
+            // un `localIdentity` a nivel de dispositivo haria que el `ACK` de B
+            // no cerrara nunca el ciclo: se descartaria en silencio. La
+            // granularidad tiene que coincidir en los dos lados de la
+            // correlacion.
+            //
+            // La ASIMETRIA que declara D-C sigue intacta donde importa: el
+            // `localIdentity` de la SESION es el del dispositivo, y lo remoto
+            // es la raiz. Son dos capas distintas con dos granularidades
+            // distintas, y cada una es coherente consigo misma.
+            localIdentity = root.identityId,
             localPrivateKey = device.signingKeyPair.privateKey,
             transport = transport,
             messageStore = messageStore,
@@ -160,17 +164,38 @@ object SecureWorld {
         }
 
         /**
-         * Entrega a esta parte unos bytes que llegaron de [from].
+         * Entrega a esta parte unos bytes que llegaron del par de [peerContext].
          *
          * `PeerTransportManager` no tiene un metodo publico de entrega entrante:
-         * la unica via por la que sus `dataHandlers` se disparan es
-         * `sendData`, que notifica con la identidad del PAR del `PeerContext`.
+         * la unica via por la que sus `dataHandlers` se disparan es `sendData`.
          * Invocarlo aqui produce exactamente la tupla `(from, wire)` que recibe
          * un proceso real, que es lo que la sesion y el puente de recepcion
-         * necesitan para decidir. El que llama es responsable de que los bytes
-         * sean los de verdad: por eso el parametro no se llama `data` a secas.
+         * necesitan para decidir.
+         *
+         * ## LOS DOS IDENTIFICADORES, Y DE QUE GRANO ES CADA UNO
+         *
+         * `sendData` recibe DOS ids y no son el mismo ni del mismo grano. Decirlo
+         * aqui evita el error que hacia esta firma mentir:
+         *
+         * - `peerContext.remotePeerId` es el `from` que ven los `dataHandlers`.
+         *   Con `forContact` es la **RAIZ** del contacto, no su dispositivo: el
+         *   llamante no lo elige y por eso la fixture no lo acepta como
+         *   parametro.
+         * - `localIdentity` es la mitad LOCAL de la clave del binding
+         *   (`localIdentity to remotePeerId`) y no sale por los handlers. Aqui se
+         *   pasa `device.identityId`, o sea **DISPOSITIVO**, y es correcto: es
+         *   quien abre el enlace, no quien es el par.
+         *
+         * Antes el parametro `from` ocupaba el hueco de `localIdentity` y se
+         * llenaba con el id del **DISPOSITIVO** del par, mientras el manager
+         * notificaba con el `remotePeerId` de **RAIZ**: dos identificadores
+         * distintos describiendo la misma cosa, y el parametro decia algo que
+         * no ocurria. Por eso desaparecio de la firma.
+         *
+         * El que llama sigue siendo responsable de que los bytes sean los de
+         * verdad: por eso el parametro no se llama `data` a secas.
          */
-        fun deliverInboundAs(from: IdentityId, peerContext: PeerContext, wire: ByteArray) {
+        fun deliverInboundAs(peerContext: PeerContext, wire: ByteArray) {
             peerTransport.sendData(device.identityId, peerContext, wire).getOrThrow()
         }
     }
@@ -194,14 +219,29 @@ object SecureWorld {
         private val aliceDevice = KmTestDevice("alice")
         private val bobDevice = KmTestDevice("bob")
 
-        val alice: Party = Party(aliceDevice, secure, legacyCleartextReceive) { id ->
-            if (id == bobDevice.identityId) bobDevice.signingKeyPair.publicKey else null
+        // UNA RAIZ POR PAR, nunca compartida. `PeerContext.forContact` deriva el
+        // `remotePeerId` del `identityRoot` del bundle, luego con UNA sola raiz
+        // los DOS SENTIDOS llevarian el MISMO valor de `remotePeerId`.
+        //
+        // Lo que eso rompe aqui NO es un binding: cada parte tiene su propio
+        // `PeerTransportManager` (ver [Party.peerTransport]), luego los bindings
+        // de A y de B nunca se ven. Lo que se rompe es la DIRECCION: con un solo
+        // valor no hay forma de distinguir "me lo mando yo" de "me lo manda el
+        // otro", y la correlacion del `ACK` (`ack.from` frente a `message.to`,
+        // ver [Party.core]) dejaria de distinguir los dos sentidos.
+        val aliceRoot = KmTestIdentityRoot()
+        val bobRoot = KmTestIdentityRoot()
+
+        val alice: Party = Party(aliceDevice, aliceRoot, secure, legacyCleartextReceive) { id ->
+            // El `ACK` lo firma `ReceiverImpl` con la `localIdentity` del NUCLEO,
+            // que aqui es el id de RAIZ (ver [Party.core]): luego la clave se
+            // resuelve por id de raiz y no por id de dispositivo.
+            if (id == bobRoot.identityId) bobDevice.signingKeyPair.publicKey else null
         }
-        val bob: Party = Party(bobDevice, secure, legacyCleartextReceive) { id ->
-            if (id == aliceDevice.identityId) aliceDevice.signingKeyPair.publicKey else null
+        val bob: Party = Party(bobDevice, bobRoot, secure, legacyCleartextReceive) { id ->
+            if (id == aliceRoot.identityId) aliceDevice.signingKeyPair.publicKey else null
         }
         val establisher: SecureSessionEstablishment = establishment()
-        private val root = KmTestIdentityRoot()
 
         val aliceToBob: PeerContext
         val bobToAlice: PeerContext
@@ -214,8 +254,8 @@ object SecureWorld {
 
         init {
             bob.device.issueOneTimePreKey(BOB_OPK_ID)
-            aliceToBob = alice.contextTowards(bob, root, listOf(BOB_OPK_ID))
-            bobToAlice = bob.contextTowards(alice, root, emptyList())
+            aliceToBob = alice.contextTowards(bob, bobRoot, listOf(BOB_OPK_ID))
+            bobToAlice = bob.contextTowards(alice, aliceRoot, emptyList())
             if (establish) handshake()
         }
 
@@ -268,10 +308,10 @@ object SecureWorld {
         fun rekey(): Pair<SecureMessagingSession, SecureMessagingSession> {
             bob.device.issueOneTimePreKey(REKEY_BOB_OPK_ID)
             val aliceToBob2 = contextTowards(
-                alice.device, bob.device, listOf(REKEY_BOB_OPK_ID), root,
+                bob.device, listOf(REKEY_BOB_OPK_ID), bobRoot,
             )
             val bobToAlice2 = contextTowards(
-                bob.device, alice.device, emptyList(), root,
+                alice.device, emptyList(), aliceRoot,
             )
             val initiated = establisher.initiate(
                 localIdentity = alice.device.identityId,
@@ -405,72 +445,35 @@ object SecureWorld {
     }
 
     // ------------------------------------------------------------------
-    // PeerContext AUTENTICADO de verdad, con el bundle del otro verificado
+    // PeerContext de CONTACTO: la autoridad es un bundle verificado
     // ------------------------------------------------------------------
 
     private fun Party.contextTowards(other: Party, otherRoot: KmTestIdentityRoot, otherOpkIds: List<Long>): PeerContext =
-        contextTowards(device, other.device, otherOpkIds, otherRoot)
+        contextTowards(other.device, otherOpkIds, otherRoot)
 
     /**
-     * `PeerContext` AUTENTICADO de [from] hacia [to], con el bundle de [to]
-     * VERIFICADO y vinculado.
+     * `PeerContext` de CONTACTO de `from` hacia `to`, con el bundle de `to`
+     * VERIFICADO.
      *
-     * Es la pieza que `SecureMessagingSession` exige: `AuthSession` en
-     * `AUTHENTICATED` de verdad (challenge, response y `AUTH_OK` firmados por
-     * [to]) y el `ContactBundle` de [to] pasado por `ContactBundle.verified`.
-     * No hay forma de colar un contexto sin autenticar ni un documento sin
-     * verificar por esta puerta.
+     * Aqui es donde esta la fractura que se cierra: antes esta funcion
+     * fabricaba, EN NOMBRE DEL PAR, un `AuthSession`, un `AuthOk` y un
+     * `NodeAnnouncement` firmado —material de nodo que en produccion exige el
+     * handshake completo— y despues anadia el bundle con `withContactBundle`.
+     * Eso hacia posible un guion de test que en produccion es imposible, y por
+     * eso el camino de contacto no se podia probar de verdad.
+     *
+     * Ahora el contexto sale de `PeerContext.forContact`: la autoridad es el
+     * bundle verificado y el `remotePeerId` lo deriva la propia fabrica de la
+     * RAIZ que lo firma. `from` ya no aparece, y no es un parametro muerto: es
+     * que el emisor no participa en la identidad del par.
      */
     fun contextTowards(
-        from: KmTestDevice,
         to: KmTestDevice,
         toOneTimePreKeyIds: List<Long>,
         root: KmTestIdentityRoot,
-    ): PeerContext {
-        val session = AuthSession.initiator(
-            keyPair = from.signingKeyPair,
-            identityId = from.identityId.value,
-            ed25519 = ed25519,
-            clock = Clock { 1_000L },
-        )
-        session.receiveChallenge(
-            AuthChallenge(ByteArray(16) { 7 }, 0L, 3, to.identityId.value),
-        ).getOrThrow()
-        session.markResponseSent()
-
-        val sid = MessageDigest.getInstance("SHA-256")
-            .digest("sid-${from.name}".toByteArray())
-            .joinToString("") { "%02x".format(it) }
-            .take(40)
-        val nonce = ByteArray(16) { 9 }
-        val transcript = TranscriptBuilder.serverAuthTranscript(sid, nonce, session.localIdentityId)
-        session.receiveAuthOk(
-            AuthOk(sid, nonce, to.signingKeyPair.publicKey, to.signWith(transcript)),
-            from.identityId.value,
-        ).getOrThrow()
-
-        val partial = NodeAnnouncement(
-            messageId = MessageId(UUID.randomUUID()),
-            timestamp = 0L,
-            protocolVersion = "1.0",
-            identity = NodeIdentity(to.identityId, to.signingKeyPair.publicKey),
-            endpoints = emptyList(),
-            capabilities = setOf(NodeCapability.CLIENT),
-        )
-        val announcement = partial.copy(
-            signature = to.signWith(NodeAnnouncementJsonCodec.signableJson(partial)),
-        )
-
-        val base = PeerContext.authenticated(
-            remotePeerId = to.identityId,
-            publicKey = to.signingKeyPair.publicKey,
-            announcement = announcement,
-            authSession = session,
-        )
-        return base.withContactBundle(
-            ContactBundle.verified(root.bundleFor(listOf(to), to, toOneTimePreKeyIds)),
-        )
-    }
+    ): PeerContext = PeerContext.forContact(
+        ContactBundle.verified(root.bundleFor(listOf(to), to, toOneTimePreKeyIds)),
+    )
 }
 
 /** Busca los bytes de [needle] dentro de [this], sin depender de conversiones. */

@@ -164,10 +164,14 @@ class PeerTransportManager(
         localIdentity: IdentityId,
         peerContext: PeerContext,
     ): TransportResult<PeerTransportBinding> {
-        if (peerContext.authSession.state != com.km.auth.AuthSessionState.AUTHENTICATED) {
+        // La AUTORIDAD del par es lo que abre el enlace. Para un nodo eso
+        // significa un `AuthSession` en `AUTHENTICATED` vivo; para un contacto,
+        // un bundle verificado. Lo que NO significa es "el par es un nodo": esa
+        // pregunta no se hace aqui.
+        if (!peerContext.authority.authorizesPeerSession()) {
             return TransportResult.Failure(
                 TransportError.PEER_CONTEXT_NOT_AUTHENTICATED,
-                "PeerContext debe estar AUTHENTICATED, actual: ${peerContext.authSession.state}"
+                "la autoridad del par no autoriza la sesion: ${peerContext.authority}"
             )
         }
         val remotePeerId = peerContext.remotePeerId

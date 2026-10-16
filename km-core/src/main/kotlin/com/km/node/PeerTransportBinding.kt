@@ -43,11 +43,17 @@ data class SdpPair(
  * Binding entre PeerContext y un transporte peer-to-peer.
  *
  * INVARIANTES:
- * - peerContext DEBE estar AUTHENTICATED.
+ * - la autoridad del peerContext DEBE autorizar la sesion de par.
  * - peerContext.remotePeerId es el unico destinatario valido para SDP/ICE.
  * - Un solo binding activo por (localIdentity, remotePeerId) — idempotencia.
  * - Si peerContext se cierra, el binding se invalida.
  * - negotiationHash queda ligado al binding.
+ *
+ * DEFENSA EN PROFUNDIDAD: [createBinding] ya filtra por lo mismo antes de llegar
+ * aqui ([PeerTransportManager]). Este `require` no es redundancia, es el segundo
+ * sitio donde el invariante esta escrito: si alguien construyera un binding a
+ * mano —un test, una herramienta de diagnostico— el enlace no existiria sin que
+ * la autoridad lo autorice.
  */
 data class PeerTransportBinding(
     val peerContext: PeerContext,
@@ -58,8 +64,8 @@ data class PeerTransportBinding(
     val dataReceived: Long = 0L,
 ) {
     init {
-        require(peerContext.authSession.state == com.km.auth.AuthSessionState.AUTHENTICATED) {
-            "PeerContext debe estar AUTHENTICATED para crear binding"
+        require(peerContext.authority.authorizesPeerSession()) {
+            "la autoridad del PeerContext debe autorizar la sesion de par para crear binding"
         }
     }
 

@@ -64,7 +64,7 @@ class ManagerGovernedE2ETest {
         val fresh = AuthenticatedNode(WebRtcTestEnv.ed25519, "mallory")
         val context = fresh.authenticatedContextTowards(bob)
         // Rompemos la autenticacion: la sesion deja de estar AUTHENTICATED.
-        context.authSession.receiveAuthFail()
+        context.authSession!!.receiveAuthFail()
 
         val peer = fresh.peerTowards(bob, context)
         val result = peer.open()

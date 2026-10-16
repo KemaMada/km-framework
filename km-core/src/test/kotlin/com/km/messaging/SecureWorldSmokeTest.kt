@@ -3,6 +3,7 @@ package com.km.messaging
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
@@ -23,10 +24,14 @@ class SecureWorldSmokeTest {
         val a = assertNotNull(mundo.sessionA, "A debe tener sesion tras el establecimiento")
         val b = assertNotNull(mundo.sessionB, "B debe tener sesion tras el establecimiento")
 
+        // ASIMETRIA DECLARADA (D-C): lo LOCAL sigue siendo el id del
+        // dispositivo y lo REMOTO es el id de la RAIZ del contacto. La sesion
+        // se indexa por la conversacion, no por la caja que la sostiene.
         assertEquals(mundo.alice.device.identityId, a.localIdentity)
         assertEquals(mundo.bob.device.identityId, b.localIdentity)
-        assertEquals(mundo.bob.device.identityId, a.remotePeerId)
-        assertEquals(mundo.alice.device.identityId, b.remotePeerId)
+        assertEquals(mundo.bobRoot.identityId, a.remotePeerId)
+        assertEquals(mundo.aliceRoot.identityId, b.remotePeerId)
+        assertNotEquals(mundo.bob.device.identityId, a.remotePeerId, "lo remoto NO es el dispositivo")
 
         // El enlace esta CONECTED: sin eso `send` se rechaza y el guion de mas
         // abajo no probaria el cifrado sino el estado del binding.
@@ -50,6 +55,6 @@ class SecureWorldSmokeTest {
     fun `un mundo sin sesion deja el registro vacio`() {
         val mundo = SecureWorld.openWithoutSession()
         assertEquals(0, mundo.alice.registry.size(), "sin establecimiento no hay sesion registrada")
-        assertEquals(null, mundo.alice.registry.find(mundo.bob.device.identityId))
+        assertEquals(null, mundo.alice.registry.find(mundo.bobRoot.identityId))
     }
 }

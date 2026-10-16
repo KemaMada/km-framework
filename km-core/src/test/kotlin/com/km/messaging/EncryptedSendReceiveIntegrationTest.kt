@@ -44,7 +44,7 @@ class EncryptedSendReceiveIntegrationTest {
 
         // --- A envia, y lo que sale por el cable se mira antes de entregarlo ---
         val ids = secretos.map { carga ->
-            val creado = mundo.alice.core.createMessage(mundo.bob.device.identityId, carga).getOrThrow()
+            val creado = mundo.alice.core.createMessage(mundo.bobRoot.identityId, carga).getOrThrow()
             mundo.alice.core.sendMessage(creado).getOrThrow()
             creado.messageId
         }
@@ -60,15 +60,15 @@ class EncryptedSendReceiveIntegrationTest {
 
         // --- B recibe por su camino de par ---
         capturados.forEach { wire ->
-            mundo.bob.deliverInboundAs(mundo.alice.device.identityId, mundo.bobToAlice, wire)
+            mundo.bob.deliverInboundAs(mundo.bobToAlice, wire)
         }
 
         assertEquals(secretos.size, recibidos.size, "B recibe todos, en orden")
         recibidos.forEachIndexed { i, m ->
             assertContentEquals(secretos[i], m.payload, "carga $i intacta")
             assertEquals(ids[i], m.messageId, "messageId $i es el del sobre")
-            assertEquals(mundo.alice.device.identityId, m.from, "emisor $i")
-            assertEquals(mundo.bob.device.identityId, m.to, "receptor $i")
+            assertEquals(mundo.aliceRoot.identityId, m.from, "emisor $i: la RAIZ del par, no el dispositivo")
+            assertEquals(mundo.bobRoot.identityId, m.to, "receptor $i: la RAIZ del receptor")
             assertTrue(m.state == com.km.model.MessageState.DELIVERED, "y queda DELIVERED en su registro")
         }
 
@@ -86,7 +86,7 @@ class EncryptedSendReceiveIntegrationTest {
         val capturados = mundo.alice.captureOutbound()
 
         val carga = "retransmision idempotente 2024-05-05".toByteArray()
-        val creado = mundo.alice.core.createMessage(mundo.bob.device.identityId, carga).getOrThrow()
+        val creado = mundo.alice.core.createMessage(mundo.bobRoot.identityId, carga).getOrThrow()
         mundo.alice.core.sendMessage(creado).getOrThrow()
         mundo.alice.core.retryMessage(creado.messageId).getOrThrow()
 
@@ -108,7 +108,7 @@ class EncryptedSendReceiveIntegrationTest {
 
         // B recibe el frame DOS veces, como en una red real, y entrega UNA.
         capturados.forEach { wire ->
-            mundo.bob.deliverInboundAs(mundo.alice.device.identityId, mundo.bobToAlice, wire)
+            mundo.bob.deliverInboundAs(mundo.bobToAlice, wire)
         }
         assertEquals(
             1,
@@ -134,9 +134,9 @@ class EncryptedSendReceiveIntegrationTest {
         mundo.bob.core.registerMessageHandler { }
         val capturados = mundo.alice.captureOutbound()
         val carga = "este mensaje espera su ACK 4402".toByteArray()
-        val creado = mundo.alice.core.createMessage(mundo.bob.device.identityId, carga).getOrThrow()
+        val creado = mundo.alice.core.createMessage(mundo.bobRoot.identityId, carga).getOrThrow()
         mundo.alice.core.sendMessage(creado).getOrThrow()
-        mundo.bob.deliverInboundAs(mundo.alice.device.identityId, mundo.bobToAlice, capturados.single())
+        mundo.bob.deliverInboundAs(mundo.bobToAlice, capturados.single())
 
         assertEquals(1, mundo.bob.transport.sentAcks.size, "B responde por el canal ACK")
         assertTrue(mundo.bob.transport.sent.isEmpty(), "y no por MESSAGE: el ciclo de amplificacion sigue cerrado")
@@ -145,7 +145,7 @@ class EncryptedSendReceiveIntegrationTest {
         // que hay firma, y el KDoc de `SecureInbound` dice que sigue siendo eso.
         val ack = JsonDecoder().decodeAck(mundo.bob.transport.sentAcks.single()).getOrThrow()
         assertEquals(creado.messageId, ack.originalMessageId, "correlaciona con el mensaje CIFRADO")
-        assertEquals(mundo.bob.device.identityId, ack.from, "y lo firma quien lo recibio")
+        assertEquals(mundo.bobRoot.identityId, ack.from, "y lo firma quien lo recibio, con la identidad de su nucleo")
         assertEquals(AckStatus.DELIVERED, ack.status)
         assertTrue(ack.signature.isNotEmpty(), "la firma va en el ACK")
 
@@ -170,12 +170,12 @@ class EncryptedSendReceiveIntegrationTest {
     fun `sin sesion el mensaje no sale y se ve por el API publico`() {
         val mundo = SecureWorld.openWithoutSession()
         val carga = "esto no lo va a leer nadie en claro".toByteArray()
-        val creado = mundo.alice.core.createMessage(mundo.bob.device.identityId, carga).getOrThrow()
+        val creado = mundo.alice.core.createMessage(mundo.bobRoot.identityId, carga).getOrThrow()
 
         mundo.alice.core.sendMessage(creado).getOrThrow()
 
         assertEquals(0, mundo.alice.transport.sendCount, "nada en claro por el camino legado")
-        val guardado = mundo.alice.core.getConversation(mundo.bob.device.identityId).getOrThrow()
+        val guardado = mundo.alice.core.getConversation(mundo.bobRoot.identityId).getOrThrow()
             .single { it.messageId == creado.messageId }
         assertEquals(com.km.model.MessageState.FAILED, guardado.state)
         assertEquals(com.km.model.FailureCode.AUTH_FAILED, guardado.failureCode)

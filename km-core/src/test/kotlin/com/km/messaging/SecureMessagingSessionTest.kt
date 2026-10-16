@@ -364,7 +364,7 @@ class SecureMessagingSessionTest {
     fun `MSG-07 PeerContext no autenticado no puede enviar`() {
         val (alice, _) = bootstrapPair()
         val ctx = alice.peerContext
-        ctx.authSession.receiveAuthFail()
+        ctx.authSession!!.receiveAuthFail()
         val result = alice.send("x".toByteArray())
         assertTrue(result is SendResult.Rejected, "debe rechazar: $result")
         assertEquals(SendReject.NOT_AUTHENTICATED, (result as SendResult.Rejected).reason)

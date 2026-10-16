@@ -28,7 +28,7 @@ class EncryptedReceivePathTest {
     private fun enviadoPorA(mundo: SecureWorld.World): ByteArray {
         val capturados = mundo.alice.captureOutbound()
         val creado = mundo.alice.core
-            .createMessage(mundo.bob.device.identityId, contenido).getOrThrow()
+            .createMessage(mundo.bobRoot.identityId, contenido).getOrThrow()
         mundo.alice.core.sendMessage(creado).getOrThrow()
         return capturados.last()
     }
@@ -40,18 +40,18 @@ class EncryptedReceivePathTest {
         mundo.bob.core.registerMessageHandler { recibido.add(it) }
 
         val creado = mundo.alice.core
-            .createMessage(mundo.bob.device.identityId, contenido).getOrThrow()
+            .createMessage(mundo.bobRoot.identityId, contenido).getOrThrow()
         val capturados = mundo.alice.captureOutbound()
         mundo.alice.core.sendMessage(creado).getOrThrow()
 
-        mundo.bob.deliverInboundAs(mundo.alice.device.identityId, mundo.bobToAlice, capturados.last())
+        mundo.bob.deliverInboundAs(mundo.bobToAlice, capturados.last())
 
         assertEquals(1, recibido.size, "un unico mensaje entregado")
         val m = recibido.single()
         assertContentEquals(contenido, m.payload, "el payload es el del SOBRE, no el del frame")
         assertEquals(creado.messageId, m.messageId, "el messageId es el del sobre")
-        assertEquals(mundo.alice.device.identityId, m.from, "y el emisor es quien entrego el transporte")
-        assertEquals(mundo.bob.device.identityId, m.to, "el receptor es la identidad local")
+        assertEquals(mundo.aliceRoot.identityId, m.from, "y el emisor es la RAIZ que el manager notifico")
+        assertEquals(mundo.bobRoot.identityId, m.to, "el receptor es la identidad local del nucleo: la RAIZ")
 
         // Y la entrega es UNA: el puente no descifra otra vez lo que la sesion
         // ya descifro. Un segundo paso por el ratchet seria un replay.
@@ -74,7 +74,7 @@ class EncryptedReceivePathTest {
         // Sin excepcion: un rechazo del ratchet es un resultado, no una
         // excepcion. Si aqui saltara algo, el llamante del transporte tendria
         // que decidir que hacer con una excepcion de enrutado.
-        mundo.bob.deliverInboundAs(mundo.alice.device.identityId, mundo.bobToAlice, wire)
+        mundo.bob.deliverInboundAs(mundo.bobToAlice, wire)
 
         assertTrue(recibido.isEmpty(), "un frame que no verifica no llega a la aplicacion")
         val puente = requireNotNull(mundo.bob.core.secureInbound)
@@ -99,7 +99,7 @@ class EncryptedReceivePathTest {
             "un SecureFrame no es un Message de km-core, y el camino legado lo sabe",
         )
 
-        mundo.bob.deliverInboundAs(mundo.alice.device.identityId, mundo.bobToAlice, wire)
+        mundo.bob.deliverInboundAs(mundo.bobToAlice, wire)
 
         assertTrue(recibido.isEmpty(), "no llega nada")
         val puente = requireNotNull(mundo.bob.core.secureInbound)
@@ -132,8 +132,7 @@ class EncryptedReceivePathTest {
         // 1. La sesion de B con A esta instalada y observada, y entrega.
         val antesDelRekey = "antes del re-key, por la sesion vieja 3311".toByteArray()
         mundo.bob.deliverInboundAs(
-            mundo.alice.device.identityId,
-            mundo.bobToAlice,
+             mundo.bobToAlice,
             framePor(mundo, requireNotNull(mundo.sessionA), antesDelRekey),
         )
         assertEquals(1, recibido.size, "la sesion instalada entrega")
@@ -148,8 +147,7 @@ class EncryptedReceivePathTest {
         // 3. Y ahora A manda por la sesion nueva. Esto es lo que antes se perdia.
         val despuesDelRekey = "despues del re-key, por la sesion nueva 6644".toByteArray()
         mundo.bob.deliverInboundAs(
-            mundo.alice.device.identityId,
-            mundo.bobToAlice,
+             mundo.bobToAlice,
             framePor(mundo, sesionA2, despuesDelRekey),
         )
 
@@ -188,8 +186,7 @@ class EncryptedReceivePathTest {
         mundo.bob.core.registerMessageHandler { recibido.add(it) }
 
         mundo.bob.deliverInboundAs(
-            mundo.alice.device.identityId,
-            mundo.bobToAlice,
+             mundo.bobToAlice,
             enviadoPorA(mundo),
         )
         assertEquals(0L, recibido.single().timestamp, "el sobre v1 no lleva tiempo")

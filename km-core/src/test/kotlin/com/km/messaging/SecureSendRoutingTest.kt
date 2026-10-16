@@ -25,10 +25,10 @@ class SecureSendRoutingTest {
     private val contenido = "la carga util de este mensaje no es constante 8814".toByteArray()
 
     private fun mensajeDe(mundo: SecureWorld.World): Message =
-        mundo.alice.core.createMessage(mundo.bob.device.identityId, contenido).getOrThrow()
+        mundo.alice.core.createMessage(mundo.bobRoot.identityId, contenido).getOrThrow()
 
     private fun mensajesDe(mundo: SecureWorld.World, id: MessageId): List<Message> =
-        mundo.alice.core.getConversation(mundo.bob.device.identityId).getOrThrow()
+        mundo.alice.core.getConversation(mundo.bobRoot.identityId).getOrThrow()
             .filter { it.messageId == id }
 
     // ===================================================================
@@ -87,7 +87,7 @@ class SecureSendRoutingTest {
     private fun entregadoAMano(mundo: SecureWorld.World, wire: ByteArray): Message {
         var recibido: Message? = null
         mundo.bob.core.registerMessageHandler { recibido = it }
-        mundo.bob.deliverInboundAs(mundo.alice.device.identityId, mundo.bobToAlice, wire)
+        mundo.bob.deliverInboundAs(mundo.bobToAlice, wire)
         return requireNotNull(recibido) { "B no recibio nada por el camino cifrado" }
     }
 
@@ -239,7 +239,7 @@ class SecureSendRoutingTest {
         val mundo = SecureWorld.open()
         mundo.alice.transport.goOffline()
         val carga = "carga propia de la rama sin wire, de otra longitud 7741".toByteArray()
-        val creado = mundo.alice.core.createMessage(mundo.bob.device.identityId, carga).getOrThrow()
+        val creado = mundo.alice.core.createMessage(mundo.bobRoot.identityId, carga).getOrThrow()
         mundo.alice.core.sendMessage(creado).getOrThrow()
         assertEquals(
             MessageState.QUEUED,
@@ -287,7 +287,7 @@ class SecureSendRoutingTest {
 
         // 2. Se instala la sesion y vuelve el par.
         mundo.handshake()
-        mundo.alice.transport.goOnline(mundo.bob.device.identityId)
+        mundo.alice.transport.goOnline(mundo.bobRoot.identityId)
 
         assertEquals(1, capturados.size, "el vaciado de la cola sale cifrado")
         val wire = capturados.single()
@@ -355,7 +355,7 @@ class SecureSendRoutingTest {
         //    emite nada. El mensaje queda esperando con su identidad intacta.
         mundo.alice.transport.goOffline()
         val carga = "contenido del drenado sin sesion, de longitud propia 6607".toByteArray()
-        val creado = mundo.alice.core.createMessage(mundo.bob.device.identityId, carga).getOrThrow()
+        val creado = mundo.alice.core.createMessage(mundo.bobRoot.identityId, carga).getOrThrow()
         mundo.alice.core.sendMessage(creado).getOrThrow()
         assertEquals(
             MessageState.QUEUED,
@@ -370,7 +370,7 @@ class SecureSendRoutingTest {
 
         // 2. Vuelve el par. Aqui es donde el drenado decide, y por eso es aqui
         //    donde puede filtrarse en claro.
-        mundo.alice.transport.goOnline(mundo.bob.device.identityId)
+        mundo.alice.transport.goOnline(mundo.bobRoot.identityId)
 
         // (a) LO PRIMERO: NADA sale por el camino legado. Ni una carga, ni una
         //     entrega. Con el registro presente, "no hay sesion" es un RECHAZO y
@@ -431,7 +431,7 @@ class SecureSendRoutingTest {
         val recibido = entregadoAMano(mundo, capturados.single())
         assertContentEquals(contenido, recibido.payload, "el payload llega entero")
         assertEquals(creado.messageId, recibido.messageId, "con el messageId del sobre")
-        assertEquals(mundo.alice.device.identityId, recibido.from, "y desde quien lo envio")
-        assertEquals(mundo.bob.device.identityId, recibido.to)
+        assertEquals(mundo.aliceRoot.identityId, recibido.from, "y desde quien lo envio: la RAIZ, no el dispositivo")
+        assertEquals(mundo.bobRoot.identityId, recibido.to, "y el receptor es la RAIZ, la que la sesion indexa")
     }
 }

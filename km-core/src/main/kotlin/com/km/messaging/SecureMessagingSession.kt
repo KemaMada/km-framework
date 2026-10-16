@@ -1,6 +1,5 @@
 package com.km.messaging
 
-import com.km.auth.AuthSessionState
 import com.km.model.IdentityId
 import com.km.node.PeerContext
 import com.km.node.PeerTransportManager
@@ -81,8 +80,12 @@ class SecureMessagingSession(
      */
     fun send(plaintext: ByteArray): SendResult {
         if (closed) return SendResult.Rejected(SendReject.CLOSED)
-        // 1. El manager exige PeerContext AUTHENTICATED al abrir el binding.
-        if (peerContext.authSession.state != AuthSessionState.AUTHENTICATED) {
+        // 1. La AUTORIDAD del par autoriza la sesion 1:1. No se pregunta "esta
+        // autenticado": se pregunta si su autoridad autoriza ESTA sesion, que
+        // es una pregunta distinta y mas estrecha. Un `NodeAuthenticated` sigue
+        // exigiendo su `AuthSession` en `AUTHENTICATED` VIVO (no una foto), y un
+        // `ContactVerified` autoriza con su bundle verificado.
+        if (!peerContext.authority.authorizesPeerSession()) {
             return SendResult.Rejected(SendReject.NOT_AUTHENTICATED)
         }
         // 2. El ratchet produce los bytes. Si falla, no se toca el transporte.
@@ -113,13 +116,16 @@ class SecureMessagingSession(
      *
      * - **no llama a `protocol.encrypt`**, luego no toca el ratchet;
      * - no inventa plaintext ni re-decodifica el sobre;
-     * - pasa por las MISMAS guardas que [send] —cerrada, `AUTHENTICATED` y
-     *   binding que el manager ya exigio—, con lo que un reintento no puede
-     *   abrir una puerta que el envio original no tenia.
+     * - pasa por las MISMAS guardas que [send] —cerrada y la autoridad del par
+     *   autorizando la sesion—, con lo que un reintento no puede abrir una puerta
+     *   que el envio original no tenia.
      */
     fun sendTranscript(wire: ByteArray): SendResult {
         if (closed) return SendResult.Rejected(SendReject.CLOSED)
-        if (peerContext.authSession.state != AuthSessionState.AUTHENTICATED) {
+        // MISMAS guardas que `send`, y no por comodidad: si el reintento pasara
+        // por un camino mas flojo, podria abrir una puerta que el envio original
+        // no tenia.
+        if (!peerContext.authority.authorizesPeerSession()) {
             return SendResult.Rejected(SendReject.NOT_AUTHENTICATED)
         }
         val result = transport.sendData(localIdentity, peerContext, wire)

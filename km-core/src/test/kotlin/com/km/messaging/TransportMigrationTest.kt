@@ -2408,7 +2408,8 @@ class TransportMigrationTest {
             "y sobre la MISMA sesion de autenticacion, no sobre una reautenticacion",
         )
         assertEquals(
-            AuthSessionState.AUTHENTICATED, sesion.peerContext.authSession.state,
+            AuthSessionState.AUTHENTICATED,
+            requireNotNull(sesion.peerContext.authSession) { "el contexto es de nodo" }.state,
             "que sigue AUTHENTICATED: heredar el contexto es heredar un contexto autenticado",
         )
         val binding = manager.getBinding(idAlice, idBob)

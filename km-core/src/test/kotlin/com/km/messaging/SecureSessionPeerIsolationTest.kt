@@ -35,7 +35,13 @@ import kotlin.test.assertTrue
  */
 class SecureSessionPeerIsolationTest {
 
-    private val root = KmTestIdentityRoot()
+    // UNA RAIZ POR PAR. Con una sola raiz compartida, `forContact` derivaria el
+    // MISMO `remotePeerId` para Bob y para Carol, las dos sesiones colgarían
+    // del mismo binding y la segunda rebotaria con `BINDING_ALREADY_EXISTS`:
+    // ese fallo seria la prueba de que la clave es la raiz.
+    private val aliceRoot = KmTestIdentityRoot()
+    private val bobRoot = KmTestIdentityRoot()
+    private val carolRoot = KmTestIdentityRoot()
     private val alice = KmTestDevice("alice")
     private val bob = KmTestDevice("bob")
     private val carol = KmTestDevice("carol")
@@ -48,8 +54,8 @@ class SecureSessionPeerIsolationTest {
     private val manager = PeerTransportManager(FakeTransportBackend(), now = { 0L })
     private val establishment = SecureWorld.establishment()
 
-    private val aliceToBob = SecureWorld.contextTowards(alice, bob, listOf(1000L), root)
-    private val aliceToCarol = SecureWorld.contextTowards(alice, carol, listOf(2000L), root)
+    private val aliceToBob = SecureWorld.contextTowards(bob, listOf(1000L), bobRoot)
+    private val aliceToCarol = SecureWorld.contextTowards(carol, listOf(2000L), carolRoot)
 
     /** Sesion de Alice con Bob, sobre el manager compartido. */
     private val conBob: SecureMessagingSession = run {
@@ -61,7 +67,7 @@ class SecureSessionPeerIsolationTest {
         )
         establishment.accept(
             localIdentity = bob.identityId,
-            peerContext = SecureWorld.contextTowards(bob, alice, emptyList(), root),
+            peerContext = SecureWorld.contextTowards(alice, emptyList(), aliceRoot),
             localKeys = LocalResponderKeys(
                 deviceId = bob.deviceId,
                 agreementKey = bob.agreementKey,
@@ -86,7 +92,7 @@ class SecureSessionPeerIsolationTest {
         )
         establishment.accept(
             localIdentity = carol.identityId,
-            peerContext = SecureWorld.contextTowards(carol, alice, emptyList(), root),
+            peerContext = SecureWorld.contextTowards(alice, emptyList(), aliceRoot),
             localKeys = LocalResponderKeys(
                 deviceId = carol.deviceId,
                 agreementKey = carol.agreementKey,
@@ -110,8 +116,8 @@ class SecureSessionPeerIsolationTest {
     @Test
     fun `el wire de un par no entra en la sesion del otro`() {
         // Ambas sesiones viven en el mismo manager, que es el escenario.
-        assertEquals(bob.identityId, conBob.remotePeerId)
-        assertEquals(carol.identityId, conCarol.remotePeerId)
+        assertEquals(bobRoot.identityId, conBob.remotePeerId, "el par remoto se indexa por RAIZ")
+        assertEquals(carolRoot.identityId, conCarol.remotePeerId, "y por raiz distinta son claves distintas")
         assertEquals(PeerTransportState.CONNECTED, conBob.bindingState())
         assertEquals(PeerTransportState.CONNECTED, conCarol.bindingState())
 
@@ -175,16 +181,19 @@ class SecureSessionPeerIsolationTest {
         registro.install(conBob)
         registro.install(conCarol)
         assertEquals(2, registro.size(), "dos pares, dos sesiones")
-        assertEquals(conBob, registro.find(bob.identityId))
-        assertEquals(conCarol, registro.find(carol.identityId))
+        assertEquals(conBob, registro.find(bobRoot.identityId))
+        assertEquals(conCarol, registro.find(carolRoot.identityId))
     }
 
-    /** `PeerContext` AUTENTICADO: el aislamiento se apoya en el `remotePeerId` real. */
+    // El aislamiento se apoya en el `remotePeerId` DERIVADO, no en el del dispositivo.
     @Test
     fun `cada sesion toma su remotePeerId de SU PeerContext`() {
         val ctx: PeerContext = conBob.peerContext
-        assertEquals(bob.identityId, ctx.remotePeerId)
-        assertEquals(carol.identityId, conCarol.peerContext.remotePeerId)
+        assertEquals(bobRoot.identityId, ctx.remotePeerId)
+        assertEquals(carolRoot.identityId, conCarol.peerContext.remotePeerId)
         assertTrue(ctx.remotePeerId != conCarol.peerContext.remotePeerId)
+        // Y NO es el id del dispositivo: la clave es la raiz, no la caja.
+        assertTrue(ctx.remotePeerId != bob.identityId, "la clave no es el id del dispositivo")
+        assertTrue(conCarol.peerContext.remotePeerId != carol.identityId, "tampoco en el otro sentido")
     }
 }

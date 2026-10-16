@@ -96,11 +96,39 @@ class PeerTransportBindingTest {
     @Test
     fun `K1-02 PeerContext FAILED no puede crear binding`() {
         val ctx = makePeerContext()
-        ctx.authSession.receiveAuthFail()
+        ctx.authSession!!.receiveAuthFail()
         val mgr = manager()
         val result = mgr.createBinding(aliceId, ctx)
         assertTrue(result.isFailure)
         assertEquals(TransportError.PEER_CONTEXT_NOT_AUTHENTICATED, (result as TransportResult.Failure).error)
+    }
+
+    /**
+     * K1-07 — el binding exige una autoridad que AUTORICE la sesion de par.
+     *
+     * Este test existe porque hasta p2 el `require` del `init` de
+     * `PeerTransportBinding` no lo ejecutaba NINGUN test: `PeerTransportBindingTest`
+     * no construia nunca un `PeerTransportBinding(...)` y `createBinding` filtra
+     * antes de llegar. Un invariante que no se ejecuta no es un invariante, es
+     * un comentario.
+     *
+     * Se construye el binding DIRECTAMENTE, sin pasar por `createBinding`, y por
+     * eso mide el segundo guard y no el primero. K1-02 sigue verde con el
+     * primero: los dos son sitios distintos.
+     */
+    @Test
+    fun `K1-07 el binding exige una autoridad que autorice la sesion de par`() {
+        val ctx = makePeerContext()
+        // Con la sesion viva el binding se construye: el invariante no es "que
+        // haya contexto" sino "que la autoridad autorice".
+        val vivo = PeerTransportBinding(ctx, PeerTransportState.NEW, 0L)
+        assertEquals(PeerTransportState.NEW, vivo.state)
+        assertEquals(bobId, vivo.peerContext.remotePeerId)
+
+        ctx.authSession!!.receiveAuthFail()
+        assertThrows(IllegalArgumentException::class.java) {
+            PeerTransportBinding(ctx, PeerTransportState.NEW, 0L)
+        }
     }
 
     @Test
@@ -409,7 +437,7 @@ class PeerTransportBindingTest {
     @Test
     fun `K6-03 stale-session no crea binding`() {
         val ctx = makePeerContext()
-        ctx.authSession.receiveAuthFail()
+        ctx.authSession!!.receiveAuthFail()
         val mgr = manager()
         val result = mgr.createBinding(aliceId, ctx)
         assertTrue(result.isFailure)
