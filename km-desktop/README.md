@@ -220,6 +220,7 @@ CLI, y lo que se usa a menudo son los comandos de dentro de la sesión.
 | `--relay <endpoint>` | Relé alternativo. También se lee de `KM_RELAY_URL`. Sin él, `wss://keymessage.xyz/km`. |
 | `--relay-identity <64hex>` | Identidad del relé que se anuncia en el `AUTH_REQUEST`. También se lee de `KM_RELAY_IDENTITY`. |
 | `--keystore <ruta>` | Ruta del almacén de identidad. Por defecto, `$XDG_CONFIG_HOME/keymessage/identity.kmkey`, o `~/.config/keymessage/identity.kmkey`. |
+| `--bootstrap <url>` | Bootstrap del relé, **repetible** y en orden: se prueban uno detrás de otro hasta que uno responda. Por defecto, los de `KM_BOOTSTRAPS` (separados por coma) o `KM_BOOTSTRAP_URL`, y en su defecto `JvmRelayTransport.DEFAULT_ENDPOINT`. |
 | `--peers <ruta>` | Ruta del directorio de claves de firma de los peers, del que sale el resolver que autentica los `ACK`. Por defecto `peers.json`, **junto** al almacén de identidad. |
 | `--reset` | Borra el almacén **y** el directorio de peers antes de arrancar. |
 | `--verbose` | Traza del transporte por **stderr**. |
@@ -234,7 +235,9 @@ desconocido también: sale con código `2`.
 | Variable | Efecto |
 |---|---|
 | `KM_KEYSTORE_PASSPHRASE` | Frase de paso, sin preguntar. Comodidad con riesgo: queda en el entorno del proceso y a menudo en la historia del shell. Cuando está puesta, la TUI lo **avisa**. |
-| `KM_RELAY_URL` | Endpoint por defecto. |
+| `KM_RELAY_URL` | Endpoint por defecto (nombre histórico, **uno** solo). |
+| `KM_BOOTSTRAPS` | **Varios** bootstraps separados por coma, en orden de preferencia. Gana a `KM_RELAY_URL`. Una entrada en blanco es un error de arranque, no un destino que se salta. |
+| `KM_BOOTSTRAP_URL` | Alias en singular de `KM_BOOTSTRAPS`, para un destino. |
 | `KM_RELAY_IDENTITY` | `identityId` del relé que se anuncia. |
 | `NO_COLOR` | Desactiva el color, igual que `TERM=dumb` o una salida que no sea terminal. |
 
@@ -246,8 +249,8 @@ Se escriben dentro de la sesión, en el prompt `km>`.
 |---|---|
 | `connect [endpoint]` | Abre el WebSocket y hace el handshake `AUTH_REQUEST` → `AUTH_CHALLENGE` → `AUTH_RESPONSE` → `AUTH_OK`. Sin argumento usa `wss://keymessage.xyz/km`. |
 | `identity` | `identityId`, huellas de las claves públicas y ruta del almacén. |
-| `status` | Estado del transporte, `sessionId`, relé, intento y cuenta atrás de reconexión, último error, peers vistos y cuántas claves de firma hay registradas. |
-| `send <identityIdHex> <texto>` | Crea y envía un mensaje por la API de `KeyMessageCore`. El `identityId` se valida por forma: 64 hex. |
+| `status` | Estado del transporte, `sessionId`, relé, intento y cuenta atrás de reconexión, último error, peers vistos, **pares con sesión cifrada** y cuántas claves de firma hay registradas. Las dos listas son distintas a propósito: «está en línea» no es «puedo escribirle». |
+| `send <identityIdHex> <texto>` | Crea y envía un mensaje por la API de `KeyMessageCore`, **por el camino cifrado**. Sin sesión con ese par el resultado es `FAILED` y **no sale ningún byte**; la línea lo dice como `NO ENVIADO`, nunca como «pendiente». |
 | `peer <identityIdHex> <claveBase64>` | Registra la clave de firma de un peer y la guarda en `peers.json`. Es lo que permite autenticar sus `ACK`. Rechaza una clave que no derive ese `identityId`. |
 | `help` | Ayuda. |
 | `quit` | Desconecta y sale. |
@@ -285,6 +288,37 @@ Alias: `conectar`, `enviar`, `id`, `q`, `exit`, `?`, `h`.
                                     ▼                            │
                     wss://keymessage.xyz/km  →  km-daemon ◄─────┘
 ```
+
+### Cómo queda cableado al framework
+
+Desde p5 el escritorio es un **cliente delgado**: compone piezas que ya existen
+y no implementa ninguna por su cuenta.
+
+| Pieza | Dónde vive | Qué hace aquí |
+|---|---|---|
+| `RelayClientStack` | `:km-transport` | `RelayStackFactory.stackFor(motor)` compone motor + manager + drivers. `stack.backend === stack.transport`, comprobado. |
+| `SecureSessionRegistry` + `PeerTransportManager` | `:km-core` | `CoreFactory.create(...)` los inyecta **juntos**, con `allowLegacyCleartextReceive = false`. Sin esa pareja el envío sale en claro. |
+| `SecureSessionEstablishment` | `:km-core` | `SessionCoordinator.iniciar/aceptar` sobre `PeerContext.forContact`, que deriva la clave de ruteo de la **raíz** del bundle. |
+| `ContactBundle.decodeAndVerify` | `:km-core` | Única entrada de un contacto. Lo que no verifica, no entra. |
+| `DiagLog` | aquí | Ocho canales a **stderr**. `stdout` es el prompt de la TUI. |
+
+La línea que resume la puerta anti-texto-plano: **sin sesión, el envío queda
+`FAILED` y salen cero bytes** por los dos caminos que existen —el cifrado
+(`TransportBackend.sendData`) y el legado (`Transport.send`).
+
+### Lo que solo se cubre en ADB
+
+Nada de lo siguiente tiene un test de JVM que lo demuestre, y no se presenta como
+si lo tuviera:
+
+| Qué | Por qué no hay test de JVM | Cómo se cierra |
+|---|---|---|
+| **Sesión E2E entre dos procesos `km-desktop`** por un socket real | El arnés de `:km-desktop` (`RelayProbe`) es un `TransportBackend` con cables de salida y de entrada reales, pero sin socket. El establecimiento, el `SecureFrame` cruzando el cable y la entrega con el mismo `messageId` y payload sí están cubiertos; la unión entre dos procesos, no. | Dos procesos reales + `km-daemon` |
+| **Failover de endpoint en caliente** | `JvmRelayTransport` toma el endpoint en el **constructor** (`private val endpoint`), no como `var`. `Session.switchEndpoint` devuelve un `UnsupportedOperationException` observable para todo destino distinto del de arranque, en vez de fingir un reintento. `EndpointSequence` (recorrido ordenado y `BootstrapAllFailed`) sí está probado sobre un doble. | Exponer el endpoint en `:km-transport` |
+| **`shadowJar` que linkea BouncyCastle sin clase ausente** | `CryptoProviderRuntimeTest` prueba **carga de clase** de los tres providers en el runtime de `:km-desktop`, no el enlace del jar final. | `shadowJar` + arranque real |
+| **`BOOTSTRAP_ALL_FAILED` con DNS y TLS reales** | El arnés unitario no tiene red. La lógica de recorrido y el mensaje que lista los probados sí están cubiertos. | Arrancar contra hosts inalcanzables |
+| **`AUTH` contra `km-daemon` desplegado, `PeerOnline`/`PeerOffline`** | Requiere el relé levantado; `RelayLegacyEchoTest` ya sube un `km-daemon` real, pero el `AUTH` del dialecto desplegado es otro proceso. | Log del proceso (`tee` / `adb logcat`) |
+
 
 ### `PeerKeyDirectory` — el almacén de `peers.json`
 

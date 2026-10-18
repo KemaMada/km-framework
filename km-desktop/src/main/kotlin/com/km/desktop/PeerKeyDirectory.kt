@@ -1,6 +1,8 @@
 package com.km.desktop
 
+import com.km.identity.ContactBundle
 import com.km.identity.KmIds
+import com.km.identity.VerifiedContactBundle
 import com.km.model.IdentityId
 // p4/R-8.a: `RelayDataCodec` vive en `:km-transport`, no aqui. Solo se usa su
 // constante de forma (`IDENTITY_ID_HEX`); el codec completo no se duplica.
@@ -110,6 +112,56 @@ class PeerKeyDirectory(
         return register(identityId, key)
     }
 
+    /**
+     * Registra el bundle VERIFICADO de un contacto.
+     *
+     * ## QUE CAMBIA RESPECTO A [registerFromContactBundle]
+     *
+     * Aquella toma un `Map` crudo y exige que la clave derive el `identityId`
+     * que se le pase —una identidad de IDENTIDAD—. Esta recibe un
+     * [VerifiedContactBundle], que por construccion ya paso por
+     * `ContactBundle.decodeAndVerify`, y guarda la clave de FIRMA del
+     * DISPOSITIVO bajo la identidad de la RAIZ que lo firma.
+     *
+     * ## POR QUE ESO NO ES UNA INCONSISTENCIA
+     *
+     * Porque son dos dominios de derivacion distintos y ambos correctos:
+     *
+     *  - `registerEncoded` guarda la clave de IDENTIDAD, de la que deriva el
+     *    `identityId` del cable por `KmIds.identityId`.
+     *  - `registerFromVerifiedBundle` guarda la clave de FIRMA DE DISPOSITIVO,
+     *    de la que deriva un `deviceId` por `KmIds.deviceId` (otro dominio), y
+     *    la indexa por la RAIZ.
+     *
+     * La comprobacion de coherencia de [register] NO se aplica aqui a proposito:
+     * exigir que la clave del dispositivo derive la identidad de la raiz seria
+     * exigir que dos claves distintas derivaran el mismo identificador. El
+     * vínculo que si importa —que el bundle FIRMA y que su `subjectSigningKey`
+     * coincide con la del roster firmado— ya lo garantiza el verificador de
+     * km-core antes de que este metodo exista.
+     *
+     * @return la identidad de la raiz, o `null` si el bundle no trae
+     *   `identityRoot`. Un `null` aqui significa "no se guardo nada", no
+     *   "se guardo sin clave".
+     */
+    fun registerFromVerifiedBundle(bundle: VerifiedContactBundle): IdentityId? {
+        val root = runCatching { IdentityId(KmIds.identityId(bundle.identityRoot).toHex()) }.getOrNull()
+            ?: return null
+        keys[root.value] = bundle.subjectSigningKey.copyOf()
+        return root
+    }
+
+    /**
+     * La MISMA operacion, entrando por el texto del sobre.
+     *
+     * Es la puerta que la TUI usa: el usuario pega un `.kmc` y lo que se guarda
+     * es lo que el verificador dijo, nunca lo que el texto parecia decir.
+     *
+     * @throws com.km.identity.KmIdVerificationException si el sobre no verifica.
+     */
+    fun registerFromBundleText(text: String): IdentityId? =
+        registerFromVerifiedBundle(ContactBundle.decodeAndVerify(text.trim()))
+
     /** Clave de firma de [identityId], o `null` si no se conoce. */
     fun signingKeyOf(identityId: IdentityId): ByteArray? = keys[identityId.value]?.copyOf()
 
@@ -207,6 +259,9 @@ class PeerKeyDirectory(
         val derived = KmIds.identityId(publicKey).joinToString("") { "%02x".format(it) }
         return derived.equals(identityId.value, ignoreCase = true)
     }
+
+    /** Hex de un `ByteArray`. */
+    private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
 
     private fun base64OrNull(encoded: String): ByteArray? =
         runCatching { B64_DECODER.decode(encoded) }.getOrNull()

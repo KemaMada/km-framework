@@ -1,19 +1,27 @@
 package com.km.desktop
 
 import com.km.api.KeyMessageCore
-import com.km.api.KeyMessageCoreImpl
+import com.km.desktop.config.BootstrapConfig
+import com.km.desktop.core.CoreFactory
 import com.km.model.Ack
 import com.km.model.IdentityId
 import com.km.model.Message
 import com.km.model.MessageId
 import com.km.model.MessageState
+import com.km.messaging.LegacyInboundObservation
+import com.km.messaging.SecureSessionRegistry
 import com.km.protocol.ConnectionState
 // p4/R-8.a: el motor del rele (cliente WebSocket + codec del dialecto
 // KM-WIRE-RELAY) vive en `:km-transport` y se consume POR ARTEFACTO. La copia
 // que habia aqui en `com.km.desktop` se ELIMINO: dos clientes de wire
 // significarian dos protocolos, dos `MAX_RESEND` y dos vectores de ratchet
 // duplicados. Ver `km-transport/src/main/kotlin/com/km/transport`.
+import com.km.desktop.util.DiagLog
+import com.km.desktop.net.BootstrapAllFailed
+import com.km.desktop.net.EndpointSequence
+import com.km.desktop.net.RelayStackFactory
 import com.km.transport.JvmRelayTransport
+import com.km.transport.RelayClientStack
 import com.km.transport.RelayDataCodec
 import com.km.transport.RelayStatus
 import org.jline.reader.EndOfFileException
@@ -212,6 +220,18 @@ class DesktopTui(
         // lo primero es estado del rele, lo segundo es por que los `ACK` no se
         // verifican. Una linea de estado que no los distinga deja al usuario
         // buscando en el sitio equivocado.
+        // Sesiones CIFRADAS, que es lo que decide si un `send` sale. Se imprime
+        // junto a los peers en linea y NO en la misma linea: "esta en linea" y
+        // "puedo escribirle" son dos hechos distintos, y una linea que los
+        // mezcla deja al usuario escribiendo a alguien a quien el escritorio le
+        // va a rechazar el mensaje.
+        val conSesion = session.sessionPeers()
+        out.println(
+            "  sesiones    " + when {
+                conSesion.isEmpty() -> Ansi.yellow("ninguna: 'send' se RECHAZARA hasta establecer sesion")
+                else -> Ansi.green("${conSesion.size} con sesion cifrada")
+            }
+        )
         val keys = session.peerKeys.known()
         out.println(
             "  claves       " + when {
@@ -223,27 +243,76 @@ class DesktopTui(
         out.println()
     }
 
+    /**
+     * Conectar, recorriendo los bootstraps EN ORDEN.
+     *
+     * Sin argumento, recorre la lista configurada. Con un endpoint explicito,
+     * prueba solo ese: un operador que escribe `connect wss://x` ha pedido x, y
+     * caer de vuelta a la lista seria una arquitectura distinta de la que pide.
+     *
+     * El FAILOVER no es una excepcion: `EndpointSequence` prueba el siguiente
+     * cuando uno falla, y solo lanza `BootstrapAllFailed` cuando se han probado
+     * todos. Ese es el unico caso que se imprime como error, y dice cuales.
+     */
     private fun connect(endpoint: String?) {
-        val target = endpoint ?: JvmRelayTransport.DEFAULT_ENDPOINT
-        out.println("conectando a ${Ansi.cyan(target)} …")
-        val result = session.transport.connect()
-        if (result.isSuccess) {
+        val objetivo = endpoint?.let { listOf(it) } ?: session.bootstraps
+        out.println("conectando a ${Ansi.cyan(objetivo.joinToString(" → "))} …")
+        val fallo = runCatching {
+            EndpointSequence(objetivo) { target ->
+                session.switchEndpoint(target).getOrThrow()
+            }.recorrer()
+        }.exceptionOrNull()
+        if (fallo == null) {
             out.println(Ansi.green("conectado") + "  sesion ${session.status().sessionId ?: "—"}")
+        } else if (fallo is BootstrapAllFailed) {
+            out.println(Ansi.red("ningun bootstrap respondio") + ": ${fallo.tried.joinToString(", ")}")
         } else {
-            out.println(Ansi.red("no se pudo conectar") + ": ${result.exceptionOrNull()?.message}")
+            out.println(Ansi.red("no se pudo conectar") + ": ${fallo.message}")
         }
         out.println()
     }
 
+    /**
+     * Enviar, por el camino CIFRADO y solo por ese.
+     *
+     * Lo que se imprime distingue tres casos que antes se confundian en un solo
+     * "no se pudo enviar":
+     *
+     *  - `SENT` — salio por el backend como `SecureFrame`.
+     *  - `FAILED` con `NO_SESSION` — no hay sesion con ese par, y el mensaje NO
+     *    salio. No es un reintento pendiente: es un rechazo.
+     *  - otro `FAILED` — fallo de transporte o de cifrado, distinto del anterior.
+     *
+     * El caso que no admite matiz es el segundo: si el texto dijera "pendiente"
+     * o "encolado", el usuario creeria que su mensaje saldra, y no saldra nunca
+     * por esa via.
+     */
     private fun send(command: Command.Send) {
-        val core: KeyMessageCore = session.core
+        val core: KeyMessageCore = session.core.core
         core.createMessage(command.to, command.text.toByteArray(Charsets.UTF_8))
             .mapCatching { core.sendMessage(it).getOrThrow() }
             .onSuccess { result ->
-                out.println(
-                    Ansi.green("enviado") + " ${result.messageId.value.toString().take(8)}… " +
-                        Ansi.dim("estado=${result.state}")
+                DiagLog.messageSent(
+                    messageId = result.messageId.value.toString(),
+                    peerId = command.to.value,
+                    resultado = result.state.name,
+                    failureCode = result.failureCode?.name,
                 )
+                if (result.state == MessageState.SENT) {
+                    out.println(
+                        Ansi.green("enviado") + " ${result.messageId.value.toString().take(8)}… " +
+                            Ansi.dim("estado=${result.state} · cifrado")
+                    )
+                } else {
+                    val sinSesion = !session.sessionPeers().contains(command.to)
+                    val motivo = result.failureCode?.name ?: "sin motivo declarado"
+                    val etiqueta = if (sinSesion) {
+                        Ansi.red("NO ENVIADO: no hay sesion cifrada con ${command.to.value.take(16)}…")
+                    } else {
+                        Ansi.red("NO ENVIADO: $motivo")
+                    }
+                    out.println(etiqueta + " " + Ansi.dim("(estado=${result.state})"))
+                }
             }
             .onFailure { out.println(Ansi.red("no se pudo enviar") + ": ${it.message}") }
         out.println()
@@ -287,17 +356,35 @@ class DesktopTui(
 }
 
 /**
- * Estado vivo de la sesion: identidad, transporte, core y peers vistos.
+ * Estado vivo de la sesion: identidad, pila del rele, core y peers vistos.
  *
  * Existe para que la TUI no tenga ningun campo mutable propio, y para que los
  * handlers del core, que llegan desde otros hilos, escriban SIEMPRE en el mismo
  * objeto que imprime la pantalla.
+ *
+ * ## POR QUE GUARDA LA PILA Y NO EL MOTOR
+ *
+ * Porque lo que hace falta casi siempre es el conjunto —el manager para abrir
+ * enlaces, el driver de un par, el camino legado— y no el motor suelto. Un
+ * `Session` que guardara el motor obligaria a recomponer la pila en cada sitio
+ * que la necesite, y a hacerlo de forma ligeramente distinta en cada uno.
  */
 class Session(
     val identity: DesktopIdentity,
     val keystorePath: Path,
-    val transport: JvmRelayTransport,
-    val core: KeyMessageCore,
+    /** La pila del rele. El motor se alcanza por `stack.transport`. */
+    val stack: RelayClientStack,
+    /**
+     * El nucleo Y las dos piezas cuya presencia hay que poder mirar.
+     *
+     * Se guarda el [CoreFactory.CoreBundle] entero y no el `KeyMessageCore` a
+     * pelo porque lo que la sesion necesita observar —el registro de sesiones y
+     * el estado del camino legado— vive AL LADO del nucleo, no dentro de la
+     * interfaz. Guardar solo el nucleo obligaria a mantener una segunda
+     * referencia al registro, y dos referencias a un registro son dos
+     * oportunidades de que se desincronicen.
+     */
+    val core: CoreFactory.CoreBundle,
     /**
      * Claves de FIRMA de los peers conocidos.
      *
@@ -324,16 +411,99 @@ class Session(
 
     fun onlinePeers(): Set<IdentityId> = peers.toSet()
 
+    /**
+     * Pares con los que HAY SESION CIFRADA establecida.
+     *
+     * No es lo mismo que [onlinePeers]: aquellos son los que el rele ha
+     * declarado PRESENTES, que es estado del rele y se borra al desconectar.
+     * Estos son los que tienen una sesion en el registro, y sin sesion el envio
+     * se RECHAZA. Confundir las dos dos lineas haria que un par en linea
+     * pareciera escribible cuando lo que sale es un rechazo.
+     */
+    fun sessionPeers(): Set<IdentityId> = registry.peers()
+
+    /** El motor del rele. Es la MISMA instancia que `stack.transport`. */
+    val transport: JvmRelayTransport get() = stack.transport
+
+    /**
+     * Los bootstraps configurados, en orden.
+     *
+     * Los fija el nucleo de la sesion —no el rele— porque son una decision de
+     * ARRANQUE: son los destinos que el operador ha configurado para esta
+     * ejecucion, y no cambian por conectar.
+     */
+    var bootstraps: List<String> = listOf(transport.status().endpoint)
+
+    /**
+     * Intenta conectar por [target].
+     *
+     * ## LO QUE NO PUEDE HACER, Y SE DICE
+     *
+     * **No cambia el endpoint del motor en caliente.** `JvmRelayTransport` toma
+     * el endpoint en su CONSTRUCTOR (`private val endpoint`), no como `var`, y
+     * su `status()` lo lee de ahi. Cambiarlo exigiria que `:km-transport` lo
+     * expusiera, que es una decision de ESE modulo y no de este.
+     *
+     * Por eso este metodo solo conecta cuando [target] es el endpoint con el que
+     * se construyo el motor, y devuelve un FALLO OBSERVABLE para el resto. Un
+     * `connect` que aceptara cualquier endpoint y no cambiara nada seria un
+     * failover de mentira: el cliente diria que ha reintentado con otro y habria
+     * reintentado con el mismo.
+     *
+     * El RECORRIDO en orden —que es lo que [EndpointSequence] decide— si esta
+     * probado y funciona; lo que falta es la costura del lado del transporte, y
+     * esta excepcion la nombra para que quien la lea sepa que el fallo es de
+     *表达能力 del transporte y no de la logica.
+     */
+    fun switchEndpoint(target: String): Result<Unit> {
+        val actual = transport.status().endpoint
+        if (target != actual) {
+            return Result.failure(
+                UnsupportedOperationException(
+                    "el motor se construyo con '$actual' y su endpoint no es mutable: " +
+                        "arranca el cliente con --bootstrap $target para usar ese destino",
+                ),
+            )
+        }
+        return transport.connect()
+    }
+
     /** Estado del transporte. La TUI no lo interroga por dentro. */
     fun status(): RelayStatus = transport.status()
 
+    /** El registro de sesiones. `peers()` de ahi es lo que muestra `status`. */
+    val registry: SecureSessionRegistry get() = core.registry
+
+    /** Lo que ha hecho el camino legado de recepcion. Observable, no un log. */
+    val legacyInbound: LegacyInboundObservation get() = core.legacyInbound
+
     fun close() {
-        core.stop()
-        transport.close()
+        observadoresInstall.forEach { it() }
+        observadoresInstall.clear()
+        core.core.stop()
+        stack.close()
         peers.clear()
     }
 
     fun bind(emit: (String) -> Unit) {
+        // El camino LEGADO se da de alta EXPLICITAMENTE y una sola vez.
+        //
+        // Sin esto, cablear las dos caras deja el camino en claro sin nada: el
+        // motor entrega lo opaco por `onDataReceived` (que alimenta al
+        // `PeerTransportManager` y de ahi a las sesiones cifradas) y lo
+        // clasificado por `onLegacyInboundFrame`, que sin compositor no
+        // entrega nada. El resultado se parece muchisimo a "funciona": el
+        // cifrado entra, y el legado desaparece sin decir por que.
+        //
+        // El `false` de un segundo `attachLegacy` es un RECHAZO, no un no-op
+        // silencioso: dos conductores sobre el mismo slot harian que cada
+        // frame se entregase DOS veces por el camino en claro.
+        val montado = stack.attachLegacy()
+        emit(
+            if (montado) "camino legado: dado de alta"
+            else "camino legado: ya estaba dado de alta (no se duplica)",
+        )
+
         transport.onStateChange { state -> emit("conexion: ${state.name}") }
         transport.onPeerOnline { peer ->
             peers.add(peer)
@@ -349,10 +519,44 @@ class Session(
         transport.setRelayExpiredHandler { notice ->
             emit("RELAY_EXPIRED: ${notice.originalMessageId.value.toString().take(8)}… (${notice.reason})")
         }
-        core.registerMessageHandler { message: Message -> emit("mensaje de ${message.from.value.take(8)}… (${message.payload.size}B)") }
-        core.registerAckHandler { ack: Ack -> emit("ACK ${ack.status} de ${ack.from.value.take(8)}…") }
-        core.registerStateChangeHandler { id: MessageId, state: MessageState -> emit("mensaje ${id.value.toString().take(8)}… -> ${state.name}") }
+        // El gancho de INSTALACION: cada sesion que entra en el registro abre
+        // su canal de par en el rele.
+        //
+        // Sin esto, la sesion existe, el cifrado funciona y el enlace nunca
+        // pasa de `NEW`: `PeerTransportManager.sendData` exige `CONNECTED`, y el
+        // envio se rechazaria por un motivo que no tiene nada que ver con la
+        // criptografia. El fallo se veria como "el escritorio no envia", que es
+        // justo el sintoma que hace que se sospeche del rele.
+        //
+        // Se observa el REGISTRO y no el manager porque el registro es quien
+        // sabe que una sesion es VIGENTE: sustituirla en el registro tiene que
+        // re-conducir el enlace, y un `onData` del manager no distingue la
+        // sesion nueva de la vieja.
+        val observarInstalacion = registry.onInstall { sesion ->
+            stack.driverFor(sesion.peerContext)
+            DiagLog.event("[SESSION]", "instalada peer=${DiagLog.truncar(sesion.remotePeerId.value)}")
+            emit("sesion cifrada con ${sesion.remotePeerId.value.take(16)}…")
+        }
+
+        val motor = core.core
+        motor.registerMessageHandler { message: Message ->
+            DiagLog.messageReceived(message.messageId.value.toString(), message.from.value)
+            emit("mensaje de ${message.from.value.take(8)}… (${message.payload.size}B)")
+        }
+        motor.registerAckHandler { ack: Ack -> emit("ACK ${ack.status} de ${ack.from.value.take(8)}…") }
+        motor.registerStateChangeHandler { id: MessageId, state: MessageState -> emit("mensaje ${id.value.toString().take(8)}… -> ${state.name}") }
+
+        // Un `bind` por gancho vivo. `bind` es idempotente por el mismo motivo
+        // que `attachLegacy`: un segundo `bind` LOWBEA el gancho anterior antes de
+        // suscribir el nuevo, en vez de acumular observadores. Dos ganchos vivos
+        // abririan DOS drivers por par y cada frame se contaria dos veces.
+        observadoresInstall.forEach { it() }
+        observadoresInstall.clear()
+        observadoresInstall += observarInstalacion
     }
+
+    /** Tokens de baja de los ganchos de instalacion, uno por `bind`. */
+    private val observadoresInstall = mutableListOf<() -> Unit>()
 }
 
 /**
@@ -430,8 +634,15 @@ fun main(args: Array<String>) {
         ed25519PrivateKey = identity.ed25519PrivateKey,
         endpoint = options.endpoint,
         relayIdentity = options.relayIdentity,
-        log = { message -> if (options.verbose) System.err.println("[relay] $message") },
+        log = { message -> if (options.verbose) DiagLog.event("[RELAY]", message) },
     )
+
+    // La pila del rele, NO el motor suelto: motor + manager (con ESE motor por
+    // backend) + drivers. Se compone con `RelayStackFactory` para que el
+    // escritorio no tenga que recordar el orden de las piezas ni pueda montar
+    // un manager con otro backend por debajo, que es el fallo silencioso que
+    // `RelayClientStack.compose` rechaza.
+    val stack = RelayStackFactory.stackFor(transport)
 
     // F2/D3, la pieza que faltaba: sin esto el core recibe el valor por defecto
     // `{ null }`, `AckManagerImpl` no puede verificar ninguna firma y devuelve
@@ -451,14 +662,26 @@ fun main(args: Array<String>) {
         )
     }
 
-    val core = KeyMessageCoreImpl(
+    val core = CoreFactory().create(
         localIdentity = identity.identityId,
         localPrivateKey = identity.ed25519PrivateKey,
         transport = transport,
+        // El manager de la PILA, no uno propio: el cable de recepcion de los
+        // `SecureFrame` tiene que estar en el mismo motor por el que salen los
+        // bytes, o el envio pareceria funcionar y no llegaria.
+        manager = stack.manager,
         peerPublicKeyResolver = peers.resolver(),
     )
 
-    val session = Session(identity, keystorePath, transport, core, peers)
+    DiagLog.event("[AUTH]", "identidad cargada desde el almacen")
+    DiagLog.event("[CONTACT]", "directorio de peers leido: ${peers.known().size}")
+    DiagLog.integrity("arranque", ok = true)
+
+    val session = Session(identity, keystorePath, stack, core, peers)
+    // Los bootstraps configurados los fija la sesion: son una decision de
+    // arranque, no de conexion, y `connect` los recorre en orden.
+    session.bootstraps = options.bootstraps
+    DiagLog.event("[BOOTSTRAP]", "origen=linea-o-entorno destinos=${options.bootstraps.size}")
     session.bind { message -> out.println(Ansi.dim(message)) }
 
     val tui = DesktopTui(terminal, reader, out, session)
@@ -501,7 +724,22 @@ private fun jlinePassphraseSource(reader: LineReader, out: PrintWriter): Passphr
 
 /** Argumentos de linea de comandos. Minimos a proposito: esto es una TUI, no un CLI. */
 class DesktopOptions(
+    /**
+     * El endpoint con el que arranca. Es el PRIMERO de [bootstraps].
+     *
+     * Se conserva el campo singular por dos razones: `Command.DEFAULT` y el
+     * comando `connect` sin argumento necesitan un valor concreto, y el motor
+     * se construye con UN endpoint. La lista completa vive en [bootstraps] y es
+     * la que usa el failover.
+     */
     val endpoint: String,
+    /**
+     * Los bootstraps, EN ORDEN.
+     *
+     * Viene de [BootstrapConfig.resolve]: `--bootstrap` repetible, o
+     * `KM_BOOTSTRAPS`, o el default del motor. Nunca vacia.
+     */
+    val bootstraps: List<String>,
     val relayIdentity: IdentityId?,
     val keystorePath: Path?,
     val peersPath: Path?,
@@ -515,8 +753,12 @@ class DesktopOptions(
         const val PEERS_FILE_NAME: String = "peers.json"
 
         fun parse(args: Array<String>): DesktopOptions {
-            var endpoint = System.getenv(RELAY_ENV)?.takeIf { it.isNotEmpty() }
-                ?: JvmRelayTransport.DEFAULT_ENDPOINT
+            // Los bootstraps se resuelven con UNA sola fuente de verdad
+            // (`BootstrapConfig`), que ademas es la que decide la precedencia.
+            // `--relay` se recoge aparte y se aplica ENCIMA, porque es el nombre
+            // historico y un operador que lo usa espera que gane.
+            val bootstrapsDeLinea = mutableListOf<String>()
+            var relayDeLinea: String? = null
             var relayIdentity = System.getenv(RELAY_IDENTITY_ENV)?.takeIf { it.isNotEmpty() }?.let { raw ->
                 requireIdentity(raw, RELAY_IDENTITY_ENV)
             }
@@ -528,7 +770,12 @@ class DesktopOptions(
             var i = 0
             while (i < args.size) {
                 when (args[i]) {
-                    "--relay" -> endpoint = args.getOrNull(++i) ?: throw IllegalArgumentException("--relay sin valor")
+                    "--relay" ->
+                        relayDeLinea = args.getOrNull(++i) ?: throw IllegalArgumentException("--relay sin valor")
+                    // Repetible y en orden: es la lista de failover.
+                    "--bootstrap" ->
+                        bootstrapsDeLinea += args.getOrNull(++i)
+                            ?: throw IllegalArgumentException("--bootstrap sin valor")
                     "--relay-identity" ->
                         relayIdentity = requireIdentity(
                             args.getOrNull(++i) ?: throw IllegalArgumentException("--relay-identity sin valor"),
@@ -549,7 +796,18 @@ class DesktopOptions(
                 }
                 i++
             }
-            return DesktopOptions(endpoint, relayIdentity, keystore, peers, reset, verbose, help)
+            val bootstraps = BootstrapConfig.resolve(cli = bootstrapsDeLinea)
+            val ordered = if (relayDeLinea != null) listOf(relayDeLinea) + bootstraps else bootstraps
+            return DesktopOptions(
+                endpoint = ordered.first(),
+                bootstraps = ordered,
+                relayIdentity = relayIdentity,
+                keystorePath = keystore,
+                peersPath = peers,
+                reset = reset,
+                verbose = verbose,
+                help = help,
+            )
         }
 
         /**
@@ -570,6 +828,11 @@ class DesktopOptions(
 
               --relay <endpoint>    rele (por defecto ${JvmRelayTransport.DEFAULT_ENDPOINT};
                                      tambien se lee de $RELAY_ENV)
+              --bootstrap <url>     bootstrap, REPETIBLE y en orden: se prueban
+                                     uno detras de otro hasta que uno responda.
+                                     Por defecto, los de ${BootstrapConfig.ENV_MUCHOS}
+                                     (separados por coma) o ${BootstrapConfig.ENV_UNO},
+                                     y en su defecto el default del motor.
               --relay-identity <id> identityId del rele, 64 hex, que se anuncia en
                                      el AUTH_REQUEST (tambien $RELAY_IDENTITY_ENV).
                                      Sin ella el campo se omite y se anuncia el

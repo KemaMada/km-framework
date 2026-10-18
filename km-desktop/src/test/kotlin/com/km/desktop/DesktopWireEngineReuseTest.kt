@@ -108,6 +108,133 @@ class DesktopWireEngineReuseTest {
         )
     }
 
+    /**
+     * 1.2 — NINGUNA clase del escritorio monta un `PeerTransportManager`, y
+     * NINGUNA nombra una copia local del motor.
+     *
+     * La p5 compone la pila en `RelayStackFactory`, que llama a
+     * `RelayClientStack.compose`. Ese `compose` RECHAZA un manager cuyo backend
+     * no sea el motor, de modo que la divergencia entre "el motor por el que
+     * salen los bytes" y "el motor que sostiene la conexion" ya no puede ocurrir
+     * por la puerta de composicion. Estas guardias cierran la otra: que el
+     * escritorio no tenga un segundo sitio de montaje al lado del motor.
+     *
+     * No es un grep sobre el codigo fuente: lee el BYTECODE que el build produjo
+     * para este paquete. Un grep falla por la redaccion de un comentario; esto
+     * falla si el escritorio CONSTRUYE el manager o nombra una copia.
+     */
+    @Test
+    fun `1-2 ninguna clase del escritorio CONSTRUYE un PeerTransportManager`() {
+        // La composicion ocurre en UN sitio declarado: `RelayStackFactory`, cuyo
+        // `managerFactory` por defecto construye el manager. Ese fichero es la
+        // excepcion y solo el.
+        //
+        // EL SENA_ QUE SE BUSCA NO ES EL NOMBRE DEL TIPO. `DesktopMainKt` lo
+        // menciona legitimamente: le PASA `stack.manager` a `CoreFactory.create`,
+        // y eso deja el nombre en el pool de constantes como PARAMETRO de una
+        // firma. Un guardia que buscara el nombre marcaria a proposito el sitio
+        // correcto y dejaria de medir nada.
+        //
+        // Lo que distingue CONSTRUIR de reenviar es el ARGUMENTO: el
+        // constructor de `PeerTransportManager` pide un `TransportBackend`, y un
+        // manager no se puede montar sin nombrarlo. Por eso el simbolo que se
+        // busca es `com/km/node/TransportBackend`, y el UNICO fichero que puede
+        // contenerlo es el que compone la pila.
+        for (clase in CLASES_DEL_ESCRITORIO) {
+            if (clase.startsWith("net/RelayStackFactory")) continue
+            assertFalse(
+                contiene("com/km/node/TransportBackend", bytecodeDe(clase)),
+                "$clase nombra TransportBackend, luego puede CONSTRUIR un PeerTransportManager: " +
+                    "la composicion vive solo en RelayStackFactory",
+            )
+        }
+    }
+
+    @Test
+    fun `1-2 ninguna clase del escritorio nombra una copia local del motor`() {
+        for (clase in CLASES_DEL_ESCRITORIO) {
+            val bytecode = bytecodeDe(clase)
+            for (prohibido in listOf(
+                "com/km/desktop/JvmRelayTransport",
+                "com/km/desktop/RelayDataCodec",
+                "com/km/desktop/RelayControlCodec",
+            )) {
+                assertFalse(
+                    contiene(prohibido, bytecode),
+                    "$clase nombra $prohibido: el motor vive en com.km.transport y aqui no hay copia",
+                )
+            }
+        }
+    }
+
+    /**
+     * Y donde se monta, se monta SOBRE el motor del modulo hermano.
+     *
+     * Las dos guardias anteriores pasarian igual si `RelayStackFactory`
+     * compusiera con otra cosa. Esta comprueba que el camino existe: la pila se
+     * compone con `RelayClientStack` de `:km-transport`, sobre el motor del
+     * modulo hermano.
+     */
+    @Test
+    fun `1-2 la pila se compone sobre el motor del modulo hermano`() {
+        val bytecode = bytecodeDe("net/RelayStackFactory")
+        assertTrue(
+            contiene("com/km/transport/RelayClientStack", bytecode),
+            "RelayStackFactory debe componer con RelayClientStack de :km-transport",
+        )
+        assertTrue(
+            contiene("com/km/transport/JvmRelayTransport", bytecode),
+            "y sobre el motor del modulo hermano, no sobre una copia local",
+        )
+    }
+
+    /**
+     * Control positivo de 1.2: el detector de "monta un PeerTransportManager" SI
+     * encuentra el simbolo.
+     *
+     * Sin este, "ninguna clase lo monta" seria indistinguible de "el escaner no
+     * busca". Se mira el propio `RelayStackFactory` —que SI lo monta, y es el
+     * unico que debe— y un buffer sintetizado con el mismo nombre interno.
+     */
+    @Test
+    fun `1-2 control positivo el escaner SI ve un PeerTransportManager`() {
+        val sintetizado = (
+            "java/lang/Object <init> (Lcom/km/node/TransportBackend;)V" +
+                "com/km/node/PeerTransportManager com/km/node/TransportBackend"
+            ).toByteArray(Charsets.ISO_8859_1)
+        assertTrue(
+            contiene("com/km/node/PeerTransportManager", sintetizado),
+            "el escaner debe ver el simbolo en un buffer sintetizado",
+        )
+        assertTrue(
+            contiene("com/km/node/TransportBackend", sintetizado),
+            "y el del argumento del constructor, que es el que se busca de verdad",
+        )
+        assertTrue(
+            contiene("com/km/node/TransportBackend", bytecodeDe("net/RelayStackFactory")),
+            "el UNICO sitio autorizado tiene el argumento del constructor: " +
+                "sin el, la composicion no tendria de donde",
+        )
+    }
+
+    /**
+     * Las clases de `com.km.desktop` que el build produjo y estas guardias miran.
+     *
+     * Se nombran de forma EXPLICITA y no se recorre el directorio: una lista que
+     * se leyera sola dejaria pasar —en verde— cualquier clase nueva que nadie
+     * anadio, que es como una guardia se vuelve decorativa.
+     */
+    private companion object {
+        val CLASES_DEL_ESCRITORIO: List<String> = listOf(
+            "DesktopMainKt",
+            "PeerKeyDirectory",
+            "IdentityKeystore",
+            "Ansi",
+            "core/CoreFactory",
+            "net/RelayStackFactory",
+        )
+    }
+
     /** Los bytes que el BUILD produjo para una clase de `com.km.desktop`. */
     private fun bytecodeDe(nombreSimple: String): ByteArray {
         val recurso = javaClass.getResourceAsStream("/com/km/desktop/$nombreSimple.class")

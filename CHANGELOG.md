@@ -12,6 +12,165 @@ artefacto publicado.
 
 ## [No publicado]
 
+### Añadido — `km-desktop`: el escritorio se cablea al framework y deja de enviar en claro
+
+`km-desktop` era, hasta ahora, un cliente de relé que sabia hablar el dialecto
+pero no sabia **cifrar**. `DesktopMain` construia `KeyMessageCoreImpl` sin
+`secureSessionRegistry` ni `peerTransportManager`, que es exactamente la
+combinación con la que `km-core` documenta que el envío sale **EN CLARO** por el
+camino legado. El comando `send` de la TUI funcionaba, y funcionaba en claro: la
+puerta no estaba abierta con llave, es que no estaba.
+
+**Añadido** (`km-desktop/src/main/kotlin/com/km/desktop/`):
+
+- `core/CoreFactory.kt` — construye el nucleo con `secureSessionRegistry`
+  presente y `allowLegacyCleartextReceive = false`, sin parametros que puedan
+  abrir la puerta.
+- `net/RelayStackFactory.kt` — compone `RelayClientStack.compose(motor,
+  PeerTransportManager(motor))`. **No hay cliente de relé propio**: el motor sigue
+  viniendo de `:km-transport`.
+- `net/EndpointSequence.kt` — failover ordenado con `BootstrapAllFailed(tried)`.
+- `config/BootstrapConfig.kt` — `--bootstrap` repetible, `KM_BOOTSTRAPS` (plural)
+  y `KM_BOOTSTRAP_URL` (singular), con el default **leído** de
+  `JvmRelayTransport.DEFAULT_ENDPOINT`.
+- `contact/ContactImporter.kt` — `ContactBundle.decodeAndVerify` como ÚNICA
+  entrada, con `InMemoryContactBook` que reverifica al guardar.
+- `session/SessionCoordinator.kt` — `initiate`/`accept` de
+  `SecureSessionEstablishment` sobre `PeerContext.forContact`, con `registry.install`.
+- `util/DiagLog.kt` — ocho canales (`[BOOTSTRAP] [RELAY] [AUTH] [CONTACT]
+  [SESSION] [SEND] [RECV] [INTEGRITY]`), `LogSink` inyectable y
+  `StreamDiagSink` a **stderr** porque stdout es el prompt de la TUI.
+
+**Modificado**: `DesktopMain.kt` usa la pila (`Session` guarda `RelayClientStack`,
+no el motor suelto), da de alta el camino legado con `stack.attachLegacy()`
+explícitamente, suscribe `registry.onInstall` para abrir el driver de par de
+cada sesión, expone `sessionPeers()` en la línea de estado y distingue en
+`send` entre `SENT` y el rechazo por falta de sesión. `PeerKeyDirectory` gana
+`registerFromVerifiedBundle`, que guarda la `subjectSigningKey` del bundle
+**verificado** indexada por la raíz.
+
+**Decisiones que quedan escritas**:
+
+- **Sin IPs incrustadas.** La guarda `NoHardcodedEndpointTest` lee el **bytecode**
+  de producción (no el fuente: un grep falla por la redacción de un comentario) y
+  exige cero IPv4 y cero `ws|wss|stun|turn` con host **literal**. Un nombre de
+  host sí se admite: es el default configurable.
+- **`Cipher` sí aparece, en `IdentityKeystore` y solo ahí.** El cifrado en reposo
+  del almacén de identidad es un checkpoint cerrado y km-core no tiene almacén
+  que cifrar. La guardia lo nombra como excepción explícita y falla si se extiende.
+- **`MessageDigest` no se prohíbe:** el escritorio muestra una huella de su
+  identidad, y eso no es criptografía de protocolo.
+
+**Verificación**: `:km-desktop` = **192 tests en 22 clases, 0 fallos**. 13
+mutaciones aplicadas, 12 detectadas por el test que las declara y revertidas por
+md5; 1 resultada **INVÁLIDA** y se declara abajo.
+
+### Lo que NO se cubre aquí, y por qué
+
+- **Failover de endpoint en caliente.** `EndpointSequence` recorre la lista en
+  orden y `BootstrapAllFailed` lista los probados, pero
+  `JvmRelayTransport` toma el endpoint en su **constructor** (`private val
+  endpoint`), no como `var`. `Session.switchEndpoint` devuelve por tanto un
+  `UnsupportedOperationException` observable para todo destino distinto del de
+  arranque, en vez de fingir un reintento. Cerrarlo exige que `:km-transport`
+  exponga el endpoint: es una decisión de ese módulo, no de este.
+- **Sesión E2E entre DOS procesos `km-desktop`.** El establecimiento, el
+  `SecureFrame` cruzando el backend y la entrega con el mismo `messageId` y el
+  mismo payload sí están cerrados en `:km-desktop` sobre `RelayProbe`, que es un
+  `TransportBackend` real con cable de salida y de entrada. Lo que no está es la
+  unión a través de un **socket** entre dos procesos: eso es la etapa ADB.
+- **Empaquetado del `shadowJar`.** `CryptoProviderRuntimeTest` prueba CARGA DE
+  CLASE de los tres providers de BouncyCastle en el runtime de `:km-desktop`, no
+  que el jar final linkee sin clase ausente. Eso solo lo dice el arranque real.
+- **El checksum de los `SecureFrame` y los vectores criptográficos** viven en
+  `km-core` y no se duplican aquí.
+
+### Mutaciones INVÁLIDAS, declaradas
+
+La mutación prevista para `CryptoProviderRuntimeTest` era **quitar `bcprov` de
+`km-desktop/build.gradle.kts`**. Es **INVÁLIDA**: `IdentityKeystore` importa
+`org.bouncycastle` al COMPILAR, así que quitarla rompe `compileKotlin` y no llega
+a producir XML —`INVALIDA(sin XML)`, no una asercion roja. La sustituta attacka
+el mismo invariante (BouncyCastle ausente en runtime) excluyendo el grupo del
+`runtimeClasspath` y filtrando el classpath de `test`, y **sí** falla en la
+asercion.
+
+
+### Cambiado — `app/`: la app movil pasa a ser un CLIENTE DELGADO
+
+La app movil se reescribe como consumidor de `km-core` y `km-transport`. Todo lo
+que la app hacia por su cuenta se ha borrado, y se declara aqui lo que queda
+dentro, lo que queda fuera y lo que no se puede demostrar sin un dispositivo.
+
+**Borrado** (`app/src/main/java/com/example/keymessage/`): `crypto/Crypto.kt`
+(AES-GCM casero), `network/dht/{DhtNode,DhtProtocol,PeerConnection}.kt` (DHT
+propio con bootstrap `http://13.140.155.230:8080`), `network/WebRtcManager.kt`
+(ICE/STUN/TURN con secreto TURN incrustado), `network/ChatManager.kt`
+(senalizacion `ws://13.140.155.230:3001/ws` **y fallback a texto plano**),
+`network/RelayClient.kt` (importaba `com.keymessage.core.*`, paquete que no
+existe en km-core) y `model/Identity.kt` (RSA 2048). Con ellos caen los dos tests
+que importaban ese mismo paquete inexistente.
+
+**Añadido**: `identity/{IdentityMaterial,IdentityStore,LocalKeyMaterial}.kt`
+(Ed25519 del framework, `KmIds.identityId`, almacen cifrado, material de sesion
+del dispositivo), `contact/ContactImporter.kt` (`ContactBundle.decodeAndVerify`
+como UNICA entrada), `session/SessionCoordinator.kt`,
+`core/CoreFactory.kt`, `net/{RelayStackFactory,EndpointSequence}.kt`,
+`config/RelayEndpointConfig.kt`, `util/KMLog.kt`, `storage/room/**` reescrito
+contra `com.km.storage.*`, y `ui/**` recableado a `com.km.api.KeyMessageCore`.
+
+**Decisiones que quedan escritas**:
+
+- **El motor de relé no se reescribe.** `RelayStackFactory` compone
+  `JvmRelayTransport` + `PeerTransportManager` + `RelayClientStack.compose` de
+  p4 y le inyecta el motor Ktor de Android. `RelayStackFactoryTest` ata que
+  `stack.backend === stack.transport`: dos motores de wire serian el CRITICAL #1
+  que cerro p4.
+- **Sin IPs incrustadas y con multiples bootstraps.** El endpoint sale de
+  `Settings.Global(km_relay_ws_url)` > `BuildConfig` >
+  `JvmRelayTransport.DEFAULT_ENDPOINT`, en lista ORDENADA, con failover
+  observable y `BOOTSTRAP_ALL_FAILED` con los endpoints probados.
+- **No hay camino en claro.** El nucleo se construye con el registro de sesiones
+  presente y el opt-in de recepcion en `false`: sin sesion el envio queda
+  `FAILED` con **cero bytes** fuera, y un `MESSAGE` en claro entrante no llega al
+  handler y se cuenta en `legacyInbound.rejectedCleartext`.
+- **`app/` es un build AUTONOMO** (`app/settings.gradle.kts`, raiz propia, sin
+  `include`) y consume `com.km:km-core` y `com.km:km-transport` POR ARTEFACTO
+  desde `mavenLocal`. El `settings.gradle.kts` raiz del repositorio no se toca.
+
+**Verificacion**: 111 tests de `:app` en 19 clases, 0 fallos, sobre `compileDebugKotlin`
+y `compileDebugUnitTestKotlin` en verde. 17 mutaciones aplicadas, todas compiladas,
+todas detectadas por el test que las declara, y revertidas por md5.
+
+**Lo que NO se demuestra aqui, y se dice en vez de disimular**:
+
+1. **Nada de esto se ha ejecutado en un dispositivo.** La etapa ADB (arranque,
+   `adb logcat -s KeyMessage` con los ocho canales, failover real entre dos
+   bootstraps, handshake `AUTH` contra un `km-daemon`, sesion entre DOS
+   dispositivos, consultas Room y navegacion de Compose) sigue pendiente: es la
+   etapa final de la fase, no de este corte.
+2. **Que el APK linkea en dex no esta demostrado.** `compileDebugKotlin` y
+   `testDebugUnitTest` son lo que se ha medido; `assembleDebug` no se ha corrido.
+   En concreto, `km-core` arrastra `bcprov-jdk18on` y `net.i2p.crypto:eddsa`, que
+   son JARs de escritorio, y `km-transport` trae `ktor-client-cio` por defecto
+   (la app inyecta OkHttp, pero CIO sigue en el grafo). Si `assembleDebug` falla
+   por clase ausente, el arreglo es un artefacto Android del framework, no codigo
+   de la app.
+3. **`SecureSendRejectedException` no sale por `KeyMessageCore.sendMessage`.**
+   `sendMessage` envuelve el fallo del emisor y devuelve
+   `SendResult(state = FAILED, failureCode = INTERNAL_ERROR)`: el estado y el
+   cero-bytes son observables, el MOTIVO tipado no. La pantalla solo puede decir
+   "NO enviado". Exponer el motivo es un cambio de framework.
+4. **Compose y Room no tienen prueba unitaria.** Sin Robolectric ni instrumentado,
+   la UI y las consultas reales se cubren por compilacion y por ADB.
+5. **`AndroidIdentityStore`, `AndroidLocalKeyStore` y `AppContainer` no se prueban
+   en unit tests**: necesitan `Context`, `EncryptedSharedPreferences` y
+   `Settings.Global`. Lo que si se prueba es la logica pura que contienen
+   (`IdentityCodec`, `LocalKeyCodec`, `RelayEndpointConfig`).
+6. **`/app/` esta en el `.gitignore` del repositorio.** Nada de esta fase esta
+   versionado: el trabajo existe en el arbol de trabajo y no en un commit.
+
+
 Estado del árbol a **2026-09-30**. No hay releases; esto es lo que hay en
 `main`.
 
