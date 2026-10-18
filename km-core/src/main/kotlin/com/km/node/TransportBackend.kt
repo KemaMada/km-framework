@@ -16,6 +16,25 @@ data class TransportEventCallbacks(
     val onIceCandidateGenerated: ((localIdentity: IdentityId, remotePeerId: IdentityId, candidate: String) -> Unit)? = null,
     /** Datos recibidos del DataChannel remoto (backend → manager). */
     val onDataReceived: ((remotePeerId: IdentityId, data: ByteArray) -> Unit)? = null,
+    /**
+     * Frame LEGADO ya decodificado por el backend (backend → consumidor).
+     *
+     * Es un slot DISTINTO de [onDataReceived] y no un caso de el, por una
+     * razon que no es de estilo: el byte de un `Message` legado y el byte de
+     * un `SecureFrame` se distinguen solo leyendo el payload, y esa lectura
+     * es un hecho del DIALECTO de un medio concreto. Un backend sin dialecto
+     * —WebRTC, que transporta bytes opacos— no tiene nada que activar; uno
+     * con dialecto —el motor del rele— clasifica una vez, en el sitio donde
+     * vive su codec, y por eso tiene un slot al que llega y otro al que no.
+     *
+     * Un backend que no distingue no lo implementa, y su consumidor ve `null`.
+     * Compárese con `allowLegacyCleartextReceive` de km-core: tambien es un
+     * opt-in por el receptor, y tambien vale `null` cuando nadie lo pide.
+     *
+     * @param frame el sobre ya decodificado.
+     * @param from identidad AUTENTICADA por el rele, no un campo del cliente.
+     */
+    val onLegacyInboundFrame: ((LegacyInboundFrame, IdentityId) -> Unit)? = null,
     /** Cambio de estado de conexion WebRTC (backend → manager). */
     val onConnectionStateChange: ((localIdentity: IdentityId, remotePeerId: IdentityId, connected: Boolean) -> Unit)? = null,
     /** SDP local generada por el transporte (backend → signaling → peer). */
@@ -119,8 +138,17 @@ interface TransportBackend {
      * Para el backend WebRTC real (:km-webrtc): escribir en el DataChannel.
      * Para [FakeTransportBackend]: no operacion (el manager maneja los handlers).
      *
-     * NOTA: el manager ya invoco [PeerTransportManager.onData] handlers antes
-     * de llamar a este metodo. El backend solo necesita la escritura real.
+     * ORDEN (3Q.1) — CORREGIDO en p4. Esta nota decia antes que "el manager ya
+     * invoco [PeerTransportManager.onData] handlers antes de llamar a este
+     * metodo". Es FALSO desde 3Q.1 y lo era en el momento en que se escribio:
+     * `PeerTransportManager.sendData` llama al backend PRIMERO (`:`417) y solo
+     * notifica a los `dataHandlers` DESPUES (`:`427), de modo que un envio
+     * fallido se contabiliza y se propaga como fallo, y no como exito.
+     *
+     * La consecuencia para un backend es la que importa: `sendData` NO debe
+     * contar como entrega a si mismo. La entrega a los `dataHandlers` es del
+     * manager. Un backend de red lo que hace es escribir el byte y devolver si
+     * el medio lo acepto.
      *
      * @param remotePeerId identidad del peer destino.
      * @param datos a enviar.

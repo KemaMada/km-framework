@@ -1,4 +1,4 @@
-package com.km.desktop
+package com.km.transport
 
 import com.km.codec.JsonDecoder
 import com.km.codec.JsonEncoder
@@ -147,6 +147,18 @@ class RelayDataCodec(
      */
     fun applicationMessageId(payload: ByteArray): MessageId? =
         kmDecoder.decodeMessage(payload).getOrNull()?.messageId
+
+    /**
+     * La carga LEGADA, decodificada al `Message` de km-core, o `null`.
+     *
+     * Es la MISMA lectura que [applicationMessageId] hace para clasificar, pero
+     * devolviendo el mensaje entero: quien repone el camino en claro necesita el
+     * `Message`, no solo su identificador. Se separa para no decodificar dos
+     * veces ni reconstruir el mensaje por partes en el motor —una reconstruccion
+     * manual del vocabulario de km-core seria una segunda copia del contrato—.
+     */
+    fun decodeLegacyMessage(payload: ByteArray): Message? =
+        kmDecoder.decodeMessage(payload).getOrNull()
 
     /** `ACK` saliente (seccion 11.2). */
     fun encodeAck(ack: Ack): String =

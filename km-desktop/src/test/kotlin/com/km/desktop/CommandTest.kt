@@ -1,6 +1,9 @@
 package com.km.desktop
 
 import com.km.model.IdentityId
+// p4/R-8.a: el motor del rele vive en `:km-transport`; `Command.DEFAULT` cita su
+// `DEFAULT_ENDPOINT`, no una copia local.
+import com.km.transport.JvmRelayTransport
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs

@@ -252,8 +252,6 @@ class SecureMessagingOverWebRtcTest {
         // Este es el UNICO cableado de transporte, y vive en km-webrtc.
         val alicePeer = alice.peerTowards(bob, aliceCtx)
         val bobPeer = bob.peerTowards(alice, bobCtx)
-        alicePeer.onTransportData = { bytes -> bobSession.onTransportBytes(bytes) }
-        bobPeer.onTransportData = { bytes -> aliceSession.onTransportBytes(bytes) }
 
         return Established(aliceSession, bobSession, alice.transport, bob.transport, f)
     }
@@ -292,8 +290,6 @@ class SecureMessagingOverWebRtcTest {
         // los eventos de WebRTC.
         aPeer.attach()
         bPeer.attach()
-        aPeer.onTransportData = { bytes -> est.alice.onTransportBytes(bytes) }
-        bPeer.onTransportData = { bytes -> est.bob.onTransportBytes(bytes) }
 
         connect(est, aPeer, bPeer)
         assertTrue(aPeer.awaitConnected(20_000L), "Alice debe llegar a CONNECTED")
@@ -327,8 +323,6 @@ class SecureMessagingOverWebRtcTest {
         // los eventos de WebRTC.
         aPeer.attach()
         bPeer.attach()
-        aPeer.onTransportData = { bytes -> est.alice.onTransportBytes(bytes) }
-        bPeer.onTransportData = { bytes -> est.bob.onTransportBytes(bytes) }
         connect(est, aPeer, bPeer)
         aPeer.awaitConnected(20_000L)
         bPeer.awaitConnected(20_000L)
@@ -369,7 +363,6 @@ class SecureMessagingOverWebRtcTest {
         aPeer.attach()
         bPeer.attach()
         // Bob NO descifra automaticamente: el test controla la entrega.
-        aPeer.onTransportData = { bytes -> est.alice.onTransportBytes(bytes) }
         connect(est, aPeer, bPeer)
         aPeer.awaitConnected(20_000L)
         bPeer.awaitConnected(20_000L)
@@ -384,9 +377,9 @@ class SecureMessagingOverWebRtcTest {
                 prev.onDataReceived?.invoke(from, data)
             }
         )
-        val before = est.bob.ratchetFingerprint()
         est.alice.send("secreto".toByteArray())
         Thread.sleep(1_000)
+        val before = est.bob.ratchetFingerprint()
 
         val wire = captured.first()
         val tampered = wire.copyOf()

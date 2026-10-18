@@ -36,6 +36,25 @@ dependencies {
     //
     implementation("com.km:km-core:0.1.0-SNAPSHOT")
 
+    // p4: el motor del rele (cliente WebSocket + codec del dialecto
+    // KM-WIRE-RELAY) salio de aqui a `:km-transport`, su modulo propio, para
+    // que km-core siga sin dependencias de red y para que un cliente que solo
+    // necesite el rele no arrastre el escritorio entero.
+    //
+    // Tambien POR ARTEFACTO, por el mismo motivo y por el mismo riesgo: si
+    // km-core se declarase aqui como `project(":km-core")` en vez de como
+    // artefacto, entraria dos veces en el grafo —una desde el POM de
+    // km-transport y otra desde aqui— con el mismo
+    // `group/artifactId/version` y distinto fichero de clase, y Gradle
+    // aborta con `Duplicate class`. Es la mutacion M8-b.
+    //
+    // Antes de un build AISLADO de este modulo (el `settings.gradle.kts` local
+    // de km-desktop lo permite), publicar los dos:
+    //
+    //     ./gradlew :km-core:publishToMavenLocal :km-transport:publishToMavenLocal
+    //
+    implementation("com.km:km-transport:0.1.0-SNAPSHOT")
+
     // Jackson 2.15.2, la MISMA version que declara km-core.
     //
     // km-core la declara como `implementation`, y eso NO se filtra al

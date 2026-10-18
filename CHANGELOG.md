@@ -15,6 +15,198 @@ artefacto publicado.
 Estado del árbol a **2026-09-30**. No hay releases; esto es lo que hay en
 `main`.
 
+### Añadido — `km-transport`: el transporte de red del relé sale de `km-desktop`
+
+El motor cliente WebSocket del relé (`JvmRelayTransport`, 1090 líneas) y el codec
+del dialecto KM-WIRE-RELAY (`RelayDataCodec`, 349 líneas) se **movieron** de
+`km-desktop` a un módulo hermano nuevo, `:km-transport`, que se consume **por
+artefacto** (`com.km:km-transport:0.1.0-SNAPSHOT`). No quedan dos clientes de
+wire: la copia de `km-desktop` se eliminó y `DesktopMain` compila contra
+`com.km.transport.*`.
+
+El motivo es la frontera arquitectónica del proyecto: `km-core` no gana
+dependencias de red. El framework expone el contrato `TransportBackend` y lo
+implementa el hermano que trae Ktor CIO, no el núcleo. `km-transport` usa
+`jvmToolchain(11)`, el mismo que `km-core`, para que su bytecode siga siendo
+consumible.
+
+### Añadido — recepción cableada y routing del motor, con pruebas
+
+- `PeerTransportManager` compone (`copy()`) el cable de recepción sobre
+  `TransportEventCallbacks.onDataReceived`: componer, nunca sustituir.
+- `TransportEventCallbacks.onLegacyInboundFrame` + `LegacyInboundFrame` dan una
+  entrada propia al camino legado, sin reusar el slot de pares.
+- `JvmRelayTransport` clasifica `MESSAGE` entrante **una vez**: carga legible en
+  el dialecto de `km-core` al camino legado, carga opaca a la cara de par.
+- `RealRelayTransport` despacha por `eventCallbacks.onDataReceived`. `onDataFrom`
+  se conserva como camino de diagnóstico, no de recepción.
+
+### Añadido — aceptación de `RelayPeerChannelDriver` (tarea 3.3) y E2E por socket real (tarea 3.5)
+
+Las tareas 3.3 y 5 del plan de `p4-relay-backend` estaban marcadas `[x]` sin su
+test de aceptación. Aquí están los dos, escritos y medidos. Ningún fichero de
+`km-core/src/main` cambió: `git status --short -- '*/src/main'` sale vacío.
+
+**`RelayPeerChannelDriverTest`** (7 casos, `km-transport`). Levanta el
+`RelayWebSocketServer` real de `km-daemon` en un puerto libre, porque
+`intentarConectar` consulta `engine.isPeerPresent`, que solo el `AUTH_OK` y el
+`PEER_ONLINE` de un relé real pueden poner: un doble probaría el doble.
+
+- **PC-01/PC-02** — los dos órdenes de `presencia ↔ binding` alcanzan
+  `CONNECTED`. Un solo orden dejaría el otro sin cubrir, y el fallo del orden
+  equivocado es el más silencioso: el enlace simplemente nunca se abre.
+- **PC-03** — doble presencia y doble binding (más el alias `onPeerOnline`)
+  conectan **una sola vez**: un `CONNECTED` en los eventos del manager y un solo
+  binding. "Una vez" es un número, no una sensación.
+- **PC-04** — `onPeerOffline` olvida presencia y enlace, medido por su
+  consecuencia: un aviso de binding nuevo **no** reconecta.
+- **PC-05** — un par ajeno no conecta ni genera binding.
+- **PC-06** — con binding pero sin presencia, `sendData` falla
+  `INVALID_STATE_TRANSITION` (estado), no `BINDING_NOT_FOUND`: son fallos
+  distintos y confundirlos ocultaría qué falta.
+- **PC-07** — una presencia que **no** es la del par declarado no cierra un enlace
+  a medio ciclo.
+
+**`RelaySocketSecureE2ETest`** (1 caso, `km-transport`). `E2E-01`: dos
+`KeyMessageCoreImpl` con `secureSessionRegistry` + `peerTransportManager` reales,
+sesión E2E establecida por `SecureSessionEstablishment.initiate`/`accept` sobre
+bundles verificados firmados de verdad, y el mensaje saliendo por un WebSocket
+real contra el relé. En el receptor: `delivered == 1`, `rejectedFrames == 0`,
+`unknownPeerFrames == 0`, `messageId` y `payload` intactos. El byte que baja por
+el socket se decodifica con `BinarySecureFrameCodec` y se comprueba
+`SecureFrameSpec.HEADER_LENGTH == 44` y `type == MESSAGE`. En el emisor:
+`delivered == 0` y `rejectedFrames >= 1` (el eco local, **medido**, no presumido).
+Ninguno recibe de vuelta su propio mensaje: el relé es un fan-out a
+`envelope.to`, no un hub.
+
+El enlace lo abre `RelayPeerChannelDriver`, no el test: `markConnected` exige
+haber pasado por `OFFER_SENT`/`ANSWER_RECEIVED` y el relé no negocia nada, así
+que recorrer el ciclo a mano sería probar el camino del último en vez del del
+framework.
+
+#### Mutaciones medidas (cada una con su control negativo compilado y ejecutado antes)
+
+| Mutación | Detectada por | Válida | md5 revertido |
+|---|---|---|---|
+| M3-c · conductor sin `markConnected` | PC-01, PC-02, PC-03, PC-04, E2E-01 | sí | `2b4dcebfe742a48307d316ccf4247e30` |
+| M3-c-bis · conductor sin la guarda `remotePeerId != peerContext.remotePeerId` | PC-07 | sí | `2b4dcebfe742a48307d316ccf4247e30` |
+| M1-a · `sendData` del motor como no-op | E2E-01 | sí | `80f24f8733f764cf2ff9441b1a427475` |
+| M1-b-bis · el motor pierde el `from` autenticado | E2E-01 | sí | `80f24f8733f764cf2ff9441b1a427475` |
+
+`M3-c-bis` y `M1-b-bis` son nuevas (`tools/mutaciones_p4/p4_m3_c_bis.py`,
+`p4_m1_b_bis.py`): las existentes `p4_m3_c.py` y `p4_m1_b.py` atacan la otra
+mitad —el `markConnected` y el `RealRelayTransport` de proceso—, no el motor que
+habla por socket.
+
+**Lo que la primera medición de M3-c-bis dio y por qué** (`NO DETECTADA`,
+7/7 verdes contra la mutación, y el motivo está leído, no supuesto): en `NEW`,
+`getBinding(local, ajeno)` sale `null`, `createBinding(local, peerContext)` crea el
+binding del par **declarado**, y `sendOffer(local, ctx, "", ajeno)` falla con
+`PEER_ID_MISMATCH`. Si el par ajeno ya tiene binding activo, `createBinding`
+devuelve `BINDING_ALREADY_EXISTS` y el conductor sale antes de tocar nada. La
+guarda del conductor es **redundante en esos dos caminos**: solo se nota cuando
+el par ajeno tiene su **propio** binding en `ANSWER_RECEIVED`, que es lo que
+monta `PC-07`. Está escrito en el propio test para que nadie vuelva a atribuirle
+dientes a `PC-05`.
+
+#### Lo que queda FUERA, declarado y no fingido
+
+- **La costura raíz/relé no está resuelta por el framework.** El `from` que el
+  receptor ve es la identidad que el relé autenticó —la del motor—, y la sesión
+  filtra por `remotePeerId`, que `PeerContext.forContact` deriva de la **raíz**
+  del contacto. `E2E-01` hace que ambas coincidan porque el motor se autentica
+  con el par de claves de la raíz. Es una decisión de la **fixture**, escrita en
+  el KDoc del test con su motivo: `E2E-01` demuestra la **cadena** (cifrado,
+  cable, socket, descifrado, entrega), **no** que la costura esté resuelta. Qué
+  identidad se autentica en el relé sigue siendo decisión de p3. Con identidades
+  distintas, el mismo camino acaba en `unknownPeerFrames`, y eso es observable.
+- **`onPeerOffline` y su reentrada tienen un defecto abierto** `[LEÍDO, sin
+  medir]`. `RelayPeerChannelDriver.onPeerOffline` saca al par de `conectados` pero
+  deja el binding en `CONNECTED`. Si la presencia vuelve, `intentarConectar` cae
+  en la rama `CONNECTED` y llama a `manager.markConnected`, y
+  `PeerTransportBinding.withConnected()` **lanza** `IllegalArgumentException`
+  porque exige `OFFER_SENT`/`ANSWER_RECEIVED`/`NEGOTIATING`. El `try/catch` de
+  `JvmRelayTransport.onFrame` lo absorbería, con lo que `isConnected` mentiría
+  (`false`) con el binding realmente conectado. `PC-04` comprueba el contrato que
+  sí está escrito —que la presencia se olvida— y **no** fija como invariante este
+  fallo. La corrección sería una rama que no vuelva a llamar `markConnected` si el
+  binding ya está `CONNECTED`. No se ha tocado `src/main` en esta entrada.
+- **Nada se ve en una pantalla.** Un mensaje descifrado en UI sigue sin
+  demostrarse: no hay dispositivo ni ADB, y Ktor CIO en Android sigue sin
+  verificar.
+- **`RelayPeerChannelDriver` no está suscrito a nada.** `RelayClientStack` crea
+  los drivers pero no los engancha a `onPeerOnline`/`onPeerOffline` del motor: eso
+  es trabajo del consumidor (p3). `E2E-01` lo suscribe a mano porque el test es
+  el consumidor, lo que además deja escrito cuál es el cable que falta.
+
+#### Cifras
+
+Línea base medida antes de este cambio y suite completa después, con
+`*/build/test-results` borrado antes de cada corrida y `exit 0` en ambas:
+
+| Módulo | Línea base | Final | Δ |
+|---|---|---|---|
+| `km-core` | 1388 / 0 | 1388 / 0 | 0 |
+| `km-transport` | 46 / 0 | 54 / 0 | **+8** |
+| `km-desktop` | 60 / 0 | 60 / 0 | 0 |
+| `km-daemon` | 49 / 0 | 49 / 0 | 0 |
+| `km-webrtc` | 92 / 0 | 92 / 0 | 0 |
+| **Total** | **1635 / 0** | **1643 / 0** | **+8** |
+
+Evidencia sustitutiva declarada, como en R-4 y R-6: `git diff` sobre
+`frame/`, `ratchet/`, `x3dh/` y `SecureOutbound.kt` sale **vacío**, y
+`git diff km-core/build.gradle.kts` sale **vacío**.
+
+### Changed — `lastWireByMessageId` se limpia solo tras `Acked`
+
+Antes se borraba al fallar y al cancelar, y nunca tras el ACK, con lo que el
+mapa crecía sin límite. Ahora `SenderImpl.onAckConfirmed(messageId)` lo limpia
+desde `ackManager.registerAckHandler`, que solo dispara con ACK autenticado. Se
+declara que **no** se limpia en `queueOffline`: sin caché no hay idempotencia y
+`retrySecure` devolvería `NO_SESSION`.
+
+### Security — alcance de esta entrada, declarado
+
+Lo que esta entrada **sí** deja cerrado, y lo que deja fuera, se dice aquí en
+vez de taparlo:
+
+- **Cerrado y con mutación que lo ataca**: UN solo cliente de wire (R-8.a, la
+  copia de `km-desktop` eliminada y `DesktopMain` compilado contra
+  `com.km.transport`); el byte entrante llega al manager con el `from`
+  autenticado, no con la identidad local; `sendData` no es un no-op silencioso;
+  la clasificación legado/opaco de `onMessage` no se puede desactivar en
+  silencio; `RealRelayTransport.onDataReceived` entrega al manager; el relé no
+  hace eco al emisor.
+- **Cerrado solo por evidencia declarada, NO por test**: `km-core` sigue sin
+  dependencias de RED. El guard existente (`KmCoreNoWebRtcDependencyTest`) solo
+  cubre `com.km.webrtc`, así que la evidencia es `git diff
+  km-core/build.gradle.kts` = 0. Un test que fingiera cubrir «no hay red» sería
+  peor que la evidencia declarada. Lo mismo con «el diff no toca criptografía»:
+  `git diff` vacío sobre `frame/`, `ratchet/`, `x3dh/` y `SecureOutbound.kt`.
+- **La frontera criptográfica se sostiene por lectura, no por un invariante
+  ejecutable en toda la superficie**: dentro de `com.km.node` la única
+  criptografía es `Ed25519` para firmar el transcript `AUTH` (mismo precedente que
+  `NodeRuntimeImpl` y `RelayServer`, con excepción justificada en
+  `RelayTransportCryptoSeparationTest`); `SecureFrame` no aparece en código, solo
+  en documentación.
+- **Lo que esta entrada NO cubre**: el escenario `inbound.to != identity` de la
+  tarea 3.2, que es inalcanzable a través del relé porque este solo entrega a
+  `envelope.to` y probarlo exigiría llamar a un método `private` del motor. La
+  costura raíz/relé tampoco queda resuelta por el framework (ver más arriba).
+- **Corrección de alcance**: este párrafo decía antes que `RelaySocketSecureE2ETest`
+  (3.5) y `RelayPeerChannelDriverTest` (3.3) **no existían**. Era cierto cuando lo
+  escribió el cierre de los 3 CRITICAL y dejó de serlo al escribirse las tareas
+  3.3 y 3.5, que los crean. Ahora sí existen, con 1 caso `E2E-01` y 7 casos
+  `PC-01..07`, y ambos están atacados por mutación propia. La cadena completa de
+  dos núcleos cifrados sobre un socket real **sí** tiene test propio; lo que
+  sigue sin cubrir de un solo trazo es el escenario `inbound.to != identity`.
+- **La política de reconexión** (`ReconnectPolicy`) está cubierta por pruebas
+  unitarias del módulo, no por un corte de red inducido.
+- Todo lo anterior corre contra el `km-daemon` levantado en proceso sobre un
+  puerto libre, no contra infraestructura desplegada. El `DEFAULT_ENDPOINT` del
+  motor es `wss://`; las pruebas usan `ws://127.0.0.1` a propósito, y no se ha
+  validado un despliegue real.
+
 ### Añadido — estructura del repositorio
 
 - Separación del cliente Android: `app/` (Compose) sale del repositorio y pasa a

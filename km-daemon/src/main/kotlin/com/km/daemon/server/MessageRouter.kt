@@ -263,6 +263,21 @@ class MessageRouter(
             logger.warn("no se pudo registrar el handler de senalizacion: {}", signaling)
         }
 
+        // p4/R-3: SNAPSHOT de presencia para el que ACABA de entrar.
+        //
+        // `registerPeerHandler` avisa a los que YA estaban de que este peer
+        // llego; el que llega, en cambio, no se enteraba de QUIEN YA ESTABA.
+        // Con dos consumidores que se necesitan mutuamente (A envia a B y B
+        // confirma con ACK a A), el SEGUNDO en conectarse queda ciego a la
+        // presencia del primero, su driver no alcanza CONNECTED y su envio
+        // falla como `INVALID_STATE_TRANSITION` sin que nada lo explique. La
+        // presencia es un HECHO del rele, no un evento solo-para-los-presentes:
+        // aqui se le manda al recien llegado el estado actual, uno por peer.
+        // Es ADITIVO: no cambia lo que reciben los que ya estaban.
+        relayServer.onlinePeers()
+            .filter { it != identity }
+            .forEach { presente -> connection.send(codec.peerPresence("PEER_ONLINE", presente)) }
+
         if (config.relayEnabled) {
             val data = relayServer.registerDataHandler(identity) { envelope -> deliverData(envelope) }
             if (data.isFailure) {

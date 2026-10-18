@@ -76,6 +76,7 @@ class ChainCryptoSeparationArchTest {
             "RelayDecision.kt",           // decision de relay (medio, no sesion)
             "FailureCodeMapper.kt",       // mapeo de errores de relay
             "FakeTransportBackend.kt",    // doble de test del backend
+            "LegacyInboundFrame.kt",     // p4 (R-4): sobre legado sin cripto propio
         )
 
         /**

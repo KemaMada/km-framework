@@ -2,6 +2,9 @@ package com.km.desktop
 
 import com.km.identity.KmIds
 import com.km.model.IdentityId
+// p4/R-8.a: `RelayDataCodec` vive en `:km-transport`, no aqui. Solo se usa su
+// constante de forma (`IDENTITY_ID_HEX`); el codec completo no se duplica.
+import com.km.transport.RelayDataCodec
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject

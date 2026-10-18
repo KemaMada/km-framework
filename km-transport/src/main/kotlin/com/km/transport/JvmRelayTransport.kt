@@ -1,4 +1,4 @@
-package com.km.desktop
+package com.km.transport
 
 import com.km.auth.Base64Url
 import com.km.auth.Dialect
@@ -11,10 +11,16 @@ import com.km.codec.RelayControlCodec
 import com.km.crypto.Ed25519
 import com.km.crypto.Ed25519Impl
 import com.km.model.IdentityId
+import com.km.model.Message
 import com.km.model.RelayErrorNotice
 import com.km.model.RelayExpiredNotice
 import com.km.model.StoredReceipt
+import com.km.node.LegacyInboundFrame
 import com.km.node.RelayTransport
+import com.km.node.TransportBackend
+import com.km.node.TransportError
+import com.km.node.TransportEventCallbacks
+import com.km.node.TransportResult
 import com.km.protocol.ConnectionState
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
@@ -119,8 +125,16 @@ class JvmRelayTransport(
     private val identity: IdentityId,
     private val ed25519PublicKey: ByteArray,
     private val ed25519PrivateKey: ByteArray,
-    /** Etiqueta del transporte. `Transport` no declara `name`: es informativo. */
-    val name: String = "relay",
+    /**
+     * Etiqueta del transporte, para diagnostico.
+     *
+     * `Transport` no la declara; `TransportBackend` si, con un default, y el
+     * constructor no puede usar un valor por defecto de una interface. Por eso
+     * es `override val`: el MISMO nombre en las dos caras, y el que escribe
+     * `RelayClientStack` en un `RELAY_ERROR` es el que sale en un
+     * `TransportChain`.
+     */
+    override val name: String = "relay",
     private val endpoint: String = DEFAULT_ENDPOINT,
     /**
      * Identidad del rele a la que se ANUNCIA, fijada por el operador.
@@ -146,7 +160,7 @@ class JvmRelayTransport(
     private val clientFactory: () -> HttpClient = ::defaultClient,
     private val log: (String) -> Unit = {},
     private val now: () -> Long = System::currentTimeMillis,
-) : RelayTransport {
+) : RelayTransport, TransportBackend {
 
     private val stateRef = AtomicReference(ConnectionState.DISCONNECTED)
     private val sessionIdRef = AtomicReference<String?>(null)
@@ -182,8 +196,27 @@ class JvmRelayTransport(
     private var storedHandler: (StoredReceipt) -> Unit = {}
     private var relayExpiredHandler: (RelayExpiredNotice) -> Unit = {}
     private var stateHandler: (ConnectionState) -> Unit = {}
-    private var peerOnlineHandler: (IdentityId) -> Unit = {}
-    private var peerOfflineHandler: (IdentityId) -> Unit = {}
+    //
+    // p4: `onPeerOnline`/`onPeerOffline` pasan a MULTI-suscriptor (lista). Antes
+    // eran un unico lambda, de modo que el segundo que se registrara pisaba al
+    // primero —y en el escritorio actual eso ya pasaba: `Session.bind` se
+    // registra DESPUES de `KeyMessageCoreImpl`, luego el flush por presencia
+    // estaba muerto y nadie se enteraba. Con lista, un consumidor mas ya no
+    // puede matar a otro, y el test que lo fija son dos suscriptores.
+    private val peerOnlineHandlers = java.util.concurrent.CopyOnWriteArrayList<(IdentityId) -> Unit>()
+    private val peerOfflineHandlers = java.util.concurrent.CopyOnWriteArrayList<(IdentityId) -> Unit>()
+
+    /**
+     * Pares PRESENTES segun el ultimo `PEER_ONLINE`/`PEER_OFFLINE` recibido.
+     *
+     * Es lo que responde a [onCreateBinding] y lo que dispara
+     * [RelayPeerChannelDriver]. Se mantiene como ESTADO y no como Derived de los
+     * handlers, porque "que pares hay" es un hecho del rele y no un efecto de
+     * quien se suscriba: con un solo handler, un consumidor que se daba de baja
+     * se llevaba el estado consigo.
+     */
+    private val onlinePeers: MutableSet<IdentityId> =
+        java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap())
 
     // ------------------------------------------------------------------
     // Transport
@@ -290,8 +323,11 @@ private fun sendFrame(data: ByteArray, to: IdentityId? = null, ack: Boolean): Re
     override fun setStoredHandler(handler: (StoredReceipt) -> Unit) { storedHandler = handler }
     override fun setRelayExpiredHandler(handler: (RelayExpiredNotice) -> Unit) { relayExpiredHandler = handler }
     override fun onStateChange(handler: (ConnectionState) -> Unit) { stateHandler = handler }
-    override fun onPeerOnline(handler: (IdentityId) -> Unit) { peerOnlineHandler = handler }
-    override fun onPeerOffline(handler: (IdentityId) -> Unit) { peerOfflineHandler = handler }
+    override fun onPeerOnline(handler: (IdentityId) -> Unit) { peerOnlineHandlers.add(handler) }
+    override fun onPeerOffline(handler: (IdentityId) -> Unit) { peerOfflineHandlers.add(handler) }
+
+    /** Identidad de los pares que el rele ha declarado presentes. */
+    fun onlinePeerIds(): Set<IdentityId> = onlinePeers.toSet()
 
     override fun isOnline(): Boolean = stateRef.get() == ConnectionState.ONLINE
 
@@ -314,6 +350,162 @@ private fun sendFrame(data: ByteArray, to: IdentityId? = null, ack: Boolean): Re
         disconnect()
         if (externalScope == null) ownedScope.cancel()
     }
+
+    // ------------------------------------------------------------------
+    // TransportBackend — LA SEGUNDA CARA, SOBRE EL MISMO OBJETO
+    // ------------------------------------------------------------------
+    //
+    // `RelayTransport` (arriba) y `TransportBackend` (aqui) son DOS interfaces
+    // sobre ESTE MISMO objeto, no dos objetos. Es la unica forma de que no
+    // puedan divergir: las dos caras leen y escriben [stateRef], [codec],
+    // [identity] y [sessionIdRef], y ninguna tiene socket propio. Dos fachadas
+    // sobre un motor compartido —la alternativa que se descarto— habrían
+    // permitido cablear cada cara a una instancia distinta, con bytes por un
+    // socket y presencia por ninguno, sin que nada fallara.
+    //
+    // `RelayClientStack` exige `backend === transport` justamente para atar esa
+    // garantia con un test.
+
+    /**
+     * Callbacks de recepcion del backend.
+     *
+     * NO se reasigna despues de construir el objeto, y NADIE debe hacerlo: es
+     * un `var` con semantica de ASIGNACION, de modo que asignar un
+     * `TransportEventCallbacks()` fresco borra lo que hubiera —incluido el cable
+     * de recepcion que `PeerTransportManager` instala desde su `init`—. Todo el
+     * mundo compone con `.copy()`.
+     */
+    override var eventCallbacks: TransportEventCallbacks = TransportEventCallbacks()
+
+    /**
+     * Prepara el cliente HTTP. NO conecta y NO autentica.
+     *
+     * La distincion es normativa y es la que hace que la doble fachada sea
+     * segura: `connect()` —cara [RelayTransport]— es la UNICA entrada que abre
+     * un socket y hace `AUTH`. `initialize()` lo llama
+     * `PeerTransportManager` en su constructor, es decir ANTES de que ningun
+     * consumidor haya decidido salir a la red. Si `initialize()` abriera el
+     * socket, construir un manager seria conectar.
+     */
+    override fun initialize(): TransportResult<Unit> {
+        if (client == null) ensureClient()
+        return TransportResult.Success(Unit)
+    }
+
+    /**
+     * El rele no negocia: "crear binding" es que el par este PRESENTE.
+     *
+     * No es una comprobacion vacia por cortesia. Devolver
+     * [TransportError.PEER_NOT_ONLINE_AT_RELAY] cuando el par no esta hace que
+     * un `TransportChain` pueda distinguir "este medio no lo alcanza" de "este
+     * medio sirve", que es la unica pregunta que `permitsFallback` intenta
+     * contestar.
+     */
+    override fun onCreateBinding(localIdentity: IdentityId, remotePeerId: IdentityId): TransportResult<Unit> =
+        if (isPeerPresent(remotePeerId)) {
+            TransportResult.Success(Unit)
+        } else {
+            TransportResult.Failure(
+                TransportError.PEER_NOT_ONLINE_AT_RELAY,
+                "${remotePeerId.value.take(8)}… no esta presente en el rele",
+            )
+        }
+
+    /**
+     * SDP: no-op DOCUMENTADO, no no-op por descuido.
+     *
+     * El rele no tiene PeerConnection, no hace oferta/respuesta y no genera
+     * candidatos ICE. Lo que si hace el enlazar el binding a `CONNECTED` es
+     * [RelayPeerChannelDriver], que recorre el ciclo de estados con SDP vacio
+     * porque [PeerTransportBinding.withConnected] —contrato de estado, fijo por
+     * `PeerTransportBindingTest`— exige haber pasado por `OFFER_SENT`.
+     *
+     * Reutilizar estos metodos para simular una negociacion seria inventar un
+     * paso que no ocurrio, y `markConnected` ya es el API honesto para eso.
+     */
+    override fun onLocalSdp(localIdentity: IdentityId, remotePeerId: IdentityId, sdp: String): TransportResult<Unit> =
+        TransportResult.Success(Unit)
+
+    /** @see onLocalSdp */
+    override fun onRemoteSdp(localIdentity: IdentityId, remotePeerId: IdentityId, sdp: String): TransportResult<Unit> =
+        TransportResult.Success(Unit)
+
+    /** @see onLocalSdp */
+    override fun onIceCandidate(localIdentity: IdentityId, remotePeerId: IdentityId, candidate: String): TransportResult<Unit> =
+        TransportResult.Success(Unit)
+
+    /**
+     * Escribe el byte como un `MESSAGE` del dialecto, sin eco.
+     *
+     * No es un eco. El eco de `PeerTransportManager.sendData` es un hecho del
+     * manager: avisa a sus propios `dataHandlers` de lo que ha salido, y de eso
+     * viven los arnes que comprueban el camino de salida sin red. Aqui el byte
+     * sale y se devuelve si el medio lo acepto.
+     */
+    override fun sendData(remotePeerId: IdentityId, data: ByteArray): TransportResult<Unit> {
+        if (stateRef.get() != ConnectionState.ONLINE) {
+            return TransportResult.Failure(
+                TransportError.BACKEND_NOT_READY,
+                "el motor no esta ONLINE: ${stateRef.get()}",
+            )
+        }
+        return try {
+            send(data, remotePeerId)
+            TransportResult.Success(Unit)
+        } catch (e: Exception) {
+            TransportResult.Failure(TransportError.BACKEND_SEND_FAILED, e.message ?: e::class.java.simpleName)
+        }
+    }
+
+    /** El rele no tiene estado de enlace propio: el cierre lo decide el manager. */
+    override fun onCloseBinding(localIdentity: IdentityId, remotePeerId: IdentityId): TransportResult<Unit> =
+        TransportResult.Success(Unit)
+
+    /** Cierra el cliente HTTP. La CONEXION la cierra [disconnect]. */
+    override fun shutdown(): TransportResult<Unit> {
+        disconnect()
+        client?.close()
+        client = null
+        return TransportResult.Success(Unit)
+    }
+
+    /**
+     * Si el par esta PRESENTE en el rele.
+     *
+     * Es una consulta al estado que el motor ya mantiene para la TUI, no una
+     * llamada de red: el `PEER_ONLINE` del rele mantiene la lista.
+     */
+    fun isPeerPresent(remotePeerId: IdentityId): Boolean =
+        stateRef.get() == ConnectionState.ONLINE && remotePeerId in onlinePeers
+
+    /**
+     * Reinyecta un `Message` LEGADO por el camino de `messageHandler`.
+     *
+     * Es el punto de reinyeccion de [LegacyInboundConductor]: cuando un
+     * consumidor baja su compositor, el motor tiene que poder devolver un frame
+     * legado al camino por el que llegaba antes de p4. `internal` a proposito —
+     * la superficie publica de este modulo es [TransportBackend], y un
+     * `deliverLegacyInbound` publico seria una puerta de entrada al camino en
+     * claro que nadie necesita desde fuera.
+     */
+    internal fun deliverLegacyInbound(bytes: ByteArray) {
+        messageHandler(bytes)
+    }
+
+    /**
+     * El codec, para quien tenga que traducir sin duplicarlo.
+     *
+     * `internal` y no publico: `RelayDataCodec` forma parte de la superficie
+     * publica de este modulo (lo usan el escritorio y sus tests), pero la
+     * lectura del codec desde dentro no necesita salir.
+     */
+    /** La identidad con la que este motor se autentica ante el rele. */
+    fun relayIdentityId(): IdentityId = identity
+
+    internal fun relayCodec(): RelayDataCodec = codec
+
+    /** El `log` del motor, para que quien componga no tenga que recibir el suyo. */
+    internal fun logLine(message: String) = log(message)
 
     // ------------------------------------------------------------------
     // Sesion
@@ -629,6 +821,62 @@ private fun sendFrame(data: ByteArray, to: IdentityId? = null, ack: Boolean): Re
             log("MESSAGE descartado: no va a esta identidad")
             return
         }
+
+        // ------------------------------------------------------------------
+        // CLASIFICACION UNICA (p4). Aqui, y no en km-core.
+        // ------------------------------------------------------------------
+        //
+        // El byte crudo solo existe como `inbound.payload` en ESTE punto: el
+        // envoltorio que produce `toCoreMessageBytes` lo esconde dentro de un
+        // `Message`, y un filtro en km-core tendria que deshacer ese envoltorio
+        // para volver a mirar el byte. Ademas "puedo leer esto como MI
+        // `Message`?" es una pregunta sobre el DIALECTO de este medio, no sobre
+        // `SecureFrame`: el que tiene el codec es quien puede contestarla.
+        //
+        // La pregunta se hace UNA vez, con la misma lectura que ya hacia
+        // `RelayDataCodec.applicationMessageId`, y de ella salen dos caminos.
+        val comoLegado = codec.applicationMessageId(inbound.payload) != null
+        if (comoLegado) {
+            // Carga LEGIBLE en el dialecto de km-core: es la cara legado. Si hay
+            // un compositor de frames legados —el `LegacyInboundConductor` del
+            // escritorio— se le entrega el MARCO ya decodificado para que el
+            // reponga el camino en claro; si NO lo hay, se cae al comportamiento
+            // de siempre (`toCoreMessageBytes` -> `messageHandler`). El fallback
+            // es lo que mantiene al escritorio bit a bit como estaba.
+            val compositor = eventCallbacks.onLegacyInboundFrame
+            val mensaje = codec.decodeLegacyMessage(inbound.payload)
+            if (compositor == null || mensaje == null) {
+                log("MESSAGE legado sin compositor: camino de aplicacion de siempre")
+                alCaminoLegado(inbound)
+            } else {
+                log("MESSAGE legado: lo repone el compositor de frames legados")
+                compositor(LegacyInboundFrame(from = inbound.from, encoded = mensaje), inbound.from)
+            }
+            return
+        }
+
+        // Carga opaca: es la cara de par. Si hay un compositor —un
+        // `PeerTransportManager` con su cable de B2— el byte va ahi y NO al
+        // camino en claro: mezclar los dos seria entregar en claro lo que el
+        // destinatario espera descifrado.
+        val compositor = eventCallbacks.onDataReceived
+        if (compositor == null) {
+            log("MESSAGE opaco sin compositor de pares: se entrega por el camino legado")
+            alCaminoLegado(inbound)
+            return
+        }
+        compositor(inbound.from, inbound.payload)
+    }
+
+    /**
+     * El camino LEGADO de siempre: `toCoreMessageBytes` y `messageHandler`.
+     *
+     * Se conserva bit a bit, con su envoltorio y su `messageId` de envelope.
+     * Ese envoltorio es lo que hace que una carga opaca llegue a
+     * `KeyMessageCoreImpl` como un `Message` cualquiera en vez de perderse: es
+     * la compat que sostiene al escritorio, que no cablea la cara de pares.
+     */
+    private fun alCaminoLegado(inbound: RelayDataCodec.InboundMessage) {
         val bytes = codec.toCoreMessageBytes(inbound)
         if (bytes == null) {
             log("MESSAGE descartado: no se pudo codificar en el vocabulario de km-core")
@@ -698,7 +946,8 @@ private fun sendFrame(data: ByteArray, to: IdentityId? = null, ack: Boolean): Re
             return
         }
         if (peer == identity) return
-        if (online) peerOnlineHandler(peer) else peerOfflineHandler(peer)
+        if (online) onlinePeers.add(peer) else onlinePeers.remove(peer)
+        if (online) peerOnlineHandlers.forEach { it(peer) } else peerOfflineHandlers.forEach { it(peer) }
     }
 
     // ------------------------------------------------------------------

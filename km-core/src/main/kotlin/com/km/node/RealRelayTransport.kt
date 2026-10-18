@@ -75,6 +75,22 @@ class RealRelayTransport(
 
     override fun initialize(): TransportResult<Unit> {
         val r = server.registerDataHandler(localIdentity) { envelope ->
+            // p4 / B2: el byte baja por `eventCallbacks.onDataReceived`, que es
+            // la MISMA frontera que usa el motor del rele y WebRTC. Es el unico
+            // camino por el que un byte remoto puede alcanzar a un
+            // `PeerTransportManager`, y sin el ningun byte remoto llega a ningun
+            // nucleo.
+            //
+            // `onDataFrom` NO se quita: es una API PUBLICA de este transporte,
+            // con un unico cliente declarado (`RealRelayTransportTest`), y
+            // quitar un metodo publico por mover el despacho es un cambio de
+            // contrato que ninguna asercion mide. Se conserva y se documenta
+            // como camino de DIAGNOSTICO. Lo que no se permite es que las dos
+            // rutas hagan el mismo trabajo: por eso el `eventCallbacks` va
+            // PRIMERO y el registro por par despues, de modo que un consumidor
+            // de `eventCallbacks` y otro de `onDataFrom` ven el mismo byte una
+            // vez cada uno, y no se nota un doble despacho.
+            eventCallbacks.onDataReceived?.invoke(envelope.from, envelope.payload)
             dataHandlers[envelope.from]?.invoke(envelope.payload)
         }
         return r.toTransportResult("registro del handler de datos")
@@ -126,7 +142,21 @@ class RealRelayTransport(
         return TransportResult.Success(Unit)
     }
 
-    /** Registra quien recibe los bytes de un peer concreto. */
+    /**
+     * Registra quien recibe los bytes de un peer concreto.
+     *
+     * ## DIAGNOSTICO, NO RECEPCION
+     *
+     * p4: el despacho REAL ocurre por [TransportEventCallbacks.onDataReceived],
+     * que es lo unico que un `PeerTransportManager` puede cablear. Este metodo
+     * se conserva porque es API publica con cliente declarado
+     * (`RealRelayTransportTest`), y el camino por par sigue siendo el que
+     * permite observar "de quien son estos bytes" sin montar un manager.
+     *
+     * Lo que no puede hacerse es usarlo como camino de RECEPCION: por eso el
+     * `eventCallbacks` se dispara antes que esta tabla, y por eso las dos rutas
+     * se documentan como distintas en vez de como dos cosas distintas.
+     */
     fun onDataFrom(remotePeerId: IdentityId, handler: (ByteArray) -> Unit) {
         dataHandlers[remotePeerId] = handler
     }

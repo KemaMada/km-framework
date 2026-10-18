@@ -241,6 +241,44 @@ class SenderImpl(
         return Result.success(Unit)
     }
 
+    /**
+     * El `ACK` de [messageId] ha llegado AUTENTICADO: el wire ya no sirve.
+     *
+     * ## POR QUE SE LIMPIA AQUI Y NO EN OTRO SITIO
+     *
+     * `lastWireByMessageId` existe para una sola cosa: reenviar el MISMO wire en
+     * un reintento, que es lo que hace idempotente al receptor. Un wire deja de
+     * servir en dos momentos y solo en dos: cuando el `ACK` confirma que llego, y
+     * cuando el mensaje muere ([failSecure]/[cancel]). Limpiar en cualquier otro
+     * punto rompe la idempotencia.
+     *
+     * En PARTICULAR no se limpia tras `queueOffline` (`MessageState.QUEUED`, el
+     * `OK_QUEUED` del rele): un mensaje encolado todavia puede vaciarse y
+     * reenviarse, y ese reenvio TIENE que ser el mismo wire. Sin cache,
+     * [retrySecure] devuelve `NO_SESSION` y el mensaje queda muerto con sesion
+     * viva.
+     *
+     * Que el disparador sea un `ACK` AUTENTICADO —y no cualquier byte— lo
+     * garantiza `AckManagerImpl`: solo dispara sus handlers tras verificar la
+     * firma. Este metodo no vuelve a comprobarlo porque no puede: no tiene las
+     * claves ni el mensaje. Confia en quien lo llama, y quien lo llama es la
+     * unica autoridad que ya verifico.
+     */
+    fun onAckConfirmed(messageId: MessageId) {
+        lastWireByMessageId.remove(messageId)
+    }
+
+    /**
+     * Cuantos wires hay cacheados ahora mismo.
+     *
+     * Existe por una razon que no es de comodidad: sin un contador observable,
+     * "el mapa se limpia tras el `ACK`" es una garantia sobre estado interno que
+     * ningun test puede pinzar, y una garantia que no se puede pinzar es una
+     * garantia que se rompe en silencio. Con esto, un test afirma el 0 y el
+     * crecimiento sin limite deja de poder esconderse.
+     */
+    internal fun cachedWireCount(): Int = lastWireByMessageId.size
+
     fun onRetryExpired(messageId: MessageId, attempt: Int) {
         val nextAttempt = attempt + 1
         if (nextAttempt > retryManager.maxRetries()) {

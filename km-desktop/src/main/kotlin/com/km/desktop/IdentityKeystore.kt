@@ -8,6 +8,10 @@ import com.km.model.IdentityId
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.int
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import org.bouncycastle.crypto.generators.Argon2BytesGenerator
 import org.bouncycastle.crypto.params.Argon2Parameters
@@ -600,6 +604,24 @@ object IdentityKeystore {
     // ------------------------------------------------------------------
     // Lectores de JSON
     // ------------------------------------------------------------------
+
+    /**
+     * Lectores de JSON propios de este fichero.
+     *
+     * p4/R-8.a: estos tres lectores vivian como extensiones `internal` de
+     * `RelayDataCodec.kt`, o sea en el MISMO modulo que el almacen. Al mover el
+     * codec a `:km-transport`, `internal` dejo de alcanzarlos desde aqui y el
+     * almacen no compila. NO se hace publica la superficie del codec para
+     * rescatarlos: `string`/`obj`/`int` son nombres genericos que en un paquete
+     * publico son un peligro de colision. El almacen lee JSON de su PROPIO
+     * formato, y ese formato no es asunto del transporte: aqui se definen y
+     * aqui se quedan.
+     */
+    private fun JsonObject.string(field: String): String? = this[field]?.jsonPrimitive?.contentOrNull
+
+    private fun JsonObject.obj(field: String): JsonObject? = this[field]?.jsonObject
+
+    private fun JsonObject.int(field: String): Int? = this[field]?.jsonPrimitive?.int
 
     /** Entero obligatorio: si falta o no es entero, el archivo esta corrupto. */
     private fun JsonObject.requireInt(field: String): Int =

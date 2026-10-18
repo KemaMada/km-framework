@@ -311,6 +311,44 @@ class RealRelayTransportTest {
         )
     }
 
+    @Test
+    @DisplayName("R3-13 el byte que baja por onDataReceived llega al manager con el from del emisor")
+    fun `R3-13 onDataReceived entrega al manager`() {
+        val w = World().withBothOnline()
+
+        // Dos transportes reales sobre el MISMO RelayServer, cada uno con su
+        // manager. El manager es quien puede cablear `eventCallbacks`: sin el,
+        // un byte remoto entraba por `onDataReceived` y ahi se quedaba.
+        val aliceTransport = RealRelayTransport(server = w.server, localIdentity = aliceId, now = { tick })
+        val bobTransport = RealRelayTransport(server = w.server, localIdentity = bobId, now = { tick })
+        val aliceManager = PeerTransportManager(transportBackend = aliceTransport, now = { tick })
+        val bobManager = PeerTransportManager(transportBackend = bobTransport, now = { tick })
+
+        val ctx = peerContext()
+        aliceManager.createBinding(aliceId, ctx).getOrThrow()
+        aliceManager.sendOffer(aliceId, ctx, "offer", bobId).getOrThrow()
+        aliceManager.receiveAnswer(aliceId, bobId, "answer").getOrThrow()
+        aliceManager.markConnected(aliceId, ctx).getOrThrow()
+
+        val enBob = CopyOnWriteArrayList<Pair<IdentityId, ByteArray>>()
+        bobManager.onData { from, data -> enBob.add(from to data) }
+
+        // Un SecureFrame de 44 B: el relé lo mueve byte a byte y no lo lee.
+        val frame = ByteArray(44) { (it * 3 + 0x5A).toByte() }
+        assertTrue(aliceManager.sendData(aliceId, ctx, frame).isSuccess, "el envio debe salir")
+
+        // El byte baja por `eventCallbacks.onDataReceived` y llega al manager de
+        // Bob con el `from` AUTENTICADO por el relé: el emisor, no el receptor.
+        // Un `from` falseado a la identidad LOCAL de Bob (mutacion M1-b) haria
+        // que el filtro de sesion de Bob descartara el frame; aqui se fija con
+        // una asercion sobre el identificador, no sobre el silencio.
+        val deadline = System.currentTimeMillis() + 5_000
+        while (enBob.isEmpty() && System.currentTimeMillis() < deadline) Thread.sleep(25)
+        assertEquals(1, enBob.size, "el manager de Bob debe recibir el byte UNA vez")
+        assertEquals(aliceId, enBob.single().first, "el `from` es el emisor, no la identidad local")
+        assertContentEquals(frame, enBob.single().second, "el ciphertext llega intacto")
+    }
+
     private fun peerContext(): PeerContext {
         val session = AuthSession.initiator(aliceKP, aliceId.value, ed25519, clock = clock)
         session.receiveChallenge(AuthChallenge(ByteArray(16), 1000L, 3, bobId.value)).getOrThrow()

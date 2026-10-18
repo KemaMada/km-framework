@@ -6,6 +6,9 @@ import com.km.codec.JsonEncoder
 import com.km.crypto.Ed25519Impl
 import com.km.crypto.KeyPair
 import com.km.identity.KmIds
+// p4/R-8.a: el codec del dialecto del rele vive en `:km-transport`; el
+// escritorio lo consume por artefacto en vez de tener una copia propia.
+import com.km.transport.RelayDataCodec
 import com.km.model.Ack
 import com.km.model.AckStatus
 import com.km.model.IdentityId

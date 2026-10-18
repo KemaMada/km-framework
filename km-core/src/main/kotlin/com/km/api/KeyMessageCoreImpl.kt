@@ -179,6 +179,14 @@ class KeyMessageCoreImpl(
         sender.registerStateHandler { id, state, _ ->
             stateChangeHandlers.forEach { it(id, state) }
         }
+        // p4 (task 4.2): el wire cacheado de un mensaje se libera cuando llega su
+        // `ACK` AUTENTICADO. `registerAckHandler` de `AckManagerImpl` dispara
+        // SOLO tras verificar la firma, de modo que un `ACK` falsificado no
+        // libera nada. Sin este cable, `lastWireByMessageId` crece sin limite:
+        // cada mensaje cifrado dejaba su wire para siempre.
+        ackManager.registerAckHandler { ack ->
+            sender.onAckConfirmed(ack.originalMessageId)
+        }
     }
 
     private val stateChangeHandlers = mutableListOf<(MessageId, MessageState) -> Unit>()

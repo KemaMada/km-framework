@@ -5,7 +5,6 @@ import com.km.node.PeerContext
 import com.km.node.PeerTransportBinding
 import com.km.node.PeerTransportManager
 import com.km.node.TransportError
-import com.km.node.TransportEventCallbacks
 import com.km.node.TransportResult
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.CountDownLatch
@@ -113,19 +112,39 @@ class ManagedWebRtcPeer(
 
     /**
      * Traduce los eventos del backend WebRTC a acciones sobre el manager.
+     *
+     * ## p4 — SE COMPONE, NO SE SUSTITUYE
+     *
+     * Hasta p4 este metodo asignaba un `TransportEventCallbacks(...)` FRESCO, y
+     * eso borraba el cable de recepcion que [PeerTransportManager] instala desde
+     * su `init` (p4/B2): el manager compone `onDataReceived` para alimentar sus
+     * `dataHandlers` —por donde llegan las sesiones cifradas— y la asignacion de
+     * aqui lo dejaba en `null`. El sintoma era el peor posible: la conexion
+     * seguia viva y el byte dejaba de llegar en SILENCIO.
+     *
+     * Ahora se parte de lo que hay (`previo`) y se ENCADENA: el
+     * `onDataReceived` del manager corre primero —es quien entrega a las
+     * sesiones— y despues la traduccion de este conductor. Un solo `var`, un
+     * solo lambda: encadenar es la unica forma correcta de no pisarse.
      */
     private fun wireTransportEvents() {
-        transport.eventCallbacks = TransportEventCallbacks(
+        val previo = transport.eventCallbacks
+        transport.eventCallbacks = previo.copy(
             onIceCandidateGenerated = { _, _, candidate ->
                 signaling?.sendIce(remotePeerId, candidate)
             },
             onDataReceived = { fromPeerId, data ->
+                // Primero el cable del manager: es quien alimenta las sesiones
+                // cifradas. Si esto se quitara, la sesion dejaria de recibir y
+                // el fallo seria mudo.
+                previo.onDataReceived?.invoke(fromPeerId, data)
                 // Solo datos del peer autenticado. Un canal de otro par
                 // llegaria con otro remotePeerId y se descarta aqui.
                 if (fromPeerId == remotePeerId) {
                     receivedData.add(data)
-                    // Bytes crudos primero: la capa de mensaje segura los
-                    // descifra. onApplicationData queda para diagnostico.
+                    // Bytes crudos para diagnostico y para la capa de mensaje
+                    // segura. Ya NO es el unico cableado: el manager entrega
+                    // por su cuenta (p4/B2).
                     onTransportData?.invoke(data)
                     onApplicationData?.invoke(data)
                 }

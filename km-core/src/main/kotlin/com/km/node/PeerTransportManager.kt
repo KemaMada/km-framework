@@ -150,6 +150,84 @@ class PeerTransportManager(
     private val connectionStateListeners =
         java.util.concurrent.CopyOnWriteArrayList<(IdentityId, Boolean) -> Unit>()
 
+    /**
+     * B2 — EL CABLE DE RECEPCION (p4).
+     *
+     * ## QUE ESTA ROTO Y QUE ESTO ARREGLA
+     *
+     * Hasta p4, este gestor no tenia NI UNA referencia a
+     * [TransportBackend.eventCallbacks]. Los `dataHandlers` —la lista a la que
+     * se suscriben las sesiones y el puente de recepcion— solo se disparaban
+     * desde [sendData], o sea desde el camino de SALIDA. Con un transporte de
+     * red, un byte remoto entraba por `onDataReceived` y ahi se quedaba: en
+     * produccion ningun byte remoto llegaba jamas a ningun nucleo. El E2E solo
+     * se podia demostrar inyectando el eco del propio emisor.
+     *
+     * ## POR QUE ESTE `init` VA DESPUES DE `dataHandlers`
+     *
+     * El lambda lee [dataHandlers] en el MOMENTO DEL EVENTO, no al construirlo,
+     * asi que el orden no le afecta. Va aqui igualmente, y no en el `init` de
+     * arriba, por legibilidad: se lee justo debajo de la lista que despacha. Si
+     * alguien lo sube, el comportamiento no cambia y por eso no hay un test que
+     * lo prohiva —lo que si hay es un test que lo EXIGE, MW-01.
+     *
+     * ## POR QUE SE COMPONE Y NO SE SUSTITUYE
+     *
+     * `TransportEventCallbacks` es un `data class` de slots `null`, y
+     * `eventCallbacks` es un `var` con semantica de ASIGNACION. Asignar un
+     * `TransportEventCallbacks()` fresco borra todo lo que habia: un
+     * `onIceCandidateGenerated` puesto por otro, el `onTransportError` que
+     * consulta `ChainSupervisor`, o el cable de otro manager. Por eso aqui se
+     * ENCADENA: el lambda anterior se invoca primero y despues se avisa a los
+     * `dataHandlers`. Sustituir seria el fallo silencioso de D-B.
+     *
+     * ## POR QUE NO HAY UN GATE POR BINDING ACTIVO
+     *
+     * Porque el aislamiento por par YA EXISTE en las dos capas que deben
+     * tenerlo, y duplicarlo aqui perderia los contadores: `SecureInbound`
+     * cuenta `unknownPeerFrames` y `legacyBytesOnPeerChannel` en un handler
+     * global del manager, y un gate aqui —que es el MISMO sitio por donde
+     * pasan esos bytes— filtraria antes de que el contador los viera.
+     *
+     * Las dos capas que ya lo hacen:
+     *  1. `SecureMessagingSession` filtra `from == remotePeerId` antes de tocar
+     *     el ratchet.
+     *  2. `SecureInbound` filtra otra vez y CLASIFICA lo que no es suyo.
+     *
+     * Ademas el gate seria redundante para el eco y ciego para el caso real:
+     * [sendData] ya exige binding activo y `CONNECTED` antes de notificar, de
+     * modo que al eco nunca le faltaria el binding; y un byte que entra por
+     * `onDataReceived` sin binding no tiene un par al que atribuirse, asi que
+     * el gate no tendria nada que decidir.
+     *
+     * ## LO QUE ESTO NO TOCA
+     *
+     * Cero referencias a `com.km.crypto`, `com.km.ratchet`, `com.km.frame` o
+     * `com.km.x3dh`: el guard `ChainCryptoSeparationArchTest` escanea este
+     * fichero y lo comprueba.
+     */
+    private fun cablearRecepcion() {
+        val previo = transportBackend.eventCallbacks
+        transportBackend.eventCallbacks = previo.copy(
+            onDataReceived = { remotePeerId, data ->
+                // Primero el que ya estaba: componer es una GARANTIA, no un
+                // reemplazo. Si el lambda previo es `null` —el caso normal—
+                // esta llamada no hace nada y no hay que preguntarse por ello.
+                previo.onDataReceived?.invoke(remotePeerId, data)
+                // Despues los handlers, con el MISMO contrato que el eco de
+                // [sendData]: `(remotePeerId, data)`, en orden de registro. El
+                // orden importa: la sesion se suscribio en su `init` y el
+                // puente al instalarse, y el puente necesita ver el plaintext
+                // que la sesion acaba de producir.
+                dataHandlers.forEach { it(remotePeerId, data) }
+            },
+        )
+    }
+
+    init {
+        cablearRecepcion()
+    }
+
     // ===================================================================
     // Gestion de bindings
     // ===================================================================
@@ -191,6 +269,17 @@ class PeerTransportManager(
 
     fun getBinding(localIdentity: IdentityId, remotePeerId: IdentityId): PeerTransportBinding? =
         bindings[localIdentity to remotePeerId]
+
+    /**
+     * El backend con el que se construyo este manager. Solo lectura.
+     *
+     * p4: lo necesita `RelayClientStack.compose` para EXIGIR que el backend
+     * del manager sea el mismo motor que el de la pila. Sin este accessor habia
+     * que comparar por identidad con algo que el manager no expone, y la
+     * comprobacion se degradaria a comparar por una clave deducida —que es como
+     * una pila acaba con dos motores sin que nadie lo note.
+     */
+    fun backend(): TransportBackend = transportBackend
 
     fun getBindingForPeerContext(localIdentity: IdentityId, peerContext: PeerContext): PeerTransportBinding? =
         bindings[localIdentity to peerContext.remotePeerId]

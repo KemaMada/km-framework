@@ -3,6 +3,11 @@ package com.km.desktop
 import com.km.auth.Dialect
 import com.km.auth.DialectCheck
 import com.km.auth.DialectNegotiation
+// p4/R-8.a: el motor y el codec del rele viven en `:km-transport`. Este test
+// sigue en `km-desktop` porque prueba la VISTA del cliente de escritorio; las
+// constantes y el codec que usa salen del modulo hermano.
+import com.km.transport.JvmRelayTransport
+import com.km.transport.RelayDataCodec
 import org.junit.jupiter.api.Test
 import java.util.UUID
 import kotlin.test.assertEquals

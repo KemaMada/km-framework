@@ -8,6 +8,14 @@ import com.km.model.Message
 import com.km.model.MessageId
 import com.km.model.MessageState
 import com.km.protocol.ConnectionState
+// p4/R-8.a: el motor del rele (cliente WebSocket + codec del dialecto
+// KM-WIRE-RELAY) vive en `:km-transport` y se consume POR ARTEFACTO. La copia
+// que habia aqui en `com.km.desktop` se ELIMINO: dos clientes de wire
+// significarian dos protocolos, dos `MAX_RESEND` y dos vectores de ratchet
+// duplicados. Ver `km-transport/src/main/kotlin/com/km/transport`.
+import com.km.transport.JvmRelayTransport
+import com.km.transport.RelayDataCodec
+import com.km.transport.RelayStatus
 import org.jline.reader.EndOfFileException
 import org.jline.reader.LineReader
 import org.jline.reader.LineReaderBuilder
