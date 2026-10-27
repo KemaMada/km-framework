@@ -208,7 +208,7 @@ Esto **no** existe en el código, aunque tenga RFC en `docs/rfc/`:
 | Fragmentación de `SecureFrame` | El propio código lo dice: cargas mayores de 65535 bytes "requieren fragmentacion (incremento posterior)". |
 | Transports distintos de relé y WebRTC | `TransportBackend` es la extensión; solo hay relé real y un backend falso. |
 | Persistencia durable de mensajes | `com.km.storage` solo tiene implementaciones **en memoria** (`InMemoryMessageStore`, `InMemoryOfflineQueue`, `InMemoryRelayStore`, `InMemoryDuplicateStore`). Lo que sí es durable es la unidad criptográfica, en `com.km.transmit`. |
-| Publicación de artefactos | Solo `km-core`, y **solo a `mavenLocal()`**. Ni Maven Central ni releases firmadas. `km-webrtc`, `km-daemon` y `km-desktop` no publican. Ver [Cómo consumirlo](#cómo-consumirlo). |
+| Publicación de artefactos | Solo `km-core` y `km-transport`, y **solo a `mavenLocal()`**. Ni Maven Central ni releases firmadas. `km-webrtc`, `km-daemon` y `km-desktop` no publican. Ver [Cómo consumirlo](#cómo-consumirlo). |
 | CI | No hay workflows. No existe directorio `.github/`. Los tests se ejecutan en local. |
 
 ---
@@ -317,8 +317,7 @@ ninguno de los dos casos: la condición es que el cliente llegue al relé.
 
 ## Inicio rápido
 
-De un clon limpio a un cliente en marcha, en Linux. Todo con `./gradlew` desde la
-raíz del repositorio.
+De un clon limpio a un cliente en marcha. El atajo es el lanzador de la raíz:
 
 ```sh
 # 1. Clonar. El cliente de escritorio está DENTRO de este repositorio, en
@@ -326,11 +325,30 @@ raíz del repositorio.
 git clone https://github.com/KemaMada/km-framework.git
 cd km-framework
 
-# 2. Publicar km-core en mavenLocal. NO es opcional: km-desktop lo consume como
-#    artefacto publicado (com.km:km-core:0.1.0-SNAPSHOT), no como proyecto del
-#    build. Sin este paso, el paso 3 falla al resolver la dependencia.
+# 2. Arrancar. La primera vez no hay jar: el lanzador publica km-core y
+#    km-transport en mavenLocal, compila el fat jar y arranca.
+./km
+```
+
+`./km` (Linux/macOS) y `km.cmd` (Windows) compilan solo si falta el jar,
+ejecutan `java -jar` con todos los argumentos y propagan el código de salida.
+Gradle exige **JDK 27**; el jar corre en JRE 11 o superior. Ver
+[Lanzadores `km` y `km.cmd`](#lanzadores-km-y-kmcmd).
+
+Los mismos pasos a mano, sin el lanzador:
+
+```sh
+# 1. Clonar. El cliente de escritorio está DENTRO de este repositorio, en
+#    km-desktop/. No hay un repositorio de GitHub aparte para él.
+git clone https://github.com/KemaMada/km-framework.git
+cd km-framework
+
+# 2. Publicar km-core y km-transport en mavenLocal. NO es opcional: km-desktop
+#    los consume como artefactos publicados (com.km:km-core y com.km:km-transport
+#    versión 0.1.0-SNAPSHOT), no como proyectos del build. Sin este paso, el
+#    paso 3 falla al resolver las dependencias.
 ./gradlew -Dorg.gradle.java.home=/usr/lib/jvm/java-27-openjdk \
-          :km-core:publishToMavenLocal
+          :km-core:publishToMavenLocal :km-transport:publishToMavenLocal
 
 # 3. Compilar el cliente de escritorio: un único jar con todo dentro.
 ./gradlew -Dorg.gradle.java.home=/usr/lib/jvm/java-27-openjdk \
@@ -348,6 +366,44 @@ java -jar km-desktop/build/libs/km-desktop.jar --relay ws://127.0.0.1:8080/km
 Sin `--relay`, la TUI usa el relé desplegado, `wss://keymessage.xyz/km`, que es su
 endpoint por defecto. El `km-daemon` del paso 4 **no enruta por ruta**: acepta el
 handshake WebSocket en cualquier path, así que `/km` y `/ws` funcionan igual.
+
+#### Lanzadores `km` y `km.cmd`
+
+| Shell | Lanzador | Requisito |
+|-------|----------|-----------|
+| Linux / macOS | `./km` (POSIX `sh`, LF, ejecutable) | JDK 27 para compilar; JRE 11+ para ejecutar |
+| Windows 10+ | `km.cmd` (batch, CRLF) | JDK 27 para compilar; JRE 11+ para ejecutar |
+
+Los dos hacen lo mismo: si `km-desktop/build/libs/km-desktop.jar` no existe (o si
+`KM_REBUILD=1`), publican `km-core` y `km-transport` en `mavenLocal` y ejecutan
+`:km-desktop:shadowJar`; después lanzan `exec java -jar` con los argumentos tal
+cual y devuelven el mismo código de salida. La salida del build va a **stderr**,
+para que stdout siga siendo de la interfaz.
+
+```sh
+./km --help                                  # ayuda completa, exit 0
+./km --relay ws://127.0.0.1:8080/km          # relé propio
+./km --no-tui                                # REPL de líneas (scripts)
+KM_REBUILD=1 ./km --ascii                    # fuerza el build y arranca sin glifos
+```
+
+| Opción | Efecto |
+|--------|--------|
+| `--tui` | TUI de pantallas (defecto). Exige terminal de al menos 60x20 y con direccionamiento de cursor; si no, se avisa y se usa el modo líneas. |
+| `--accessible` | Salida lineal append-only, sin repintado ni direccionamiento de cursor. |
+| `--no-tui` | REPL de líneas de G1, con los comandos de la tabla de `help`. |
+| `--ascii` | Sin glifos Unicode ni color. |
+| `--relay`, `--bootstrap`, `--relay-identity`, `--keystore`, `--peers`, `--reset`, `--verbose` | Igual que en el jar: ver `./km --help`. |
+| `-h`, `--help` | Ayuda, sin abrir la red. |
+
+| Variable | Efecto |
+|----------|--------|
+| `KM_REBUILD=1` | Fuerza el paso de build aunque el jar exista (Gradle decide qué recompilar). |
+| `KM_JAVA=<ruta>` | JVM que ejecuta el jar. Por defecto, `java` del `PATH`. |
+| `KM_GRADLE_JAVA_HOME=<ruta>` | JDK que ejecuta Gradle. Si no se define, se usa `JAVA_HOME`. |
+
+`km.cmd` no se ha ejecutado en un runner Windows en este repositorio: su
+equivalencia con `km` está revisada leyendo el script, no medida. Se declara.
 
 #### `installDist` o fat jar
 
@@ -387,13 +443,14 @@ confirmación.
 
 ## Cómo consumirlo
 
-> **Estado de publicación: parcial.** `km-core` **sí** publica, pero **solo en
-> `mavenLocal()`**: lleva el plugin `maven-publish`, con `group = "com.km"` y
-> `version = "0.1.0-SNAPSHOT"`, y un destino `mavenLocal()`. No está en Maven
-> Central ni en ningún registro público, así que **no existe un repositorio del
-> que dependa alguien que no tenga km-core en su `~/.m2`**. `km-webrtc` no
-> publica. Para consumir hoy, construye desde el fuente (`includeBuild`), usa un
-> subtree, o publica primero con `:km-core:publishToMavenLocal`.
+> **Estado de publicación: parcial.** `km-core` y `km-transport` **sí** publican,
+> pero **solo en `mavenLocal()`**: llevan el plugin `maven-publish`, con
+> `group = "com.km"` y `version = "0.1.0-SNAPSHOT"`, y un destino `mavenLocal()`.
+> No están en Maven Central ni en ningún registro público, así que **no existe un
+> repositorio del que dependa alguien que no tenga esos artefactos en su
+> `~/.m2`**. `km-webrtc` no publica. Para consumir hoy, construye desde el fuente
+> (`includeBuild`), usa un subtree, o publica primero con
+> `:km-core:publishToMavenLocal :km-transport:publishToMavenLocal`.
 
 El grupo previsto es `com.km`:
 
@@ -500,8 +557,9 @@ andamiaje de mutaciones.
 
 ## Lo que funciona y lo que no, en una línea
 
-Un estado honesto, porque un clon limpio compila pero no envía mensajes cifrados,
-y conviene saberlo antes de perder una tarde.
+Un estado honesto: un clon limpio compila, envía cifrado y tiene TUI de pantallas,
+pero los contactos y los mensajes viven **solo en memoria**, el relé no guarda y
+la interfaz **no está auditada**.
 
 | Capacidad | Estado |
 |-----------|--------|
@@ -509,14 +567,18 @@ y conviene saberlo antes de perder una tarde.
 | Enviar `MESSAGE` por el relé y que lo reciba el destinatario, con su mismo `messageId` | **FUNCIONA** |
 | Recibir el `ACK` de vuelta y **autenticarlo** contra la clave del peer, con `MESSAGE` confirmado | **FUNCIONA** |
 | Reconexión automática con backoff y jitter | **CÓDIGO LISTO, NO PROBADO** contra el relé real: el backoff está cubierto por tests deterministas, pero nadie ha tumbado el socket del relé para ver el ciclo entero |
-| Que la carga del mensaje vaya **cifrada** | **NO EMPEZADO.** Las primitivas existen (`SecureFrame`, `DoubleRatchetSession`, `X3dh`) pero **no están cableadas** a este transporte. Lo que viaja por el cable es exactamente lo que `km-core` produce hoy: el `Message` va **firmado, pero en claro**. Ver [Estado y límites honestos](km-desktop/README.md#estado-y-límites-honestos) |
+| Que la carga del mensaje vaya **cifrada** | **FUNCIONA** en el camino de la TUI: `DesktopMain` compone el núcleo con `secureSessionRegistry` y `PeerTransportManager`, y sin sesión `send` rechaza con **cero bytes** (`SecureSendRejectionTest`). El `Message` viaja dentro de `SecureFrame`; la recepción en claro está cerrada (`allowLegacyCleartextReceive = false`) y `DesktopSendCiphertextTest` comprueba que el texto no aparece en el cable. Ver [Estado y límites honestos](km-desktop/README.md#estado-y-límites-honestos) |
+| TUI de pantallas (contactos, conversación, importar/compartir, frase, diagnóstico) | **FUNCIONAL, NO AUDITADA.** Cubierta por tests puros de reducer, renderer y saneo, y por tests de bytecode; no se ha probado en un `pty` real ni con revisión externa |
+| Contactos | **VOLÁTILES.** `InMemoryContactBook`: se pierden al reiniciar. `persist-contact-book` está especificado y **no aplicado** |
 | Anonimato / soporte de Tor | **NO EXISTE.** No hay ninguna implementación; los RFC lo declaran fuera de alcance (§22 de KM-0005) |
 | Fragmentación de `SecureFrame` | **NO.** Tope de 65535 B por carga |
-| Store-and-forward (`STORED`, `RELAY_EXPIRED`) | **NO.** El codec está y el cliente los maneja; la lógica que los dispararía no existe |
+| Store-and-forward (`STORED`, `RELAY_EXPIRED`) | **NO.** El codec está y el cliente los maneja; la lógica que los dispararía no existe. El relé descarta si el par no está |
 
-La distinción que importa: **las primitivas criptográficas están escritas y
-testeadas; el cableado E2E no está hecho.** Firmar un mensaje no es cifrarlo, y
-confundir los dos es el error más caro que se puede cometer con este código.
+La distinción que importa: **enviar cifrado no es persistir ni entregar.** El
+camino P2P cifrado funciona y el `ACK` se autentica; lo que no existe es
+almacenamiento (contactos, historial, store-and-forward) y no hay auditoría
+externa de la interfaz. `SENT` significa que el socket local aceptó bytes, no que
+el par los recibiera: solo un `ACK` verificado pinta `ENTREGADO`.
 
 ---
 
@@ -543,15 +605,17 @@ autoridad normativa; el código las implementa.
 
 ---
 
-## Bootstrap de contactos — DISEÑADO, no implementado
+## Bootstrap de contactos — implementado en G1, con límites
 
-> **Estado: DISEÑADO.** No hay ningún comando, ninguna opción y ningún formato de
-> fichero que haga esto hoy. Está aquí para que quede escrito antes de que se
-> implemente, y para que nadie asuma que ya existe.
+> **Estado: IMPLEMENTADO en G1.** `import`, `export`, `announce` y `session`
+> existen en el REPL y la TUI tiene pantallas de IMPORTAR y COMPARTIR. Límites
+> abiertos: el escritorio **no escanea** QR, los contactos son **volátiles** y el
+> reenvío tras reconexión es acotado (un `contact_exchange`, 25 s), con su prueba
+> en red real pendiente.
 
 Un protocolo sin servidor de descubrimiento necesita una manera de que dos
-personas se queden con la clave pública de la otra. El diseño previsto tiene dos
-caminos, deliberadamente uno reducido y otro completo.
+personas se queden con la clave pública de la otra. El diseño tiene dos caminos,
+deliberadamente uno reducido y otro completo.
 
 ### El camino completo: un fichero `.km`
 
@@ -572,16 +636,18 @@ mensaje) y lo importa.
   `DeviceEntry(subjectDeviceId)` y que el `deviceId` derivado encaja.
 
 Lo que **no** puede hacer un `.km` es cifrar el mensaje: solo te da la clave
-pública con la que luego establecer la sesión (X3DH + Double Ratchet).
+pública con la que luego establecer la sesión (X3DH + Double Ratchet). El camino
+criptográfico de la sesión sí está cableado en el escritorio; el portador
+(deflate + ISO-8859-1 + `Kce.validate` + `ContactBundle.verified`) vive en
+`km-core` y lo usan los dos clientes.
 
 ### El camino reducido: una clave pública a pelo
 
-Para un contacto técnico, o para probar, importar una clave Ed25519 desnuda es
-suficiente — y si no hay nombre, **el nombre por defecto es `user`**. Es
-deliberado: un contacto sin nombre es un dato que existe, y mostrar `user` es
-mejor que mostrar una cadena vacía o un `identityId` hexadecimal.
+Para un contacto técnico, o para probar, el comando `peer <identityIdHex>
+<claveBase64>` registra una clave Ed25519 desnuda. Es deliberado que exista:
+sirve para autenticar los `ACK` de un par sin haber intercambiado un bundle.
 
-Esto tiene una consecuencia práctica, y es a propósito: **importar una clave a
+Esto tiene una consecuencia práctica, y es a propósito: **registrar una clave a
 pelo no establece ninguna relación criptográfica.** Sirve para poder *responder*
 a alguien que ya te tiene a ti, y para verificar sus `ACK`. Para escribirle la
 primera vez hace falta un `ContactBundle` con prekeys.
@@ -599,13 +665,14 @@ Qué hay hoy de todo esto:
 | Pieza | Estado |
 |-------|--------|
 | `ContactBundle` en `km-core`: estructura, firma, invariante de binding, vectores dorados | **IMPLEMENTADO** |
+| Codec del portador compartido (`CarrierCodec`, `CarrierFileCodec`) y fábrica del bundle propio (`SelfBundleFactory`) | **IMPLEMENTADO** en `km-core` (G1) |
 | `PeerKeyDirectory` en `km-desktop`: registro de una clave de firma pública, con recálculo de coherencia contra `KmIds.identityId`, y persistencia en `peers.json` | **IMPLEMENTADO** |
-| Comando de TUI `peer <identityIdHex> <claveBase64>` | **IMPLEMENTADO**, y es el camino reducido sin nombre |
-| Nombre visible por contacto | **NO EMPEZADO.** `peers.json` guarda `identityId` y `publicKey`, y nada más |
-| Fichero `.km`, importación y exportación de contactos | **NO EMPEZADO** |
-| Nombre por defecto `user` al importar una clave a pelo | **NO EMPEZADO** |
-| QR de contacto en el escritorio | **NO EMPEZADO** (y el escaneo, por diseño, tampoco) |
-| QR de identidad en Android | **IMPLEMENTADO**: `MainActivity.kt` genera y escanea con ZXing, en el formato `nombre\|clavePública`. Sin nombre, esta app usa `"User"` como reserva. El escritorio no tiene QR |
+| Comando `peer <identityIdHex> <claveBase64>` | **IMPLEMENTADO**, y es el camino reducido sin nombre |
+| Fichero `.km`, importación y exportación de contactos | **IMPLEMENTADO** (G1): `import`/`export` y pantallas IMPORTAR/COMPARTIR |
+| SIGNAL `contact_exchange` y PREKEY solo tras `Delivered` | **IMPLEMENTADO** en `km-transport` (G1), cableado en el escritorio |
+| Nombre visible por contacto | **NO EMPEZADO.** La lista muestra la huella del `identityId`, no un alias |
+| QR de contacto en el escritorio | **IMPLEMENTADO como SALIDA** (zxing-core). El escaneo no aplica: no hay cámara |
+| QR de identidad en Android | **IMPLEMENTADO**: `MainActivity.kt` genera y escanea con ZXing, en el formato `nombre\|clavePública`. Sin nombre, esta app usa `"User"` como reserva. El escritorio no escanea |
 
 ---
 
@@ -651,9 +718,10 @@ Pre-1.0, en desarrollo activo, sin auditoría. En concreto:
 
 Lo que sí se puede afirmar: el camino de relé y de `ACK` funciona de extremo a
 extremo entre dos clientes de escritorio, el camino criptográfico completo
-(`SecureFrame`, X3DH, Double Ratchet) está escrito y cubierto por tests pero
-**no cableado al transporte**, y hay RFCs escritos más una campaña de mutaciones
-sobre la persistencia atómica.
+(`SecureFrame`, X3DH, Double Ratchet) está escrito, cubierto por tests y
+**cableado al transporte del escritorio**; y hay RFCs escritos más una campaña de
+mutaciones sobre la persistencia atómica. Lo que no existe es persistencia de
+contactos/mensajes, store-and-forward ni auditoría de la TUI.
 
 El recuento de tests que aparece arriba está fechado el 2026-09-30 y no se ha
 re-medido: córrase `./gradlew test` para tener el número de hoy.

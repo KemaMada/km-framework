@@ -40,10 +40,16 @@ class VerifiedContactBundle private constructor(
     val subjectDeviceId: ByteArray get() = doc["subjectDeviceId"] as ByteArray
 
     /** Clave de firma del dispositivo destinatario. */
-    val subjectSigningKey: ByteArray get() = doc["subjectSigningKey"] as ByteArray
+    val subjectSigningKey: ByteArray
+        get() = (doc["subjectSigningKey"] as? ByteArray)
+            ?: DeviceRoster.findDevice(doc["roster"] as Map<String, Any?>, subjectDeviceId)?.get("signingKey") as? ByteArray
+            ?: throw IllegalStateException("subjectSigningKey ausente")
 
     /** Clave de acuerdo X25519 del dispositivo destinatario: la IK que X3DH necesita. */
-    val subjectAgreementKey: ByteArray get() = doc["subjectAgreementKey"] as ByteArray
+    val subjectAgreementKey: ByteArray
+        get() = (doc["subjectAgreementKey"] as? ByteArray)
+            ?: DeviceRoster.findDevice(doc["roster"] as Map<String, Any?>, subjectDeviceId)?.get("agreementKey") as? ByteArray
+            ?: throw IllegalStateException("subjectAgreementKey ausente")
 
     /** `deviceId` declarado dentro del signed prekey, si lo hay. */
     val subjectSignedPrekeyDeviceId: ByteArray?
@@ -59,6 +65,26 @@ class VerifiedContactBundle private constructor(
 
     /** Cuantos one-time prekeys viaja el bundle. */
     fun oneTimePrekeyCount(): Int = oneTimePrekeys().size
+
+    /**
+     * El indice de OPK que el INICIADOR debe pedir para este bundle.
+     *
+     * ## POR QUE ES UNA PROPIEDAD DEL BUNDLE Y NO UNA CLASE APARTE
+     *
+     * `BootstrapPrekeys.fromVerified` LANZA si se le pide un OPK que el bundle no
+     * lleva (`0` sobre un bundle con 0 OPK), y exige `null` para una sesion sin
+     * `DH4`. Degradar de `0` a "sin OPK" en silencio cambiaria el `SK` derivado
+     * sin que nada lo anuncie.
+     *
+     * La respuesta depende de UN SOLO dato —cuantos OPK trae el bundle— que este
+     * tipo ya conoce. Tenerla en una clase de composicion aparte era una segunda
+     * copia de la misma regla; aqui el llamante no puede olvidarse de mirarla.
+     *
+     * @return `0` si el bundle trae algun OPK (`DH4` disponible), `null` si no
+     *   trae ninguno (sesion sin `DH4`, que es lo unico que km-core acepta).
+     */
+    val initiatorOneTimePrekeyIndex: Int?
+        get() = if (oneTimePrekeyCount() == 0) null else 0
 
     /**
      * Public key del one-time prekey en la posicion [index], o null si no hay.

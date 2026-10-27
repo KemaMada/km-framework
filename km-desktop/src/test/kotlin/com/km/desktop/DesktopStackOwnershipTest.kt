@@ -93,7 +93,7 @@ class DesktopStackOwnershipTest {
         assertTrue(!s.stack.isLegacyAttached(), "antes de bind, el camino legado no esta dado de alta")
 
         val lineas = mutableListOf<String>()
-        s.bind { lineas += it }
+        s.bindToStrings { lineas += it }
 
         assertTrue(s.stack.isLegacyAttached(), "bind da de alta el camino legado explicitamente")
         assertTrue(
@@ -119,9 +119,9 @@ class DesktopStackOwnershipTest {
     fun `control positivo bind se puede repetir sin perder los handlers`() {
         val s = sesion()
         val primera = mutableListOf<String>()
-        s.bind { primera += it }
+        s.bindToStrings { primera += it }
         val segunda = mutableListOf<String>()
-        s.bind { segunda += it }
+        s.bindToStrings { segunda += it }
 
         assertTrue(primera.any { it.contains("camino legado") }, "la primera pasada da de alta")
         assertTrue(
@@ -150,8 +150,8 @@ class DesktopStackOwnershipTest {
     @Test
     fun `1-3 un frame legado se entrega UNA sola vez aunque bind se llame dos veces`() {
         val s = sesion()
-        s.bind { }
-        s.bind { }
+        s.bindToStrings { }
+        s.bindToStrings { }
         val rechazos =AntesDe(s)
 
         // Un `MESSAGE` del rele que el motor ya clasifica como legado.
@@ -194,7 +194,7 @@ class DesktopStackOwnershipTest {
         val s = sesion()
         assertEquals(null, s.stack.backend.eventCallbacks.onLegacyInboundFrame, "antes de bind, no hay slot")
 
-        s.bind { }
+        s.bindToStrings { }
 
         assertNotNull(
             s.stack.backend.eventCallbacks.onLegacyInboundFrame,
@@ -228,7 +228,7 @@ class DesktopStackOwnershipTest {
     @Test
     fun `3-2 al instalarse una sesion, se abre su driver de par en el rele`() {
         val s = sesion()
-        s.bind { }
+        s.bindToStrings { }
         val par = SecureTestIdentities.deviceWithRoot("bob")
         val contexto = com.km.desktop.session.SessionCoordinator().contextoHacia(
             com.km.identity.VerifiedContactBundle.verified(
@@ -255,7 +255,7 @@ class DesktopStackOwnershipTest {
     @Test
     fun `control negativo instalar una sesion NO abre drivers de otros pares`() {
         val s = sesion()
-        s.bind { }
+        s.bindToStrings { }
         val otros = setOf(
             SecureTestIdentities.deviceWithRoot("x").root.identityId,
             SecureTestIdentities.deviceWithRoot("y").root.identityId,
@@ -294,4 +294,17 @@ class DesktopStackOwnershipTest {
             transport = s.stack.manager,
         )
     }
+}
+
+
+/**
+ * `bind` publica [com.km.desktop.client.ClientEvent]s; este atajo los convierte
+ * en lineas para los tests que afirman sobre lo que se DICE.
+ *
+ * Se suscribe ANTES de [com.km.desktop.Session.bind] para no perder lo que pasa
+ * durante el cableado.
+ */
+private fun com.km.desktop.Session.bindToStrings(sink: (String) -> Unit) {
+    events.subscribe { event -> sink(event.let { e -> events.describe(e) }) }
+    bind()
 }

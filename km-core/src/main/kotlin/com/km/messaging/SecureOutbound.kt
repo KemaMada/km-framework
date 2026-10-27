@@ -76,7 +76,30 @@ sealed class SecureSendOutcome {
     data class Rejected(
         val reason: SecureSendReject,
         val failureCode: FailureCode,
-    ) : SecureSendOutcome()
+        /**
+         * El frame que SI se produjo, cuando el rechazo fue del TRANSPORTE.
+         *
+         * `TRANSPORT_REJECTED` no es "no se cifro": el ratchet ya consumio su
+         * clave y el wire existe. Si se tirara aqui, el reintento tendria que
+         * re-cifrar y quemaria OTRA clave de la cadena por el mismo mensaje
+         * (R5: el reenvio reutiliza el mismo wire). Se transporta para que
+         * `SenderImpl` lo cachee y el reintento sea un `retransmit`.
+         *
+         * Vacio en los demas rechazos: ahi no hay frame que conservar.
+         */
+        val wire: ByteArray = ByteArray(0),
+    ) : SecureSendOutcome() {
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (other !is Rejected) return false
+            return reason == other.reason &&
+                failureCode == other.failureCode &&
+                wire.contentEquals(other.wire)
+        }
+
+        override fun hashCode(): Int =
+            31 * (31 * reason.hashCode() + failureCode.hashCode()) + wire.contentHashCode()
+    }
 }
 
 /** Motivos de rechazo del camino cifrado. */
@@ -129,10 +152,13 @@ enum class SecureSendReject {
  *    `createMessage` guarda `Message.payload` sin cifrar. El cifrado at-rest es
  *    otra fase, con su propio diseno de clave de almacenamiento. Que el cable
  *    vaya cifrado no dice nada del disco.
- * 4. `MessageEnvelope` v1 no lleva `timestamp`. El `Message` que se reconstruye
- *    al recibir usa `0`: poner la hora de ahora seria fabricar un dato que el
- *    formato no respalda, y ampliar el sobre seria cambiar un formato que esta
- *    versionado y con vectores congelados.
+ * 4. `MessageEnvelope` v1 no lleva `timestamp`. Desde R9, el `Message` que se
+ *    reconstruye al recibir se sella con el instante de LLEGADA
+ *    (`System.currentTimeMillis()`), no con la hora del emisor: el formato no
+ *    la lleva y fabricarla seria mentir. Se declara hora de RECEPCION, y con
+ *    ella el `ORDER BY timestamp ASC` de `MessageDao` deja de empatar y de
+ *    depender del rowid. Ampliar el sobre para llevar la hora de envio seria
+ *    cambiar un formato versionado con vectores congelados (opcion B, diferida).
  */
 class SecureOutboundImpl(
     private val registry: SecureSessionRegistry,
@@ -152,7 +178,7 @@ class SecureOutboundImpl(
 
         return when (val result = session.send(plaintext)) {
             is SendResult.Ok -> SecureSendOutcome.Encrypted(result.wire, result.bytes)
-            is SendResult.Rejected -> rejected(result.reason.toSendReject())
+            is SendResult.Rejected -> rejected(result.reason.toSendReject(), result.wire)
         }
     }
 
@@ -164,13 +190,19 @@ class SecureOutboundImpl(
             // El wire que vuelve es el MISMO objeto conceptual que entro: no se
             // re-codifica, y por eso la cache del emisor sigue siendo la fuente.
             is SendResult.Ok -> SecureSendOutcome.Encrypted(result.wire, result.bytes)
-            is SendResult.Rejected -> rejected(result.reason.toSendReject())
+            is SendResult.Rejected -> rejected(result.reason.toSendReject(), result.wire)
         }
     }
 
-    /** El codigo de fallo que ve el consumidor del API publico. */
-    private fun rejected(reason: SecureSendReject): SecureSendOutcome.Rejected =
-        SecureSendOutcome.Rejected(reason, reason.toFailureCode())
+    /**
+     * El codigo de fallo que ve el consumidor del API publico.
+     *
+     * [wire] solo viene con contenido en `TRANSPORT_REJECTED`: es el frame que
+     * el ratchet ya produjo y que el transporte no acepto. Se propaga para que
+     * el reintento no tenga que volver a cifrar.
+     */
+    private fun rejected(reason: SecureSendReject, wire: ByteArray = ByteArray(0)): SecureSendOutcome.Rejected =
+        SecureSendOutcome.Rejected(reason, reason.toFailureCode(), wire)
 
     private fun SendReject.toSendReject(): SecureSendReject = when (this) {
         SendReject.NOT_AUTHENTICATED -> SecureSendReject.NOT_AUTHENTICATED
@@ -194,7 +226,7 @@ class SecureOutboundImpl(
  * [SecureSendOutcome.Rejected.reason] y en el log; el codigo del store es el
  * que la aplicacion ya sabe tratar.
  */
-private fun SecureSendReject.toFailureCode(): FailureCode = when (this) {
+internal fun SecureSendReject.toFailureCode(): FailureCode = when (this) {
     SecureSendReject.NO_SESSION,
     SecureSendReject.NOT_AUTHENTICATED,
     -> FailureCode.AUTH_FAILED

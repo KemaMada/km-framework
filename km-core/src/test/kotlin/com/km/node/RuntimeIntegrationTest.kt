@@ -34,8 +34,11 @@ class RuntimeIntegrationTest {
     private val fakeCore = object : com.km.api.KeyMessageCore {
         override fun start(): Result<Unit> = Result.success(Unit)
         override fun stop() {}
+        override fun close() {}
         override fun createMessage(to: IdentityId, payload: ByteArray): Result<com.km.model.Message> = Result.failure(UnsupportedOperationException())
         override fun sendMessage(message: com.km.model.Message): Result<com.km.protocol.SendResult> = Result.failure(UnsupportedOperationException())
+        override fun resend(messageId: MessageId): Result<Unit> = Result.failure(UnsupportedOperationException())
+        override fun discard(messageId: MessageId): Result<Unit> = Result.failure(UnsupportedOperationException())
         override fun getMessageState(messageId: MessageId): Result<com.km.model.MessageState> = Result.failure(UnsupportedOperationException())
         override fun getConversation(peerId: IdentityId): Result<List<com.km.model.Message>> = Result.failure(UnsupportedOperationException())
         override fun registerAckHandler(handler: (com.km.model.Ack) -> Unit) {}

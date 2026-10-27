@@ -4,6 +4,10 @@ import com.km.crypto.Ed25519
 import com.km.crypto.Ed25519Impl
 import com.km.crypto.X25519
 import com.km.crypto.provider.BcX25519
+import com.km.desktop.platform.ConfigPaths
+import com.km.desktop.platform.OwnerPermissions
+import com.km.identity.LocalDeviceKeys
+import com.km.identity.LocalDeviceKeyCodec
 import com.km.model.IdentityId
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -18,9 +22,7 @@ import org.bouncycastle.crypto.params.Argon2Parameters
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.Paths
 import java.nio.file.StandardOpenOption
-import java.nio.file.attribute.PosixFilePermission
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.time.Instant
@@ -250,6 +252,16 @@ object IdentityKeystore {
     const val IDENTITY_FILE_NAME: String = "identity.kmkey"
 
     /**
+     * Cuantos one-time prekeys se aprovisionan al abrir un almacen que no tiene
+     * material de dispositivo.
+     *
+     * Uno no basta: cada establecimiento consumiria el unico y el siguiente
+     * emisor se quedaria sin `DH4`. Tres es el default historico de
+     * `LocalKeyFactory` y el que la app usa.
+     */
+    const val DEFAULT_ONE_TIME_PREKEYS: Int = 3
+
+    /**
      * Perfil por defecto: la segunda opcion recomendada de RFC 9106 seccion 4
      * (`t=3`, `m=64 MiB`, `p=4`), que es la que se escribe en los archivos
      * NUEVOS.
@@ -274,19 +286,26 @@ object IdentityKeystore {
     // ------------------------------------------------------------------
 
     /**
-     * Ruta por defecto: `$XDG_CONFIG_HOME/keymessage/identity.kmkey`, o
-     * `~/.config/keymessage/identity.kmkey` si `XDG_CONFIG_HOME` no esta.
+     * Ruta por defecto, resuelta por PLATAFORMA.
      *
-     * Es el unico sitio del modulo que decide rutas, para que el resto no tenga
-     * que saber de XDG ni de `$HOME`.
+     * Linux conserva `$XDG_CONFIG_HOME/keymessage/identity.kmkey` (o
+     * `~/.config/...` si no hay XDG); Windows usa `%APPDATA%\keymessage` y
+     * macOS `~/Library/Application Support/keymessage`. La decision vive en
+     * [ConfigPaths] para que el almacen, el directorio de peers y el export de
+     * logs no resuelvan tres rutas distintas.
+     *
+     * La firma con `env` y sin `osName` se mantiene por compatibilidad con los
+     * tests y llamadas existentes; `osName` toma el del proceso.
      */
-    fun defaultPath(env: Map<String, String> = System.getenv()): Path {
-        val configHome = env["XDG_CONFIG_HOME"]?.takeIf { it.isNotBlank() }
-            ?: env["HOME"]?.takeIf { it.isNotBlank() }?.plus("/.config")
-            ?: throw KeystoreException.Corrupt(
-                "no hay XDG_CONFIG_HOME ni HOME: no se puede localizar el almacen de identidad"
-            )
-        return Paths.get(configHome, "keymessage", IDENTITY_FILE_NAME)
+    fun defaultPath(
+        env: Map<String, String> = System.getenv(),
+        osName: String = ConfigPaths.currentOsName(),
+    ): Path = try {
+        ConfigPaths.identityPath(env, osName)
+    } catch (fallo: IllegalStateException) {
+        throw KeystoreException.Corrupt(
+            fallo.message ?: "no se puede localizar el almacen de identidad"
+        )
     }
 
     fun exists(path: Path): Boolean = Files.isRegularFile(path)
@@ -303,7 +322,32 @@ object IdentityKeystore {
      * @throws KeystoreException.Inconsistent si el `identityId` guardado no
      *   deriva de la clave publica Ed25519 guardada.
      */
-    fun load(path: Path, passphrase: CharArray): DesktopIdentity {
+    fun load(path: Path, passphrase: CharArray): DesktopIdentity = loadContents(path, passphrase).identity
+
+    /**
+     * Todo lo que hay en el almacen: la identidad y, si esta, el material del
+     * dispositivo.
+     *
+     * ## POR QUE UN SOLO METODO Y NO DOS LECTURAS
+     *
+     * Porque cada lectura deriva Argon2id (64 MiB, 3 pasadas). Leer dos veces
+     * para sacar las dos mitades es pagar el KDF dos veces y, peor, abrir una
+     * ventana en la que las dos mitades se leen de versiones distintas del
+     * fichero.
+     *
+     * ## COMPATIBILIDAD V1
+     *
+     * `deviceKeys` es OPCIONAL dentro del texto plano. Un almacen escrito por
+     * este codigo antes de existir el campo sigue abriendo, y su ausencia NO es
+     * un error: se devuelve `null` y el llamante decide aprovisionar. No hay
+     * migracion ni `VERSION` nueva: subirla invalidaria los ficheros que el
+     * usuario ya tiene.
+     */
+    fun loadContents(path: Path, passphrase: CharArray): Contents {
+        // Un almacen que ya existia con permisos laxos se corrige al abrirlo.
+        // No se toca el contenido ni el formato V1: solo los permisos del
+        // fichero, que es lo unico que `OwnerPermissions` cambia.
+        if (Files.isRegularFile(path)) OwnerPermissions.DEFAULT.secureFile(path)
         val root = readContainer(path)
         if (root.string("format") != FORMAT) {
             throw KeystoreException.Corrupt("almacen invalido en $path: no es un '$FORMAT'")
@@ -331,8 +375,47 @@ object IdentityKeystore {
         )
 
         val aesKey = deriveKey(passphrase, headerKdf)
-        return readIdentity(decrypt(aesKey, iv, ciphertext, where), headerKdf)
+        return readContents(decrypt(aesKey, iv, ciphertext, where), headerKdf)
     }
+
+    /**
+     * El material del dispositivo guardado, o `null` si el almacen aun no lo tiene.
+     *
+     * Se comprueba que su `deviceId` derive de la clave de firma de la identidad
+     * ([LocalDeviceKeyCodec.decode] con la clave esperada): un material de otro
+     * dispositivo, pegado en este fichero, declararia un sujeto que no es el
+     * nuestro y todos los PRKEY responderian con una clave que el peer no espera.
+     */
+    fun loadDeviceKeys(path: Path, passphrase: CharArray): LocalDeviceKeys? =
+        loadContents(path, passphrase).deviceKeys
+
+    /**
+     * Aprovisiona (o reemplaza) el material del dispositivo, cifrado con la
+     * MISMA frase de paso del almacen.
+     *
+     * Reescribe el contenedor entero: la identidad se descifra y se vuelve a
+     * cifrar con sal e IV NUEVOS. No se toca el formato ni la version.
+     *
+     * @return la identidad, ya verificada, que quedo en el fichero.
+     * @throws KeystoreException.WrongPassphrase si la frase no abre el almacen.
+     */
+    fun saveDeviceKeys(
+        path: Path,
+        passphrase: CharArray,
+        deviceKeys: LocalDeviceKeys,
+        random: SecureRandom = SecureRandom(),
+    ): DesktopIdentity {
+        val actual = loadContents(path, passphrase)
+        val signing = actual.identity.ed25519PublicKey
+        require(deviceKeys.deviceId.contentEquals(com.km.identity.KmIds.deviceId(signing))) {
+            "el material del dispositivo no corresponde a la clave de firma del almacen"
+        }
+        write(path, actual.identity, passphrase, DEFAULT_PROFILE, random, deviceKeys)
+        return actual.identity
+    }
+
+    /** Lo que hay dentro del almacen. */
+    class Contents(val identity: DesktopIdentity, val deviceKeys: LocalDeviceKeys?)
 
     /**
      * Genera una identidad nueva, la cifra y la deja en [path].
@@ -349,6 +432,7 @@ object IdentityKeystore {
         ed25519: Ed25519 = Ed25519Impl(),
         x25519: X25519 = BcX25519(),
         random: SecureRandom = SecureRandom(),
+        deviceKeys: LocalDeviceKeys? = null,
     ): DesktopIdentity {
         val signing = ed25519.generateKeyPair()
         val agreement = x25519.generateKeyPair()
@@ -359,7 +443,57 @@ object IdentityKeystore {
             x25519PublicKey = agreement.publicKey,
             x25519PrivateKey = agreement.privateKey,
         )
-        write(path, identity, passphrase, profile, random)
+        write(path, identity, passphrase, profile, random, deviceKeys)
+        return identity
+    }
+
+    /**
+     * Escribe una identidad DERIVADA de una semilla Ed25519 de 32 bytes.
+     *
+     * ## POR QUE EXISTE
+     *
+     * Restaurar desde la frase BIP39 es derivar la clave de firma de la semilla y
+     * escribirla. [create] NO sirve: genera un par ALEATORIO y devolveria una
+     * identidad distinta de la frase. Tampoco sirve `write`, que es privado.
+     *
+     * ## LA SEMILLA ES LA MISMA QUE YA GUARDA EL ALMACEN
+     *
+     * `Ed25519Impl.generateKeyPair().privateKey` ya es la semilla de 32 bytes, y
+     * `keyPairFromSeed` es su inversa. Por eso la frase se puede calcular de una
+     * identidad existente y volver a la MISMA `identityId`: `identityId` deriva
+     * de la clave publica, que deriva de la semilla.
+     *
+     * ## EL PAR X25519 SE REGENERA, Y SE DICE
+     *
+     * No se deriva de la semilla (no es BIP32 ni un determinista de acuerdo). Un
+     * par nuevo es correcto: las sesiones se vuelven a establecer y ninguna clave
+     * vieja queda reutilizada. El material del dispositivo se regenera con la
+     * MISMA fabrica que un almacen nuevo, para que el `deviceId` derive de la
+     * clave de firma restaurada.
+     *
+     * El FORMATO no cambia: se escribe con [write] y [VERSION] sigue siendo 1.
+     */
+    fun writeFromSeed(
+        path: Path,
+        passphrase: CharArray,
+        seed: ByteArray,
+        oneTimePreKeyCount: Int = DEFAULT_ONE_TIME_PREKEYS,
+        random: SecureRandom = SecureRandom(),
+    ): DesktopIdentity {
+        require(seed.size == 32) { "la semilla Ed25519 mide 32 bytes, mide ${seed.size}" }
+        require(passphrase.isNotEmpty()) { "sin frase de paso no se escribe el almacen" }
+        val signing = Ed25519Impl().keyPairFromSeed(seed)
+        val agreement = BcX25519().generateKeyPair()
+        val identity = DesktopIdentity(
+            identityId = IdentityId(deriveIdentityId(signing.publicKey)),
+            ed25519PublicKey = signing.publicKey,
+            ed25519PrivateKey = signing.privateKey,
+            x25519PublicKey = agreement.publicKey,
+            x25519PrivateKey = agreement.privateKey,
+        )
+        val keys = com.km.identity.LocalDeviceKeyFactory(signing.publicKey)
+            .generate(oneTimePreKeyCount)
+        write(path, identity, passphrase, DEFAULT_PROFILE, random, keys)
         return identity
     }
 
@@ -374,6 +508,59 @@ object IdentityKeystore {
         val passphrase = source.passphrase(creation = creating)
             ?: throw KeystoreException("sin frase de paso: no se puede ${if (creating) "crear" else "abrir"} $path")
         return if (creating) create(path, passphrase.toCharArray()) else load(path, passphrase.toCharArray())
+    }
+
+    /**
+     * Como [loadOrCreate], pero devuelve tambien el material del dispositivo y lo
+     * APROVISIONA si falta.
+     *
+     * ## QUE HACE EXACTAMENTE
+     *
+     * - Almacen NUEVO: genera identidad y material en la misma escritura.
+     * - Almacen V1 ANTERIOR (sin `deviceKeys`): abre la identidad tal cual y
+     *   escribe el material en una segunda escritura, con sal e IV nuevos. NO
+     *   migra nada ni cambia el formato.
+     * - Almacen con material: lo lee y no reescribe.
+     *
+     * ## POR QUE APROVISIONAR AL ABRIR
+     *
+     * Porque sin material de dispositivo no hay SPK/OPK que publicar, y el
+     * escritorio no puede fabricar un bundle propio. Aprovisionar aqui es lo que
+     * hace que un usuario que ya tenia identidad no tenga que borrarla.
+     *
+     * @throws KeystoreException.WrongPassphrase si la frase no abre el almacen.
+     */
+    fun loadOrCreateWithDeviceKeys(
+        path: Path,
+        source: PassphraseSource,
+        oneTimePreKeyCount: Int = DEFAULT_ONE_TIME_PREKEYS,
+        random: SecureRandom = SecureRandom(),
+    ): Contents {
+        val creating = !exists(path)
+        val passphrase = source.passphrase(creation = creating)
+            ?: throw KeystoreException("sin frase de paso: no se puede ${if (creating) "crear" else "abrir"} $path")
+        val chars = passphrase.toCharArray()
+        if (creating) {
+            val signing = Ed25519Impl().generateKeyPair()
+            val agreement = BcX25519().generateKeyPair()
+            val identity = DesktopIdentity(
+                identityId = IdentityId(deriveIdentityId(signing.publicKey)),
+                ed25519PublicKey = signing.publicKey,
+                ed25519PrivateKey = signing.privateKey,
+                x25519PublicKey = agreement.publicKey,
+                x25519PrivateKey = agreement.privateKey,
+            )
+            val keys = com.km.identity.LocalDeviceKeyFactory(signing.publicKey)
+                .generate(oneTimePreKeyCount)
+            write(path, identity, chars, DEFAULT_PROFILE, random, keys)
+            return Contents(identity, keys)
+        }
+        val actual = loadContents(path, chars)
+        if (actual.deviceKeys != null) return actual
+        val keys = com.km.identity.LocalDeviceKeyFactory(actual.identity.ed25519PublicKey)
+            .generate(oneTimePreKeyCount)
+        write(path, actual.identity, chars, DEFAULT_PROFILE, random, keys)
+        return Contents(actual.identity, keys)
     }
 
     // ------------------------------------------------------------------
@@ -453,11 +640,12 @@ object IdentityKeystore {
         passphrase: CharArray,
         profile: KdfProfile,
         random: SecureRandom,
+        deviceKeys: LocalDeviceKeys? = null,
     ) {
         val kdf = profile.withSalt(ByteArray(SALT_BYTES).also(random::nextBytes))
         val iv = ByteArray(IV_BYTES).also(random::nextBytes)
         val aesKey = deriveKey(passphrase, kdf)
-        val plaintext = identityJson(identity, kdf).toString().toByteArray(StandardCharsets.UTF_8)
+        val plaintext = identityJson(identity, kdf, deviceKeys).toString().toByteArray(StandardCharsets.UTF_8)
 
         val container = buildJsonObject {
             put("format", FORMAT)
@@ -474,7 +662,7 @@ object IdentityKeystore {
         val absolute = path.toAbsolutePath()
         absolute.parent?.let {
             Files.createDirectories(it)
-            restrict(it, PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE, PosixFilePermission.OWNER_EXECUTE)
+            OwnerPermissions.DEFAULT.secureDirectory(it)
         }
         Files.write(
             absolute,
@@ -483,7 +671,7 @@ object IdentityKeystore {
             StandardOpenOption.TRUNCATE_EXISTING,
             StandardOpenOption.WRITE,
         )
-        restrict(absolute, PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE)
+        OwnerPermissions.DEFAULT.secureFile(absolute)
     }
 
     private fun kdfJson(kdf: KdfParams): JsonObject = buildJsonObject {
@@ -495,7 +683,11 @@ object IdentityKeystore {
         put("outputBytes", kdf.outputBytes)
     }
 
-    private fun identityJson(identity: DesktopIdentity, kdf: KdfParams): JsonObject = buildJsonObject {
+    private fun identityJson(
+        identity: DesktopIdentity,
+        kdf: KdfParams,
+        deviceKeys: LocalDeviceKeys? = null,
+    ): JsonObject = buildJsonObject {
         put("identityId", identity.identityId.value)
         put("ed25519", buildJsonObject {
             put("publicKey", B64.encodeToString(identity.ed25519PublicKey))
@@ -505,12 +697,21 @@ object IdentityKeystore {
             put("publicKey", B64.encodeToString(identity.x25519PublicKey))
             put("privateKey", B64.encodeToString(identity.x25519PrivateKey))
         })
+        // Material del DISPOSITIVO dentro del mismo texto plano cifrado: un
+        // fichero aparte seria otra clave que perder, y sacarlo en claro
+        // romperia la razon por la que el almacen existe.
+        if (deviceKeys != null) {
+            put("deviceKeys", com.km.identity.LocalDeviceKeyCodec.encode(deviceKeys))
+        }
         // Duplicados DENTRO del texto plano, que si esta autenticado por el tag
         // GCM. Es lo que detecta una cabecera editada.
         put("kdf", kdfJson(kdf))
     }
 
-    private fun readIdentity(plaintext: ByteArray, headerKdf: KdfParams): DesktopIdentity {
+    private fun readIdentity(plaintext: ByteArray, headerKdf: KdfParams): DesktopIdentity =
+        readContents(plaintext, headerKdf).identity
+
+    private fun readContents(plaintext: ByteArray, headerKdf: KdfParams): Contents {
         val node = runCatching { JSON.parseToJsonElement(String(plaintext, StandardCharsets.UTF_8)) }.getOrNull()
         val root = node as? JsonObject
             ?: throw KeystoreException.Corrupt("el texto plano descifrado no es un objeto JSON")
@@ -547,12 +748,26 @@ object IdentityKeystore {
             }
         }
 
-        return DesktopIdentity(
-            identityId = IdentityId(identityId.lowercase()),
-            ed25519PublicKey = edPublic,
-            ed25519PrivateKey = edPrivate,
-            x25519PublicKey = xPublic,
-            x25519PrivateKey = xPrivate,
+        return Contents(
+            identity = DesktopIdentity(
+                identityId = IdentityId(identityId.lowercase()),
+                ed25519PublicKey = edPublic,
+                ed25519PrivateKey = edPrivate,
+                x25519PublicKey = xPublic,
+                x25519PrivateKey = xPrivate,
+            ),
+            // El material es OPCIONAL (compatibilidad con los ficheros V1 que no
+            // lo tienen) y se VERIFICA contra la clave de firma ya leida: un
+            // deviceId ajeno es un material de otro dispositivo.
+            deviceKeys = root.string("deviceKeys")?.let { texto ->
+                try {
+                    com.km.identity.LocalDeviceKeyCodec.decode(texto, edPublic)
+                } catch (e: com.km.identity.LocalDeviceKeyException) {
+                    throw KeystoreException.Inconsistent(
+                        "material del dispositivo incoherente codigo=${e.code}: ${e.message}",
+                    )
+                }
+            },
         )
     }
 
@@ -591,10 +806,6 @@ object IdentityKeystore {
         digest.update("KM-ID-IDENTITY".toByteArray(Charsets.UTF_8))
         digest.update(publicKey)
         return digest.digest().joinToString("") { "%02x".format(it) }
-    }
-
-    private fun restrict(path: Path, vararg permissions: PosixFilePermission) {
-        runCatching { Files.setPosixFilePermissions(path, permissions.toSet()) }
     }
 
     private fun decodeB64(encoded: String, field: String): ByteArray =

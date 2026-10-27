@@ -285,4 +285,112 @@ class RelayDataCodecTest {
         assertTrue(wireFrame.contains("\"data\""), wireFrame)
         assertTrue(!wireFrame.contains("\"payload\""), wireFrame)
     }
+
+    // ==================================================================
+    // R1 — el codec de `SIGNAL`
+    // ==================================================================
+
+    @Test
+    fun `la senal de contacto va y vuelve BYTE A BYTE`() {
+        // Bytes por encima de 0x7F: el portador de un contacto es texto
+        // ISO-8859-1 comprimido, y sus bytes altos son la NORMALIDAD, no un
+        // caso raro. Un codec que los destruyera perderia el bundle sin decir
+        // nada.
+        val portador = ByteArray(256) { (it * 7 + 13).toByte() }
+
+        val frame = codec.parseObject(
+            codec.encodeSignal(from, to, RelayDataCodec.KIND_CONTACT_EXCHANGE, portador),
+        )!!
+
+        assertEquals("SIGNAL", codec.typeOf(frame))
+        val decoded = codec.decodeSignal(frame)
+        assertTrue(decoded is DecodedSignal.Known, "la senal tiene que entenderse: $decoded")
+        decoded as DecodedSignal.Known
+        assertEquals(from, decoded.from)
+        assertEquals(to, decoded.to)
+        assertEquals(RelayDataCodec.KIND_CONTACT_EXCHANGE, decoded.kind)
+        assertContentEquals(portador, decoded.contactBundle)
+    }
+
+    @Test
+    fun `la carga de la senal usa Base64 ESTANDAR, no Base64URL`() {
+        // 0xFB 0xFF produce '+' y '/' en Base64 estandar y '-' y '_' en URL-safe.
+        // El rele lee la carga con `Base64Standard`: si esto saliera en
+        // Base64URL, el rele rechazaria el bundle y el emisor creeria que el
+        // par estaba offline.
+        val portador = byteArrayOf(0xFB.toByte(), 0xFF.toByte(), 0xBF.toByte())
+        val frame = codec.encodeSignal(from, to, RelayDataCodec.KIND_CONTACT_EXCHANGE, portador)
+        assertTrue(frame.contains("+/"), "el cable exige Base64 estandar: $frame")
+        assertEquals(
+            Base64.getEncoder().encodeToString(portador),
+            Regex("\"contactBundle\":\"([^\"]+)\"").find(frame)!!.groupValues[1],
+        )
+    }
+
+    @Test
+    fun `un Base64 invalido en la carga de la senal se descarta CON CODIGO`() {
+        val frame = codec.parseObject(
+            """{"type":"SIGNAL","from":"${from.value}","to":"${to.value}",
+                "kind":"contact_exchange","contactBundle":"no-es-base64!!"}""",
+        )!!
+        val decoded = codec.decodeSignal(frame)
+        assertTrue(decoded is DecodedSignal.Invalid, "una carga ilegible no se entrega: $decoded")
+        assertEquals(RelayDataCodec.CODE_SIGNAL_BASE64_INVALID, (decoded as DecodedSignal.Invalid).code)
+    }
+
+    @Test
+    fun `una senal de contacto SIN carga se descarta CON CODIGO`() {
+        val frame = codec.parseObject(
+            """{"type":"SIGNAL","from":"${from.value}","to":"${to.value}","kind":"contact_exchange"}""",
+        )!!
+        val decoded = codec.decodeSignal(frame)
+        assertTrue(decoded is DecodedSignal.Invalid, "sin bundle no hay intercambio: $decoded")
+        assertEquals(RelayDataCodec.CODE_SIGNAL_BUNDLE_MISSING, (decoded as DecodedSignal.Invalid).code)
+    }
+
+    @Test
+    fun `un kind desconocido se IGNORA, y el codec no lanza`() {
+        // R1: "kind desconocido -> se ignora con log; la conexion sigue viva".
+        // No es un `Invalid`: es un final DISTINTO, y por eso tiene su propia
+        // clase: "no lo entiendo" no es "esta roto".
+        val frame = codec.parseObject(
+            """{"type":"SIGNAL","from":"${from.value}","to":"${to.value}","kind":"sseñal_inventada"}""",
+        )!!
+        val decoded = codec.decodeSignal(frame)
+        assertTrue(decoded is DecodedSignal.UnknownKind, "un kind raro no es un error: $decoded")
+        assertEquals("sseñal_inventada", (decoded as DecodedSignal.UnknownKind).kind)
+    }
+
+    @Test
+    fun `una senal con envelope incompleto se descarta CON CODIGO`() {
+        val sinFrom = codec.parseObject(
+            """{"type":"SIGNAL","to":"${to.value}","kind":"contact_exchange","contactBundle":"AAA="}""",
+        )!!
+        assertEquals(
+            RelayDataCodec.CODE_SIGNAL_ENVELOPE_INVALID,
+            (codec.decodeSignal(sinFrom) as DecodedSignal.Invalid).code,
+        )
+
+        val sinKind = codec.parseObject(
+            """{"type":"SIGNAL","from":"${from.value}","to":"${to.value}","contactBundle":"AAA="}""",
+        )!!
+        assertEquals(
+            RelayDataCodec.CODE_SIGNAL_ENVELOPE_INVALID,
+            (codec.decodeSignal(sinKind) as DecodedSignal.Invalid).code,
+        )
+    }
+
+    @Test
+    fun `la senal de otro dialecto (sdp) se entiende sin romper nada`() {
+        // El rele habla SDP/ICE tambien. Este cliente no lo usa, pero su codec
+        // lo RECONOCE: un `kind` de otro cliente no puede ser un `Invalid`.
+        val frame = codec.parseObject(
+            """{"type":"SIGNAL","from":"${from.value}","to":"${to.value}",
+                "kind":"sdp_offer","sdp":"v=0"}""",
+        )!!
+        val decoded = codec.decodeSignal(frame)
+        assertTrue(decoded is DecodedSignal.Known, "un sdp_offer se entiende: $decoded")
+        assertEquals("v=0", (decoded as DecodedSignal.Known).text)
+        assertNull(decoded.contactBundle)
+    }
 }

@@ -64,6 +64,11 @@ class ReceiverImpl(
         messageHandlers.add(handler)
     }
 
+    /** D3 — al cerrar el nucleo, nadie mas recibe mensajes de este receptor. */
+    internal fun clearMessageHandlers() {
+        messageHandlers.clear()
+    }
+
     private fun buildAck(originalMessageId: MessageId, toPeer: IdentityId, status: AckStatus): Ack {
         val timestamp = Instant.now().toEpochMilli()
         val ackData = AckTranscript.build(localIdentity, toPeer, originalMessageId, status, timestamp)

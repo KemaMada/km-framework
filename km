@@ -1,0 +1,87 @@
+#!/bin/sh
+# ---------------------------------------------------------------------------
+# km — lanzador de km-desktop para Linux y macOS.
+#
+# Uso, tras clonar el repositorio:
+#
+#     git clone https://github.com/KemaMada/km-framework.git
+#     cd km-framework
+#     ./km
+#
+# La primera vez NO hay jar: este script publica km-core y km-transport en
+# mavenLocal y construye el fat jar (`:km-desktop:shadowJar`). Después arranca
+# SIEMPRE con `exec java -jar`, no con `gradlew run`: `run` mezcla la salida de
+# Gradle con la de la interfaz, no reenvía los argumentos tal cual y complica el
+# código de salida.
+#
+# Variables de entorno:
+#
+#   KM_REBUILD=1            fuerza el paso de build aunque el jar exista
+#                           (Gradle decide que recompilar).
+#   KM_JAVA=<ruta>          JVM que ejecuta el jar (por defecto `java` del PATH).
+#   KM_GRADLE_JAVA_HOME=<ruta>
+#                           JDK que ejecuta Gradle. Si no se define, se usa
+#                           JAVA_HOME. El build exige JDK 27; el jar corre en
+#                           JRE 11 o superior.
+#
+# stdout pertenece al cliente: todo lo que imprime el build va a stderr.
+# ---------------------------------------------------------------------------
+set -eu
+
+ORIGEN=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+JAR="$ORIGEN/km-desktop/build/libs/km-desktop.jar"
+JAVA_BIN=${KM_JAVA:-java}
+GRADLE_JAVA_HOME=${KM_GRADLE_JAVA_HOME:-${JAVA_HOME:-}}
+
+necesita_build=0
+if [ ! -f "$JAR" ]; then
+    necesita_build=1
+fi
+if [ "${KM_REBUILD:-0}" = "1" ]; then
+    necesita_build=1
+fi
+
+# Función, no `set --`: los argumentos del usuario viven en "$@" y no se tocan.
+construir() {
+    if [ -n "$GRADLE_JAVA_HOME" ]; then
+        "$ORIGEN/gradlew" \
+            "-Dorg.gradle.java.home=$GRADLE_JAVA_HOME" \
+            --quiet \
+            :km-core:publishToMavenLocal \
+            :km-transport:publishToMavenLocal \
+            :km-desktop:shadowJar
+    else
+        "$ORIGEN/gradlew" \
+            --quiet \
+            :km-core:publishToMavenLocal \
+            :km-transport:publishToMavenLocal \
+            :km-desktop:shadowJar
+    fi
+}
+
+if [ "$necesita_build" -eq 1 ]; then
+    if [ ! -x "$ORIGEN/gradlew" ]; then
+        echo "km: falta $ORIGEN/gradlew o no es ejecutable; no se puede compilar" >&2
+        exit 1
+    fi
+    echo "km: construyendo km-desktop (publishToMavenLocal de km-core/km-transport + shadowJar)..." >&2
+    # El build escribe en stderr: stdout es de la TUI.
+    if ! construir 1>&2; then
+        echo "km: el build fallo. Gradle necesita JDK 27 (KM_GRADLE_JAVA_HOME o JAVA_HOME);" >&2
+        echo "    el jar resultante corre en JRE 11 o superior." >&2
+        exit 1
+    fi
+    if [ ! -f "$JAR" ]; then
+        echo "km: el build termino pero no produjo $JAR" >&2
+        exit 1
+    fi
+fi
+
+if ! command -v "$JAVA_BIN" >/dev/null 2>&1; then
+    echo "km: no se encontro '$JAVA_BIN'; define KM_JAVA o instala un JRE 11+" >&2
+    exit 1
+fi
+
+# `exec` sustituye este proceso: la senal y el codigo de salida son los del
+# cliente, sin un shell intermedio que los traduzca.
+exec "$JAVA_BIN" -jar "$JAR" "$@"

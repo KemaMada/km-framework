@@ -236,12 +236,21 @@ object SecureTestIdentities {
             )
         }
 
-        /** El mismo bundle, envuelto como lo viajaria un QR o un `.kmc`. */
+        /**
+         * El mismo bundle, en el PORTADOR REAL que viaja por QR o `.km`.
+         *
+         * G1: el portador que produce Android es zlib + ISO-8859-1, no base64url
+         * sin comprimir. Un fixture con `KceEnvelope.encode` probaba un formato
+         * que ningun cliente emite; ahora el fixture pasa por el MISMO codec
+         * compartido que el producto.
+         */
         fun bundleTextFor(
             devices: List<Device>,
             subject: Device,
             oneTimePreKeyIds: List<Long>,
-        ): String = KceEnvelope.encode(bundleMapFor(devices, subject, oneTimePreKeyIds))
+        ): String = com.km.identity.CarrierCodec.encode(
+            com.km.identity.Kce.encode(bundleMapFor(devices, subject, oneTimePreKeyIds)),
+        )
     }
 
     /** Un dispositivo con la raiz que lo autoriza. */

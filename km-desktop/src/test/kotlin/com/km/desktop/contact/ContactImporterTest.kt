@@ -62,17 +62,40 @@ class ContactImporterTest {
     @Test
     fun `un byte alterado del sobre se RECHAZA`() {
         val texto = bundleDeBob()
-        // El sobre es base64url: se altera UN caracter en el medio, y a una
-        // posicion que no es ni el primero ni el ultimo.
+        // El portador es zlib + ISO-8859-1: alterar un byte en el medio puede
+        // romper el stream (KceException ENVELOPE_MALFORMED) o descomprimir a
+        // otro documento (KmIdVerificationException). Los dos son RECHAZO, y el
+        // test exige que lo sea con CODIGO, no que sea una clase concreta.
         val corte = texto.length / 2
         val alterado = texto.substring(0, corte) +
             (if (texto[corte] == 'A') 'B' else 'A') +
             texto.substring(corte + 1)
 
-        val fallo = assertThrows(KmIdVerificationException::class.java) {
-            ContactImporter.import(alterado)
-        }
-        assertTrue(fallo.code.isNotEmpty(), "el rechazo trae un codigo, no un 'error': ${fallo.code}")
+        val fallo = assertThrows(Exception::class.java) { ContactImporter.import(alterado) }
+        val codigo = ContactImporter.rejectionCode(fallo)
+        assertNotEquals("IMPORT_FAILED", codigo, "el rechazo trae un codigo propio, no el cajon de sastre")
+    }
+
+    @Test
+    fun `un bundle que DESCOMPRIME pero no VERIFICA se rechaza por la firma`() {
+        // Tamper determinista: se decodifica el KCE, se cambia una clave
+        // publicada y se vuelve a comprimir. El stream es valido; lo que deja de
+        // cuadrar es la firma de la raiz.
+        val texto = bundleDeBob()
+        val mapa = com.km.identity.Kce.decode(com.km.identity.CarrierCodec.decompress(texto))
+            as MutableMap<String, Any?>
+        val roster = LinkedHashMap(mapa["roster"] as Map<String, Any?>)
+        val devices = (roster["devices"] as List<*>).toMutableList()
+        val entry = LinkedHashMap(devices[0] as Map<String, Any?>)
+        val clave = (entry["agreementKey"] as ByteArray).copyOf()
+        clave[0] = (clave[0].toInt() xor 0x01).toByte()
+        entry["agreementKey"] = clave
+        devices[0] = entry
+        roster["devices"] = devices
+        mapa["roster"] = roster
+
+        val manipulado = com.km.identity.CarrierCodec.encode(com.km.identity.Kce.encode(mapa))
+        assertThrows(KmIdVerificationException::class.java) { ContactImporter.import(manipulado) }
     }
 
     @Test
@@ -161,7 +184,7 @@ class ContactImporterTest {
         val roto = bueno.substring(0, corte) +
             (if (bueno[corte] == 'A') 'B' else 'A') +
             bueno.substring(corte + 1)
-        assertThrows(KmIdVerificationException::class.java) { ContactImporter.import(roto) }
+        assertThrows(Exception::class.java) { ContactImporter.import(roto) }
     }
 
     /** Hex de un `ByteArray` en el test, sin tocar el `internal` del main. */
@@ -189,7 +212,7 @@ class VerifiedContactToStringTest {
         val contacto = ContactImporter.import(par.root.bundleTextFor(listOf(par.device), par.device, emptyList()))
 
         assertTrue(
-            contacto.identityRoot.value.startsWith(contacto.fingerprint.removeSuffix("…")),
+            contacto.identityRoot.value.startsWith(contacto.fingerprint.removeSuffix("...")),
             "la huella es el principio de la identidad",
         )
         assertTrue(contacto.fingerprint.length < contacto.identityRoot.value.length, "y es CORTA")

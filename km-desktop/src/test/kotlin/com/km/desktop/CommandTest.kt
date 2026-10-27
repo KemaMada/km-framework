@@ -66,8 +66,46 @@ class CommandTest {
     }
 
     @Test
+    fun `el camino de contacto y mensajeria se parsea sin inventar`() {
+        assertIs<Command.Import>(Command.parse("import @/tmp/ana.km"))
+        assertEquals("@/tmp/ana.km", (Command.parse("import @/tmp/ana.km") as Command.Import).arg)
+
+        assertIs<Command.Export>(Command.parse("export"))
+        assertEquals("/tmp/mio.km", (Command.parse("export /tmp/mio.km") as Command.Export).path)
+
+        assertIs<Command.Announce>(Command.parse("announce $hex"))
+        assertEquals(IdentityId(hex), (Command.parse("announce $hex") as Command.Announce).to)
+        assertIs<Command.SessionCmd>(Command.parse("session $hex"))
+        assertIs<Command.Contacts>(Command.parse("contacts"))
+        assertIs<Command.History>(Command.parse("history $hex"))
+
+        val uuid = java.util.UUID.randomUUID()
+        assertEquals(
+            com.km.model.MessageId.fromString(uuid.toString()),
+            (Command.parse("resend $uuid") as Command.Resend).messageId,
+        )
+        assertIs<Command.Discard>(Command.parse("discard $uuid"))
+
+        // Un id que no es UUID no se acepta: el comando no adivina.
+        assertIs<Command.Unknown>(Command.parse("resend abc"))
+        assertIs<Command.Unknown>(Command.parse("announce abc"))
+    }
+
+    @Test
     fun `una linea vacia no es un error`() {
         assertIs<Command.Unknown>(Command.parse("   "))
+    }
+
+    @Test
+    fun `el usage CLI menciona los comandos nuevos del REPL`() {
+        // F7.6: `--help` es la unica fuente de verdad del CLI, y listaba solo los
+        // siete historicos. Quien arranca con `-h` no se enteraba de que existe
+        // el camino de contacto.
+        val usage = DesktopOptions.usage()
+        listOf("import", "export", "announce", "session", "contacts", "history", "resend", "discard")
+            .forEach { comando ->
+                assertTrue(usage.contains(comando), "usage() debe mencionar '$comando'")
+            }
     }
 
     @Test
@@ -76,7 +114,13 @@ class CommandTest {
         // `peer` entra aqui con la correccion del resolver de ACK: registrar la
         // clave de firma de un peer es lo que hace que sus `ACK` se autentiquen,
         // asi que es un comando de primera clase y no un detalle.
-        val dispatched = setOf("help", "identity", "status", "quit", "connect", "send", "peer")
+        // G1: el REPL conserva los siete historicos y anade el camino de
+        // contacto (import/export/announce/session) y el de mensajeria
+        // (contacts/history/resend/discard). La tabla tiene que cubrirlos TODOS.
+        val dispatched = setOf(
+            "help", "identity", "status", "quit", "connect", "send", "peer",
+            "import", "export", "announce", "session", "contacts", "history", "resend", "discard",
+        )
         assertEquals(dispatched, documented, "help debe listar exactamente lo que el bucle despacha")
     }
 

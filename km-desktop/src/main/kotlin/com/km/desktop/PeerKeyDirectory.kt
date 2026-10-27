@@ -1,6 +1,6 @@
 package com.km.desktop
 
-import com.km.identity.ContactBundle
+import com.km.desktop.platform.OwnerPermissions
 import com.km.identity.KmIds
 import com.km.identity.VerifiedContactBundle
 import com.km.model.IdentityId
@@ -152,15 +152,23 @@ class PeerKeyDirectory(
     }
 
     /**
-     * La MISMA operacion, entrando por el texto del sobre.
+     * La MISMA operacion, entrando por el texto del PORTADOR.
      *
-     * Es la puerta que la TUI usa: el usuario pega un `.kmc` y lo que se guarda
+     * Es la puerta que usa la TUI: el usuario pega un `.km` y lo que se guarda
      * es lo que el verificador dijo, nunca lo que el texto parecia decir.
      *
+     * ## POR QUE YA NO USA `decodeAndVerify`
+     *
+     * Porque el portador real —el que produce Android y el que produce
+     * [com.km.identity.SelfBundleFactory]— va COMPRIMIDO y en ISO-8859-1.
+     * `decodeAndVerify` espera base64url sin comprimir: era el defecto de
+     * interoperabilidad de G1. La lectura pasa por el punto unico compartido.
+     *
+     * @throws com.km.identity.Kce.KceException si el portador no se descomprime.
      * @throws com.km.identity.KmIdVerificationException si el sobre no verifica.
      */
     fun registerFromBundleText(text: String): IdentityId? =
-        registerFromVerifiedBundle(ContactBundle.decodeAndVerify(text.trim()))
+        registerFromVerifiedBundle(com.km.identity.CarrierCodec.decode(text))
 
     /** Clave de firma de [identityId], o `null` si no se conoce. */
     fun signingKeyOf(identityId: IdentityId): ByteArray? = keys[identityId.value]?.copyOf()
@@ -205,6 +213,10 @@ class PeerKeyDirectory(
     fun load(): PeerKeyDirectory {
         val file = path ?: return this
         if (!Files.isRegularFile(file)) return this
+        // Un peers.json previo con permisos laxos se corrige al leerlo. Son
+        // claves publicas, pero el fichero vive junto al almacen cifrado y no
+        // hay motivo para dejarlo legible por otros usuarios.
+        OwnerPermissions.DEFAULT.secureFile(file)
         val text = runCatching { Files.readString(file, StandardCharsets.UTF_8) }.getOrNull() ?: return this
         val root = runCatching { JSON.parseToJsonElement(text) }.getOrNull() as? JsonObject ?: return this
         root["peers"]?.let { peers ->
@@ -238,8 +250,12 @@ class PeerKeyDirectory(
                     }
                 }
             }
-            file.toAbsolutePath().parent?.let { Files.createDirectories(it) }
+            file.toAbsolutePath().parent?.let {
+                Files.createDirectories(it)
+                OwnerPermissions.DEFAULT.secureDirectory(it)
+            }
             Files.writeString(file, document.toString(), StandardCharsets.UTF_8)
+            OwnerPermissions.DEFAULT.secureFile(file.toAbsolutePath())
             true
         }.getOrDefault(false)
     }

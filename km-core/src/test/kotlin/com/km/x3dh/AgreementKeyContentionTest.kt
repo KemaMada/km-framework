@@ -208,7 +208,9 @@ class AgreementKeyContentionTest {
      * provider, no se escriben a mano.
      */
     private fun ordenPequeno(): List<Pair<String, ByteArray>> {
-        val p = java.math.BigInteger.TWO.pow(255).subtract(java.math.BigInteger.valueOf(19))
+        // `BigInteger.valueOf(2)` y NO `BigInteger.TWO`: `TWO` es API 33 y la
+        // app declara `minSdk = 28`. El valor del primo es el mismo.
+        val p = java.math.BigInteger.valueOf(2).pow(255).subtract(java.math.BigInteger.valueOf(19))
         fun le(v: java.math.BigInteger): ByteArray {
             val be = v.toByteArray()
             val big = if (be.size > 32) be.copyOfRange(be.size - 32, be.size) else be
@@ -904,7 +906,9 @@ class AgreementKeyContentionTest {
         // 3. `p` se calcula, no se copia. El hexadecimal de `p = 2^255 - 19` en
         //    32 bytes big-endian termina en `ED`; escribir `FD` produce un valor
         //    que NO esta en la lista y el guard no filtraria nada.
-        val p = java.math.BigInteger.TWO.pow(255).subtract(java.math.BigInteger.valueOf(19))
+        // `BigInteger.valueOf(2)` y NO `BigInteger.TWO`: `TWO` es API 33 y la
+        // app declara `minSdk = 28`. El valor del primo es el mismo.
+        val p = java.math.BigInteger.valueOf(2).pow(255).subtract(java.math.BigInteger.valueOf(19))
         val pBytes = p.toByteArray().let { if (it.size > 32) it.copyOfRange(it.size - 32, it.size) else it }
         assertEquals(32, pBytes.size, "p ocupa 32 bytes")
         assertEquals(0xED.toByte(), pBytes[31], "p en big-endian termina en ED, no en FD")

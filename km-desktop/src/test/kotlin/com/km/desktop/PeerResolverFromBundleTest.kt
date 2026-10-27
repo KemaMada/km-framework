@@ -136,9 +136,12 @@ class PeerResolverFromBundleTest {
 
         val fallo = runCatching { directorio.registerFromBundleText(alterado) }.exceptionOrNull()
 
+        // El portador va comprimido: un byte alterado puede romper el stream
+        // (KceException) o llegar a un documento que no verifica. Las DOS cosas
+        // son rechazo; lo que no puede pasar es que se guarde.
         assertTrue(
-            fallo is com.km.identity.KmIdVerificationException,
-            "un sobre con un byte alterado se RECHAZA con el verificador de km-core, no se guarda: $fallo",
+            fallo is com.km.identity.KmIdVerificationException || fallo is com.km.identity.Kce.KceException,
+            "un portador alterado se RECHAZA, no se guarda: $fallo",
         )
         assertTrue(directorio.known().isEmpty(), "y no queda registrado nada")
     }

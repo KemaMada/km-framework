@@ -12,6 +12,7 @@ import com.km.crypto.Ed25519
 import com.km.crypto.Ed25519Impl
 import com.km.model.IdentityId
 import com.km.model.Message
+import com.km.model.RelayErrorCode
 import com.km.model.RelayErrorNotice
 import com.km.model.RelayExpiredNotice
 import com.km.model.StoredReceipt
@@ -41,6 +42,9 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.ClosedReceiveChannelException
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
@@ -163,6 +167,29 @@ class JvmRelayTransport(
 ) : RelayTransport, TransportBackend {
 
     private val stateRef = AtomicReference(ConnectionState.DISCONNECTED)
+    /**
+     * El MISMO estado que [stateRef], como flujo, para quien necesita ESPERARLO.
+     *
+     * `stateRef` es la fuente de verdad (lo leen `send`, `isPeerPresent` y la
+     * TUI sin suscribirse a nada); este flujo es la cara OBSERVABLE de esa misma
+     * verdad y la escribe [setState], que es el UNICO sitio que cambia el
+     * estado. Dos escritores distintos volverian a abrir la puerta a un espejo
+     * que miente, que es justo lo que este motor ya pago una vez.
+     *
+     * Existe para [awaitOnline]: esperar un cambio de estado sin sondear y sin
+     * perder la transicion intermedia.
+     */
+    private val stateFlow = MutableStateFlow(ConnectionState.DISCONNECTED)
+    /**
+     * El cierre como EVENTO observable, para despertar a [awaitOnline].
+     *
+     * `stopping` es un `AtomicBoolean` porque `connect`/`disconnect` lo leen
+     * desde cualquier hilo; un `StateFlow` aparte no duplica esa decision, solo
+     * la publica para que un `combine` pueda reaccionar a ella. Sin esto, un
+     * `disconnect()` durante una espera dejaria al que espera colgado hasta el
+     * timeout aunque el motor ya supiera que no va a haber `ONLINE`.
+     */
+    private val stopFlow = MutableStateFlow(false)
     private val sessionIdRef = AtomicReference<String?>(null)
     private val relayIdentityRef = AtomicReference<String?>(null)
     /**
@@ -175,6 +202,40 @@ class JvmRelayTransport(
     private val nextRetryRef = AtomicLong(0)
     private val lastErrorRef = AtomicReference<String?>(null)
     private val stopping = AtomicBoolean(false)
+
+    /**
+     * Epoca del redial. Invalida los trabajos de reconexion ANTERIORES.
+     *
+     * ## POR QUE UNA EPOCA Y NO `supervisor.cancel()`
+     *
+     * `scheduleReconnect` lanza un `delay` dentro de `ownedScope`: cancelar el
+     * `supervisor` —que es el job de la sesion— NO cancela ese `delay`. Un
+     * redial que se limite a cancelar la sesion deja vivo el reintento
+     * diferido del backoff, y a su hora aparece un SEGUNDO handshake compitiendo
+     * con el redial. El rele acepta un challenge por identidad y el perdedor
+     * devuelve `AUTH_FAILED INVALID_SIGNATURE`.
+     *
+     * Cada trabajo captura la epoca al lanzarse y, al despertar, aborta si ya
+     * no es la vigente. Es la unica invalidacion que un `delay` respeta.
+     */
+    private val redialEpoch = AtomicLong(0)
+
+    /**
+     * Single-flight de la renegociacion FORZADA de la sesion (R3 y D2).
+     *
+     * `true` desde que [forceRedial] —o [abandonExpiredSession], cuando el rele
+     * declara muerta la sesion estando `ONLINE`— toma el mando hasta que el
+     * `AUTH_OK` lo consume, o hasta que el intento falla y cede al backoff
+     * normal. Mientras esta puesto, un segundo [forceRedial] es un no-op con
+     * exito: el evento de red de mas no abre otro socket. Y un segundo
+     * `RELAY_ERROR` de la sesion que se esta abandonando tampoco: dos avisos
+     * seguidos —dos `SIGNAL` en vuelo, por ejemplo— producen UN `AUTH`, no dos.
+     *
+     * Y es la guarda que `onSessionClosed` mira: el cierre que provoca la
+     * propia renegociacion NO puede forzar `DISCONNECTED` ni encolar otro
+     * reintento.
+     */
+    private val redialing = AtomicBoolean(false)
 
     private val ownedScope: CoroutineScope = externalScope
         ?: CoroutineScope(SupervisorJob() + Dispatchers.IO + CoroutineName("km-relay"))
@@ -207,6 +268,34 @@ class JvmRelayTransport(
     private val peerOfflineHandlers = java.util.concurrent.CopyOnWriteArrayList<(IdentityId) -> Unit>()
 
     /**
+     * Suscriptores de `SIGNAL` entrante. MULTI-suscriptor, como los de presencia.
+     *
+     * Una senal no es un mensaje: no la consume el nucleo, la consume quien
+     * sepa que hacer con ella (en la app, el registro del contacto). Con un
+     * unico lambda, el segundo que se registrara pisaba al primero.
+     */
+    private val signalHandlers = java.util.concurrent.CopyOnWriteArrayList<(DecodedSignal) -> Unit>()
+
+    /**
+     * Suscriptores de `RELAY_ERROR`. MULTI-suscriptor, como los de presencia.
+     *
+     * El `RELAY_ERROR` es la unica respuesta del rele a una `SIGNAL` que no le
+     * gusta, y es la que decide el veredicto de un envio: sin ella, el emisor
+     * no puede distinguir "el par estaba offline" de "el rele me rechazo".
+     */
+    private val relayErrorHandlers = java.util.concurrent.CopyOnWriteArrayList<(RelayErrorNotice) -> Unit>()
+
+    /**
+     * Los `RELAY_ERROR` que han llegado y nadie ha recogido todavia.
+     *
+     * Es una COLA y no un `lastError`: un error de hace un minuto no es el
+     * veredicto de la senal de ahora. El sink la vacia ANTES de enviar, de
+     * modo que un error viejo no se atribuya a una senal nueva.
+     */
+    private val relayErrors: java.util.concurrent.ArrayBlockingQueue<RelayErrorNotice> =
+        java.util.concurrent.ArrayBlockingQueue(8)
+
+    /**
      * Pares PRESENTES segun el ultimo `PEER_ONLINE`/`PEER_OFFLINE` recibido.
      *
      * Es lo que responde a [onCreateBinding] y lo que dispara
@@ -226,13 +315,14 @@ class JvmRelayTransport(
         if (stateRef.get() == ConnectionState.ONLINE) return Result.success(Unit)
 
         stopping.set(false)
+        stopFlow.value = false
         attemptRef.set(0)
         lastErrorRef.set(null)
         ensureClient()
 
         return runBlocking {
             when (val outcome = awaitHandshake()) {
-                null -> fail("el handshake no completo en ${handshakeTimeoutMs}ms")
+                null -> fail("el handshake no completo en ${handshakeTimeoutMs}ms", active)
                 else -> outcome
             }
         }
@@ -240,6 +330,15 @@ class JvmRelayTransport(
 
     override fun disconnect() {
         stopping.set(true)
+        // Publica el cierre ANTES de tocar el resto: un `awaitOnline` en vuelo
+        // despierta por el `false`, no por el timeout.
+        stopFlow.value = true
+        // Invalida cualquier reintento diferido ANTES de soltar la sesion: si no,
+        // un `connect()` posterior rearma `stopping=false` y el trabajo viejo,
+        // que ya paso el `delay`, encontraria la puerta abierta y abriria un
+        // segundo socket.
+        redialEpoch.incrementAndGet()
+        redialing.set(false)
         supervisor?.cancel()
         supervisor = null
         active?.close()
@@ -248,8 +347,77 @@ class JvmRelayTransport(
         client = null
         sessionIdRef.set(null)
         relayIdentityRef.set(null)
+        onlinePeers.clear()
         nextRetryRef.set(0L)
         setState(ConnectionState.DISCONNECTED)
+    }
+
+    /**
+     * Redial FORZADO por un cambio de red (R1/R2/R3).
+     *
+     * ## POR QUE NO SIRVE `connect()`
+     *
+     * `connect()` sale inmediatamente si el estado es `ONLINE` —y ante un
+     * cambio de red que NO cierra el socket, el estado ES `ONLINE` aunque el
+     * byte no llegue (#349, PROBE-B)—. No hay otra API de "reconectar ya": este
+     * metodo es esa puerta.
+     *
+     * ## QUE HACE, EN ESTE ORDEN
+     *
+     *  1. Toma el single-flight: con `redialing` ya puesto devuelve exito sin
+     *     hacer nada. Dos eventos de red, un `AUTH`.
+     *  2. Sube la epoca: cualquier reintento diferido anterior queda invalidado
+     *     al despertar.
+     *  3. Limpia la vista de presencia de la sesion que se va (R5). El snapshot
+     *     del rele la re-anuncia en el `AUTH_OK` nuevo.
+     *  4. Pone `RECONNECTING` y CIERRA la sesion activa. El orden importa:
+     *     `redialing` se pone ANTES del cierre porque el `finally` del bucle de
+     *     lectura llama a `onSessionClosed` en otro hilo, y si lo viera a
+     *     `false` forzaria `DISCONNECTED` y encolaria un segundo reintento.
+     *  5. Programa el handshake inmediato, que re-hace `AUTH` completo.
+     *
+     * ## LO QUE NO HACE
+     *
+     * No toca X3DH/PREKEY ni el ratchet (R2/R12): la sesion E2E es de `km-core`
+     * y el redial solo repara el socket de rele. El cifrado se reenvia verbatim.
+     *
+     * No bloquea: el cierre del socket corre en `ownedScope`. Un socket
+     * blackholeado puede tardar en cerrar, y el llamante —el callback de
+     * `ConnectivityManager`— no puede quedarse esperandolo.
+     *
+     * @return fallo si el transporte esta detenido; exito (incluso si ya habia
+     *   un redial en vuelo) en cualquier otro caso.
+     */
+    fun forceRedial(): Result<Unit> {
+        if (stopping.get()) {
+            return Result.failure(IllegalStateException("el transporte esta parado: no hay redial"))
+        }
+        if (!redialing.compareAndSet(false, true)) {
+            log("redial ya en vuelo: el evento repetido se colapsa")
+            return Result.success(Unit)
+        }
+
+        lastErrorRef.set(null)
+        redialEpoch.incrementAndGet()
+        onlinePeers.clear()
+        sessionIdRef.set(null)
+        attemptRef.set(0)
+        nextRetryRef.set(0L)
+        setState(ConnectionState.RECONNECTING)
+
+        // Se suelta la referencia ANTES de cerrar: `completeReady` y `sendFrame`
+        // miran `active`, y una sesion que se esta yendo no puede recibir ni el
+        // `ready` ni un byte de la nueva.
+        val previa = active
+        active = null
+        if (previa != null) {
+            ownedScope.launch { previa.closeSuspend("redial") }
+        }
+
+        val epoca = redialEpoch.get()
+        log("redial forzado por cambio de red (epoca=$epoca)")
+        scheduleReconnect(immediate = true, epoch = epoca)
+        return Result.success(Unit)
     }
 
     /**
@@ -326,12 +494,133 @@ private fun sendFrame(data: ByteArray, to: IdentityId? = null, ack: Boolean): Re
     override fun onPeerOnline(handler: (IdentityId) -> Unit) { peerOnlineHandlers.add(handler) }
     override fun onPeerOffline(handler: (IdentityId) -> Unit) { peerOfflineHandlers.add(handler) }
 
+    // ------------------------------------------------------------------
+    // Senalizacion (extension del dialecto)
+    // ------------------------------------------------------------------
+
+    /**
+     * Se suscribe a las senales entrantes.
+     *
+     * MULTI-suscriptor: uno mas no puede matar al otro. El mismo criterio que
+     * sostiene [onPeerOnline], y por el mismo motivo: el segundo consumidor se
+     * registro DESPUES del primero y lo piso (p4).
+     */
+    fun onSignal(handler: (DecodedSignal) -> Unit) { signalHandlers.add(handler) }
+
+    /**
+     * Envia una `SIGNAL` a [to].
+     *
+     * ## EL `from` ES SIEMPRE LA IDENTIDAD LOCAL
+     *
+     * No es un parametro: es una decision. El rele autentica el `from` contra
+     * la sesion y rechaza con `RELAY_NOT_AUTHORIZED` cualquier `from` que no sea
+     * el peer conectado, y `RelayServer.handleSignal` compara el `from` con la
+     * sesion para el anti-spoofing. Un `from` escribible por el llamante seria
+     * una firma falsificable.
+     *
+     * ## POR QUE NO SE ENVIA A SI MISMO
+     *
+     * Una `SIGNAL` a la identidad local no la va a leer nadie: el rele la
+     * enruta a la sesion del propio emisor, que ya esta autenticada, y su
+     * `to` no es un par. Se rechaza con `SIGNAL_TO_SELF` y no se escribe en el
+     * cable: un envio que no puede llegar a nadie no debe gastar un intento de
+     * la politica de reintentos.
+     */
+    fun sendSignal(to: IdentityId, kind: String, contactBundle: ByteArray? = null): Result<Unit> {
+        if (stateRef.get() != ConnectionState.ONLINE) {
+            return Result.failure(IllegalStateException("transporte no conectado"))
+        }
+        if (to == identity) {
+            log("SIGNAL descartado: no se envia a la propia identidad (SIGNAL_TO_SELF)")
+            return Result.failure(IllegalStateException("una SIGNAL no se envia a la identidad local"))
+        }
+        val frame = runCatching { codec.encodeSignal(identity, to, kind, contactBundle) }
+            .getOrElse { return Result.failure(it) }
+        val runner = active
+            ?: return Result.failure(IllegalStateException("no hay sesion WebSocket activa"))
+        return runCatching { runBlocking { runner.sendText(frame) } }
+    }
+
+    /**
+     * Un `SIGNAL` entrante, YA decodificado.
+     *
+     * `internal` y no privado a proposito: la regla de R1 —"un `kind` desconocido
+     * se ignora y la conexion sigue viva"— es del TRANSPORTE, y se comprueba
+     * sobre el transporte, sin abrir un socket. La regla de "el `to` que no es
+     * esta identidad se descarta" tambien: es la que impide que una senal
+     * dirigida a otro par se entregue aqui.
+     */
+    internal fun deliverSignal(frame: JsonObject) {
+        when (val decoded = codec.decodeSignal(frame)) {
+            is DecodedSignal.Invalid -> log("SIGNAL descartado codigo=${decoded.code}")
+            is DecodedSignal.UnknownKind -> {
+                // R1: se ignora CON RAZON y la conexion sigue viva.
+                log("SIGNAL ignorado codigo=SIGNAL_UNKNOWN_KIND kind=${decoded.kind}")
+            }
+            is DecodedSignal.Known -> {
+                if (decoded.to != identity) {
+                    log("SIGNAL descartado codigo=SIGNAL_TO_OTHER_IDENTITY")
+                    return
+                }
+                signalHandlers.forEach { handler ->
+                    runCatching { handler(decoded) }
+                        .onFailure { e -> log("handler de SIGNAL fallo: ${e.message}") }
+                }
+            }
+        }
+    }
+
     /** Identidad de los pares que el rele ha declarado presentes. */
     fun onlinePeerIds(): Set<IdentityId> = onlinePeers.toSet()
 
     override fun isOnline(): Boolean = stateRef.get() == ConnectionState.ONLINE
 
     override fun connectionState(): ConnectionState = stateRef.get()
+
+    /**
+     * Espera, ACOTADA y CANCELABLE, a que el motor vuelva a `ONLINE`.
+     *
+     * ## POR QUE ES UNA ESPERA PASIVA
+     *
+     * Porque el motor YA se renegocia solo cuando el rele declara la sesion
+     * muerta ([abandonExpiredSession] con el backoff de [ReconnectPolicy]). Lo
+     * unico que falta es que quien tenia una senal en vuelo se ENTERE de que hay
+     * sesion nueva. Forzar aqui un redial seria abrir un segundo `AUTH`
+     * compitiendo con el que ya esta en camino: el rele acepta un challenge por
+     * identidad y el perdedor recibe `AUTH_FAILED INVALID_SIGNATURE`. Por eso
+     * este metodo no llama a [forceRedial] ni a [connect].
+     *
+     * ## QUE DEVUELVE
+     *
+     *  - `true` si el motor esta `ONLINE` al entrar, o llega a estarlo antes del
+     *    plazo.
+     *  - `false` si el plazo vence, si [disconnect] ocurre durante la espera, o
+     *    si el motor ya estaba parado.
+     *
+     * Nunca "casi": un estado `RECONNECTING` al vencer el plazo NO es `true`.
+     *
+     * ## POR QUE UN `combine` Y NO UN SONDEO
+     *
+     * Un sondeo puede perder la transicion —`RECONNECTING -> ONLINE ->
+     * RECONNECTING` entre dos lecturas— y hacer que el llamante concluya que no
+     * hubo sesion cuando si la hubo un instante. `first` sobre el flujo observa
+     * cada valor. Y la cancelacion del `Job` llamante desuscribe el flujo sola:
+     * no queda ninguna continuacion esperando.
+     *
+     * @param timeoutMs plazo maximo en milisegundos. `<= 0` no espera.
+     */
+    suspend fun awaitOnline(timeoutMs: Long): Boolean {
+        if (stateRef.get() == ConnectionState.ONLINE) return true
+        if (stopping.get()) return false
+        if (timeoutMs <= 0L) return false
+        return withTimeoutOrNull(timeoutMs) {
+            combine(stateFlow, stopFlow) { estado, parado -> estado to parado }
+                .first { (estado, parado) -> parado || estado == ConnectionState.ONLINE }
+            // La condicion que se observo puede haber cambiado entre el `first`
+            // y esta linea: lo que se responde es el hecho de AHORA.
+            !stopFlow.value && stateRef.get() == ConnectionState.ONLINE
+        } ?: false
+    }
 
     /** Instantanea para la pantalla de la TUI. */
     fun status(): RelayStatus = RelayStatus(
@@ -528,6 +817,15 @@ private fun sendFrame(data: ByteArray, to: IdentityId? = null, ack: Boolean): Re
         private val http: HttpClient,
         private val url: String,
     ) {
+        /**
+         * Epoca del redial en el momento de CREAR esta sesion.
+         *
+         * Una sesion vieja que sigue leyendo mientras el redial ya abrio otra
+         * no puede navegar el estado: su `AUTH_OK`, su `AUTH_FAIL` o su cierre
+         * pertenecen a un socket que ya no es el del motor. Se descartan.
+         */
+        val epoch: Long = redialEpoch.get()
+
         @Volatile
         private var socket: DefaultClientWebSocketSession? = null
 
@@ -535,25 +833,32 @@ private fun sendFrame(data: ByteArray, to: IdentityId? = null, ack: Boolean): Re
             val session = try {
                 http.webSocketSession(url) { }.also { socket = it }
             } catch (e: Throwable) {
-                completeReady(Result.failure(e))
+                completeReady(this, Result.failure(e))
                 throw e
             }
             try {
                 sendAuthRequest(session)
                 setState(ConnectionState.AUTHENTICATING)
             } catch (e: Throwable) {
-                completeReady(Result.failure(e))
+                completeReady(this, Result.failure(e))
                 throw e
             }
             try {
                 // Se itera el canal directamente y no con `consumeAsFlow`: el
                 // cierre del socket cierra el canal, y eso hay que distinguirlo
                 // de un error de lectura.
-                for (frame in session.incoming) onFrame(session, frame)
+                for (frame in session.incoming) onFrame(this, session, frame)
             } catch (_: ClosedReceiveChannelException) {
                 log("canal de entrada cerrado")
             } finally {
-                onSessionClosed()
+                // Si la epoca cambio, esta sesion es OBSOLETA: su cierre no
+                // puede limpiar la presencia ni el `sessionId` de la sesion
+                // nueva, ni forzar `DISCONNECTED` sobre ella.
+                if (epoch == redialEpoch.get()) {
+                    onSessionClosed()
+                } else {
+                    log("sesion obsoleta cerrada: epoca $epoch superada")
+                }
             }
         }
 
@@ -565,6 +870,19 @@ private fun sendFrame(data: ByteArray, to: IdentityId? = null, ack: Boolean): Re
         fun close() {
             val open = socket ?: return
             runCatching { runBlocking { open.close(CloseReason(CloseReason.Codes.NORMAL, "cliente")) } }
+        }
+
+        /**
+         * Cierre suspensible, para el redial.
+         *
+         * `close()` envuelve el cierre en `runBlocking`, que vale desde
+         * `disconnect()` (hilo de control) pero NO desde una corrutina de IO: un
+         * socket blackholeado puede tardar en completar el handshake de cierre
+         * y bloquearia el hilo. Desde `forceRedial` se usa esta.
+         */
+        suspend fun closeSuspend(motivo: String) {
+            val open = socket ?: return
+            runCatching { open.close(CloseReason(CloseReason.Codes.NORMAL, motivo)) }
         }
     }
 
@@ -585,7 +903,7 @@ private fun sendFrame(data: ByteArray, to: IdentityId? = null, ack: Boolean): Re
                 // Informarlo seria ruido: el usuario acaba de pulsar `quit`.
                 if (!stopping.get()) {
                     log("sesion terminada: ${e.message}")
-                    completeReady(Result.failure(e))
+                    completeReady(runner, Result.failure(e))
                 }
             }
         }
@@ -626,7 +944,13 @@ private fun sendFrame(data: ByteArray, to: IdentityId? = null, ack: Boolean): Re
      * Regla de la seccion 7.1: un frame ilegible se descarta y la conexion
      * sobrevive. Toda excepcion se absorbe aqui a proposito.
      */
-    private suspend fun onFrame(session: DefaultClientWebSocketSession, frame: Frame) {
+    private suspend fun onFrame(runner: SessionRunner, session: DefaultClientWebSocketSession, frame: Frame) {
+        if (runner.epoch != redialEpoch.get()) {
+            // Un frame de la sesion anterior no puede navegar el motor: el
+            // redial ya abrio otra. Se descarta, no se procesa a medias.
+            log("frame de una sesion obsoleta descartado")
+            return
+        }
         val text = when (frame) {
             is Frame.Text -> frame.readText()
             // El dialecto es de texto UTF-8 (seccion 7). Un frame binario es un
@@ -651,19 +975,20 @@ private fun sendFrame(data: ByteArray, to: IdentityId? = null, ack: Boolean): Re
 
         try {
             when (type) {
-                TYPE_AUTH_CHALLENGE -> onAuthChallenge(session, obj)
-                TYPE_AUTH_OK -> onAuthOk(obj)
-                TYPE_AUTH_FAIL -> onAuthFail(obj)
+                TYPE_AUTH_CHALLENGE -> onAuthChallenge(runner, session, obj)
+                TYPE_AUTH_OK -> onAuthOk(runner, obj)
+                TYPE_AUTH_FAIL -> onAuthFail(runner, obj)
                 TYPE_PING -> onPing(session, obj)
                 TYPE_PONG -> Unit
                 TYPE_MESSAGE -> onMessage(obj)
                 TYPE_ACK -> onAck(obj)
+                TYPE_SIGNAL -> deliverSignal(obj)
                 TYPE_STORED -> onStored(text)
                 TYPE_RELAY_EXPIRED -> onRelayExpired(text)
                 TYPE_RELAY_ERROR -> onRelayError(text)
                 TYPE_PEER_ONLINE -> onPeerPresence(obj, online = true)
                 TYPE_PEER_OFFLINE -> onPeerPresence(obj, online = false)
-                TYPE_AUTH_SESSION_TIMEOUT -> fail("el rele cerro la sesion por expiracion")
+                TYPE_AUTH_SESSION_TIMEOUT -> fail("el rele cerro la sesion por expiracion", runner)
                 else -> log("tipo desconocido ignorado: $type")
             }
         } catch (e: Exception) {
@@ -680,14 +1005,18 @@ private fun sendFrame(data: ByteArray, to: IdentityId? = null, ack: Boolean): Re
      * firmar, porque `TranscriptBuilder` lanza ante un nonce de otro tamano y un
      * fallo de forma no debe llegar a la capa de firma.
      */
-    private suspend fun onAuthChallenge(session: DefaultClientWebSocketSession, frame: JsonObject) {
+    private suspend fun onAuthChallenge(
+        runner: SessionRunner,
+        session: DefaultClientWebSocketSession,
+        frame: JsonObject,
+    ) {
         // Dialecto PRIMERO: sin una confirmacion valida no se firma nada.
         // Ausente -> MALFORMED_MESSAGE; desconocido o no implementado ->
         // UNSUPPORTED_PROTOCOL_VERSION. Nunca se adopta el dialecto del rele.
         val dialectWire = frame.string("protocolVersion")
         when (val check = DialectNegotiation.checkChallenge(IMPLEMENTED_DIALECT, dialectWire)) {
             is DialectCheck.Rejected -> {
-                fail("dialecto rechazado (${check.error.wireCode}): ${check.detail}")
+                fail("dialecto rechazado (${check.error.wireCode}): ${check.detail}", runner)
                 return
             }
             is DialectCheck.Accepted -> challengeDialectRef.set(check.dialect)
@@ -695,17 +1024,17 @@ private fun sendFrame(data: ByteArray, to: IdentityId? = null, ack: Boolean): Re
 
         val nonce = frame.string("nonce")?.let { runCatching { Base64Url.decode(it) }.getOrNull() }
         if (nonce == null || nonce.size != NONCE_BYTES) {
-            fail("AUTH_CHALLENGE sin nonce de $NONCE_BYTES bytes")
+            fail("AUTH_CHALLENGE sin nonce de $NONCE_BYTES bytes", runner)
             return
         }
         val timestamp = frame.long("timestamp")
         if (timestamp == null || timestamp < 0) {
-            fail("AUTH_CHALLENGE sin timestamp utilizable")
+            fail("AUTH_CHALLENGE sin timestamp utilizable", runner)
             return
         }
         val responder = frame.responderIdentity()
         if (responder == null || responder.length != IDENTITY_ID_HEX) {
-            fail("AUTH_CHALLENGE sin responderIdentityId de $IDENTITY_ID_HEX hex")
+            fail("AUTH_CHALLENGE sin responderIdentityId de $IDENTITY_ID_HEX hex", runner)
             return
         }
         relayIdentityRef.set(responder)
@@ -741,17 +1070,17 @@ private fun sendFrame(data: ByteArray, to: IdentityId? = null, ack: Boolean): Re
      * Lo que SI se comprueba es la FORMA de `sessionId`: 40 hex. Sin ese dato no
      * hay sesion que distinguir de la de otro peer.
      */
-    private fun onAuthOk(frame: JsonObject) {
+    private fun onAuthOk(runner: SessionRunner, frame: JsonObject) {
         // Dialecto antes que cualquier otra cosa: un `AUTH_OK` que no confirme
         // el MISMO dialecto del challenge (o ninguno) no pasa a ONLINE.
         val challengeDialect = challengeDialectRef.get()
         if (challengeDialect == null) {
-            fail("AUTH_OK sin AUTH_CHALLENGE previo con dialecto confirmado")
+            fail("AUTH_OK sin AUTH_CHALLENGE previo con dialecto confirmado", runner)
             return
         }
         when (val check = DialectNegotiation.checkAuthOk(IMPLEMENTED_DIALECT, challengeDialect, frame.string("protocolVersion"))) {
             is DialectCheck.Rejected -> {
-                fail("dialecto rechazado (${check.error.wireCode}): ${check.detail}")
+                fail("dialecto rechazado (${check.error.wireCode}): ${check.detail}", runner)
                 return
             }
             is DialectCheck.Accepted -> Unit
@@ -759,7 +1088,7 @@ private fun sendFrame(data: ByteArray, to: IdentityId? = null, ack: Boolean): Re
 
         val sessionId = frame.string("sessionId")
         if (sessionId == null || sessionId.length != SESSION_ID_HEX) {
-            fail("AUTH_OK con sessionId ausente o de longitud distinta de $SESSION_ID_HEX")
+            fail("AUTH_OK con sessionId ausente o de longitud distinta de $SESSION_ID_HEX", runner)
             return
         }
         // OJO: en `AUTH_OK`, `initiatorIdentityId` es el INICIADOR — el
@@ -772,15 +1101,19 @@ private fun sendFrame(data: ByteArray, to: IdentityId? = null, ack: Boolean): Re
         attemptRef.set(0)
         nextRetryRef.set(0L)
         lastErrorRef.set(null)
+        // El redial se considera consumado AQUI: hay sesion nueva con `AUTH`
+        // nuevo. Sin este reset, el single-flight se quedaria cerrado para
+        // siempre y solo habria UN redial por proceso.
+        redialing.set(false)
         setState(ConnectionState.ONLINE)
         log("sesion establecida contra $endpoint")
-        completeReady(Result.success(Unit))
+        completeReady(runner, Result.success(Unit))
     }
 
-    private fun onAuthFail(frame: JsonObject) {
+    private fun onAuthFail(runner: SessionRunner, frame: JsonObject) {
         val code = frame.string("errorCode") ?: "sin codigo"
         val detail = frame.string("errorMessage")?.let { ": $it" } ?: ""
-        fail("AUTH_FAIL $code$detail")
+        fail("AUTH_FAIL $code$detail", runner)
     }
 
     /** `PING` de aplicacion -> `PONG` correlacionado (seccion 12.2). */
@@ -936,9 +1269,149 @@ private fun sendFrame(data: ByteArray, to: IdentityId? = null, ack: Boolean): Re
         val detail = notice.errorMessage?.let { ": $it" } ?: ""
         val text = "RELAY_ERROR ${notice.errorCode}$detail"
         lastErrorRef.set(text)
+        // La cola se llena y no se puede bloquear la recepcion: si esta llena,
+        // el error mas viejo se descarta, porque lo que importa es el MAS
+        // RECIENTE (es el veredicto de la senal en vuelo).
+        relayErrors.offer(notice)
+        while (relayErrors.size > 4) relayErrors.poll()
+        relayErrorHandlers.forEach { handler ->
+            runCatching { handler(notice) }
+                .onFailure { e -> log("handler de RELAY_ERROR fallo: ${e.message}") }
+        }
         log(text)
+
+        // D2. El veredicto ya esta en la cola —el `SignalDelivery` que lo
+        // espera lo recogera— y ya se ha notificado a los suscriptores. Si ese
+        // veredicto dice que la sesion del rele esta muerta MIENTRAS el motor
+        // cree estar ONLINE, lo que hay que hacer con el socket es soltarlo.
+        // Ver [abandonExpiredSession].
+        if (notice.errorCode == RelayErrorCode.RELAY_NOT_AUTHORIZED && stateRef.get() == ConnectionState.ONLINE) {
+            abandonExpiredSession()
+        }
     }
 
+    /**
+     * Suelta una sesion que el rele acaba de declarar muerta y renegocia.
+     *
+     * ## EL CASO REAL (HONOR/S8+, ~10 min de inactividad)
+     *
+     * ```
+     * 23:38:00.756 [CONTACT] verificado root=... subject=...
+     * 23:38:01.124 [RELAY] RELAY_ERROR RELAY_NOT_AUTHORIZED: sesion de ... expirada
+     * 23:38:01.437 [SIGNAL] intercambio de contactos NO entregado ... REFUSED
+     * 23:38:10.308 [SEND] ... NOT SENT failure=AUTH_FAILED
+     * ```
+     *
+     * El rele expira la sesion a los `sessionExpiryMs` (`RelayServer`) y lo
+     * dice por `RELAY_ERROR` SIN cerrar el socket. Por eso el motor seguia
+     * `ONLINE` con una sesion que ya no existia: el siguiente envio se volvia a
+     * rechazar igual, el intercambio se presentaba como `REFUSED` —que suena a
+     * rechazo de negocio— y el estado de la pantalla mentia.
+     *
+     * ## QUE HACE, EN ESTE ORDEN
+     *
+     *  1. Toma el single-flight [redialing]. Un segundo aviso de la sesion que
+     *     se esta yendo —o un [forceRedial] que llegue a la vez— se colapsa:
+     *     dos `AUTH` concurrentes de la MISMA identidad hacen que el rele
+     *     cierre la sesion del primero y el perdedor reciba
+     *     `AUTH_FAILED INVALID_SIGNATURE`.
+     *  2. Sube [redialEpoch]. Cualquier reintento diferido anterior queda
+     *     invalidado, y el `finally` de la sesion vieja —que ya no es la
+     *     vigente— no fuerza `DISCONNECTED` ni encola un segundo reintento.
+     *  3. Pone `RECONNECTING` y limpia la vista de la sesion muerta: `sessionId`
+     *     y presencia. El snapshot del rele la re-anuncia en el `AUTH_OK`.
+     *  4. Suelta `active` ANTES de cerrar: una sesion que se esta yendo no
+     *     puede recibir el `ready` ni un byte de la nueva.
+     *  5. Programa el handshake con el BACKOFF EXISTENTE (1 s..30 s con jitter),
+     *     NO inmediato: un aviso por `RELAY_NOT_AUTHORIZED` no es un cambio de
+     *     red, y el tope del ciclo es el que impide convertir un rele que
+     *     rechaza en un bucle caliente de `AUTH`.
+     *
+     * ## EL CIERRE NO BLOQUEA
+     *
+     * Se llama desde el hilo que LEE el frame, o sea desde dentro de la propia
+     * corrutina de la sesion: un `close()` con `runBlocking` ahi se esperaria a
+     * si mismo. Por eso se usa `closeSuspend` en `ownedScope`.
+     *
+     * ## LAS CUATRO CAUSAS DEL WIRE
+     *
+     * `RELAY_NOT_AUTHORIZED` agrupa, mientras el wire no las distinga: sin
+     * `AUTH_OK`, senalizacion desactivada por el operador, sesion expirada y
+     * spoofing. Aqui se tratan todas como sesion muerta. Con la senalizacion
+     * desactivada el resultado es un ciclo acotado por el backoff y, para el
+     * interlocutor, `CONTACT_EXCHANGE_NOT_CONNECTED` —no un rechazo—; queda
+     * documentado como precio de no poder distinguirlas en el cable.
+     *
+     * ## LO QUE NO HACE
+     *
+     * No toca X3DH/PREKEY ni el ratchet: repara el socket de rele, no la
+     * sesion E2E (R2/R12). No cambia `MESSAGE`/`ACK`/legado.
+     */
+    private fun abandonExpiredSession() {
+        if (stopping.get()) {
+            // El transporte se esta parando: `disconnect()` ya cierra la sesion
+            // y deja `DISCONNECTED`. Renegociar aqui reabriria lo que se cierra.
+            return
+        }
+        if (!redialing.compareAndSet(false, true)) {
+            log("sesion expirada: ya hay una renegociacion en vuelo, el aviso se colapsa")
+            return
+        }
+
+        // El motivo queda en `lastError` para la pantalla y el diagnostico; el
+        // `AUTH_OK` lo limpia, como el de cualquier reconexion.
+        val motivo = "RELAY_ERROR RELAY_NOT_AUTHORIZED: la sesion del rele esta muerta; se renegocia"
+        lastErrorRef.set(motivo)
+
+        redialEpoch.incrementAndGet()
+        onlinePeers.clear()
+        sessionIdRef.set(null)
+        attemptRef.set(0)
+        nextRetryRef.set(0L)
+        setState(ConnectionState.RECONNECTING)
+
+        val previa = active
+        active = null
+        if (previa != null) {
+            ownedScope.launch { previa.closeSuspend("sesion expirada") }
+        }
+
+        val epoca = redialEpoch.get()
+        log("$motivo (epoca=$epoca)")
+        scheduleReconnect(immediate = false, epoch = epoca)
+    }
+
+    /** Se suscribe a los `RELAY_ERROR` entrantes. */
+    fun onRelayError(handler: (RelayErrorNotice) -> Unit) { relayErrorHandlers.add(handler) }
+
+    /**
+     * Espera el proximo `RELAY_ERROR`, o `null` si no llega ninguno en
+     * [timeoutMs] milisegundos.
+     *
+     * Es la ventana de veredicto de [SignalDelivery]: el rele no acuse una
+     * `SIGNAL`, asi que el unico veredicto posible es un error.
+     */
+    fun awaitRelayError(timeoutMs: Long): RelayErrorNotice? =
+        relayErrors.poll(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+
+    /** Vacia la cola de `RELAY_ERROR` pendientes. */
+    fun drainRelayErrors() { relayErrors.clear() }
+
+    /**
+     * Presencia de un par, con FAN-OUT AISLADO por suscriptor.
+     *
+     * `onlinePeers` se muta ANTES de notificar: el motor ya considera al par
+     * presente/ausente cuando el consumidor corre, de modo que un handler que
+     * consulte `isPeerPresent` durante el aviso ve el hecho, no el aviso
+     * anterior.
+     *
+     * Cada handler va en su propio `runCatching`: antes, uno que lanzara
+     * cortaba el `forEach` y los siguientes —incluido el `RelayPeerChannelDriver`
+     * de otro par, o el publicador de la UI— no se enteraban, mientras el
+     * `onFrame` de mas arriba absorbia la excepcion por frame. Un consumidor
+     * roto no puede silenciar a los demas ni tumbar la sesion; su fallo se
+     * registra como WARN.
+     */
     private fun onPeerPresence(frame: JsonObject, online: Boolean) {
         val peer = frame.identityId("identityId")
         if (peer == null) {
@@ -947,7 +1420,15 @@ private fun sendFrame(data: ByteArray, to: IdentityId? = null, ack: Boolean): Re
         }
         if (peer == identity) return
         if (online) onlinePeers.add(peer) else onlinePeers.remove(peer)
-        if (online) peerOnlineHandlers.forEach { it(peer) } else peerOfflineHandlers.forEach { it(peer) }
+        val handlers = if (online) peerOnlineHandlers else peerOfflineHandlers
+        handlers.forEach { handler ->
+            runCatching { handler(peer) }.onFailure { fallo ->
+                log(
+                    "un suscriptor de presencia ${if (online) "ONLINE" else "OFFLINE"} lanzo para " +
+                        "${peer.value.take(8)}: ${fallo::class.simpleName}: ${fallo.message}",
+                )
+            }
+        }
     }
 
     // ------------------------------------------------------------------
@@ -956,12 +1437,23 @@ private fun sendFrame(data: ByteArray, to: IdentityId? = null, ack: Boolean): Re
 
     private fun onSessionClosed() {
         sessionIdRef.set(null)
-        val wasOnline = stateRef.get() == ConnectionState.ONLINE
+        // R5: la vista de pares muere con la sesion. El snapshot del rele es
+        // ADITIVO, asi que sin esta limpieza un par que se fue durante el corte
+        // queda "presente" para siempre (#349, PROBE-A: stalePresence=true).
+        onlinePeers.clear()
         if (stopping.get()) {
+            redialing.set(false)
             setState(ConnectionState.DISCONNECTED)
             return
         }
-        if (!wasOnline) {
+        if (redialing.get()) {
+            // El cierre lo provoco el redial: el reintento YA esta programado y
+            // el estado ya es RECONNECTING. Forzar DISCONNECTED aqui mentiria y
+            // encolar otro reintento competiria con el de `forceRedial`.
+            log("sesion cerrada por el redial: el reintento inmediato ya esta encolado")
+            return
+        }
+        if (stateRef.get() != ConnectionState.ONLINE) {
             // El socket se fue ANTES del handshake. El motivo ya lo ha
             // reportado `fail` o el cierre de la propia sesion; encadenar una
             // reconexion aqui taparia ese error con otro mas generico.
@@ -971,26 +1463,45 @@ private fun sendFrame(data: ByteArray, to: IdentityId? = null, ack: Boolean): Re
         scheduleReconnect()
     }
 
-    private fun scheduleReconnect() {
+    /**
+     * Programa un handshake.
+     *
+     * @param immediate `true` para el redial: se salta el backoff (R1: <=5 s).
+     * @param epoch epoca que este trabajo debe seguir viendo vigente al
+     *   despertar. Un redial posterior la sube y este trabajo se autodescarta.
+     */
+    private fun scheduleReconnect(immediate: Boolean = false, epoch: Long = redialEpoch.get()) {
         val attempt = attemptRef.incrementAndGet()
-        val wait = reconnect.delayFor(attempt - 1)
+        val wait = if (immediate) 0L else reconnect.delayFor(attempt - 1)
         nextRetryRef.set(now() + wait)
         setState(ConnectionState.RECONNECTING)
-        log("reconexion $attempt en ${wait}ms")
+        log(if (immediate) "redial inmediato (epoca=$epoch)" else "reconexion $attempt en ${wait}ms")
 
         ownedScope.launch {
             delay(wait)
             if (stopping.get()) return@launch
+            if (redialEpoch.get() != epoch) {
+                // Otro redial mando: este reintento es el viejo.
+                log("reintento $attempt descartado: epoca $epoch superada por ${redialEpoch.get()}")
+                return@launch
+            }
             lastErrorRef.set(null)
             val outcome = withTimeoutOrNull(handshakeTimeoutMs) { awaitHandshake() }
             when {
                 outcome == null -> {
+                    if (redialEpoch.get() != epoch) return@launch
+                    // El redial no lo consiguio: cede al backoff normal. Si no
+                    // se soltara el flag, un cambio de red posterior quedaria
+                    // colapsado contra un redial que ya no existe.
+                    redialing.set(false)
                     val reason = "reconexion $attempt: timeout del handshake"
                     lastErrorRef.set(reason)
                     log(reason)
                     scheduleReconnect()
                 }
                 outcome.isFailure -> {
+                    if (redialEpoch.get() != epoch) return@launch
+                    redialing.set(false)
                     val reason = "reconexion $attempt: ${outcome.exceptionOrNull()?.message}"
                     lastErrorRef.set(reason)
                     log(reason)
@@ -1001,21 +1512,35 @@ private fun sendFrame(data: ByteArray, to: IdentityId? = null, ack: Boolean): Re
         }
     }
 
-    private fun fail(reason: String): Result<Unit> {
+    private fun fail(reason: String, runner: SessionRunner?): Result<Unit> {
         lastErrorRef.set(reason)
         log(reason)
-        completeReady(Result.failure(IllegalStateException(reason)))
+        if (runner != null) completeReady(runner, Result.failure(IllegalStateException(reason)))
         setState(ConnectionState.DISCONNECTED)
         return Result.failure(IllegalStateException(reason))
     }
 
-    private fun completeReady(result: Result<Unit>) {
-        active?.let { runner -> if (!runner.ready.isCompleted) runner.ready.complete(result) }
+    /**
+     * Completa el `ready` de [runner] — y SOLO el suyo.
+     *
+     * Resolverlo por `active` era un fallo de carrera: al cancelar la sesion
+     * vieja, su `catch` completaba el `ready` de la sesion NUEVA, el handshake
+     * nuevo se daba por fallido y programaba otra reconexion que cancelaba a la
+     * siguiente. El resultado era una cascada de `AUTH` (12 en 1,7 s).
+     */
+    private fun completeReady(runner: SessionRunner, result: Result<Unit>) {
+        if (!runner.ready.isCompleted) runner.ready.complete(result)
     }
 
     private fun setState(next: ConnectionState) {
         val previous = stateRef.getAndSet(next)
-        if (previous != next) stateHandler(next)
+        if (previous != next) {
+            // La publicacion va ANTES del handler: un consumidor que reaccione
+            // al aviso y consulte el flujo tiene que ver el mismo estado que el
+            // del aviso, no el anterior.
+            stateFlow.value = next
+            stateHandler(next)
+        }
     }
 
     companion object {
@@ -1055,6 +1580,7 @@ private fun sendFrame(data: ByteArray, to: IdentityId? = null, ack: Boolean): Re
 
         const val TYPE_MESSAGE: String = RelayDataCodec.TYPE_MESSAGE
         const val TYPE_ACK: String = RelayDataCodec.TYPE_ACK
+        const val TYPE_SIGNAL: String = RelayDataCodec.TYPE_SIGNAL
 
         /**
          * Keepalive de RFC 6455 (seccion 12.3), DISTINTO del `PING`/`PONG` de

@@ -5,8 +5,11 @@ import com.km.crypto.*
 import com.km.messaging.LegacyInboundObservation
 import com.km.messaging.SecureInbound
 import com.km.messaging.SecureOutboundImpl
+import com.km.messaging.SecureSendRejectedException
 import com.km.messaging.SecureSessionRegistry
+import com.km.messaging.toFailureCode
 import com.km.model.*
+import com.km.node.ChainSubscription
 import com.km.node.PeerTransportManager
 import com.km.protocol.*
 import com.km.storage.*
@@ -99,13 +102,46 @@ class KeyMessageCoreImpl(
      * enterarse de que llego un wire.
      */
     private val peerTransportManager: PeerTransportManager? = null,
+    /**
+     * D12 — el motor de reintentos, inyectable para el test determinista.
+     *
+     * En produccion se crea uno con el scheduler de siempre (hilo daemon). El
+     * test de orden inyecta un `RetryManagerImpl` con un scheduler MANUAL para
+     * recorrer los 155 s de techo sin dormir. No cambia backoff, ni intentos, ni
+     * nada del camino de red: solo QUIEN pone el reloj.
+     */
+    private val retryManager: RetryManagerImpl = RetryManagerImpl(),
 ) : KeyMessageCore {
 
     private val orderingManager: OrderingManagerImpl = OrderingManagerImpl()
-    private val retryManager: RetryManagerImpl = RetryManagerImpl()
     private val ackManager: AckManagerImpl = AckManagerImpl(messageStore, ed25519, peerPublicKeyResolver)
     private lateinit var sender: SenderImpl
     private lateinit var receiver: ReceiverImpl
+
+    /**
+     * Candado del ciclo de vida y bandera de cierre.
+     *
+     * El cierre tiene que ser IDEMPOTENTE y no puede competir con un `close()`
+     * de otro hilo (recuperacion de identidad y `onDestroy` pueden coincidir).
+     * La bandera se escribe dentro del candado y se lee en [start]/[sendMessage]
+     * para que un nucleo cerrado no vuelva a emitir por un transporte que ya no
+     * es suyo.
+     */
+    private val lifecycleLock = Any()
+
+    @Volatile
+    private var closed: Boolean = false
+
+    /**
+     * Ultimo timestamp ACUNADO por este proceso, para R10.
+     *
+     * `Instant.now()` tiene resolucion de milisegundo: dos envios seguidos
+     * pueden empatar y entonces el orden de creacion dependeria del UUID. La
+     * guarda MONOTONA (`max(now, last + 1)`) garantiza que dos mensajes de este
+     * proceso nunca comparten marca. Es por PROCESO: tras un reinicio manda el
+     * reloj, y eso queda declarado.
+     */
+    private var lastCreatedTimestamp: Long = 0L
 
     /**
      * Puente de RECEPCION cifrada, o `null` si no se inyectaron las dos piezas.
@@ -136,6 +172,18 @@ class KeyMessageCoreImpl(
         legacyReceiveEnabled = secureSessionRegistry == null || allowLegacyCleartextReceive,
     )
 
+    /**
+     * D8 — la suscripcion al estado REAL del canal de par.
+     *
+     * Se guarda porque quien la crea es el nucleo y su vida es la del manager:
+     * guardarla deja una sola suscripcion por nucleo y permite cancelarla si
+     * alguna vez se construye un `stop()` que libere el cableado.
+     *
+     * El despertar es SOLO con `connected = true`: el `false` significa que el
+     * binding cayo y no hay nada que transmitir.
+     */
+    private var peerChannelSubscription: ChainSubscription? = null
+
     init {
         sender = SenderImpl(
             messageStore, offlineQueue, encoder, validator, ed25519,
@@ -156,7 +204,17 @@ class KeyMessageCoreImpl(
             sender.onRetryExpired(messageId, attempt)
         }
         transport.onPeerOnline { peerId ->
+            // R8: el par aparece en el rele. Esto SOLO despierta la cabeza del
+            // par; no recorre la cola ni decide nada (antes drenaba con avidez y
+            // adelantaba a los mensajes que esperaban su reintento).
             sender.onPeerOnline(peerId)
+        }
+        // D8: el binding del par llega a CONNECTED. Es la senal buena para
+        // despertar: `sendData` exige CONNECTED, y el driver lo conduce DESPUES
+        // de que el nucleo se haya suscrito a la presencia del rele. Sin este
+        // cable, un mensaje podia despertar con el binding a medio conducir.
+        peerChannelSubscription = peerTransportManager?.onConnectionStateChange { peerId, connected ->
+            if (connected) sender.onPeerConnected(peerId)
         }
         transport.setMessageHandler { data ->
             // R1 — RECEPCION. El camino legado de `MESSAGE` esta cerrado si hay
@@ -187,6 +245,13 @@ class KeyMessageCoreImpl(
         ackManager.registerAckHandler { ack ->
             sender.onAckConfirmed(ack.originalMessageId)
         }
+
+        // D6: la cola persistida (QUEUED) se rehidrata en la cola ordenada al
+        // arrancar. Solo se admiten QUEUED; lo que ya salio se BARRE de la
+        // persistencia (la app nunca llama a `expire`). No se transmite aqui:
+        // todavia puede no haber sesion, y un `NO_SESSION` terminal mataria
+        // mensajes que solo esperaban a que se estableciera.
+        sender.rehydrate()
     }
 
     private val stateChangeHandlers = mutableListOf<(MessageId, MessageState) -> Unit>()
@@ -210,13 +275,65 @@ class KeyMessageCoreImpl(
     }
 
     override fun start(): Result<Unit> {
+        if (closed) return Result.failure(IllegalStateException("el nucleo esta cerrado"))
         if (transport.isOnline()) return Result.success(Unit)
         return transport.connect()
     }
 
     override fun stop() {
+        if (closed) return
         if (transport.connectionState() == ConnectionState.DISCONNECTED) return
         transport.disconnect()
+    }
+
+    /**
+     * Cierra el nucleo: UN solo dueno por identidad (R14).
+     *
+     * ## QUE SE HACE, EN ESTE ORDEN
+     *
+     * 1. Se cancela la suscripcion al canal de par: un `CONNECTED` tardio no
+     *    puede despertar a un emisor que ya no existe.
+     * 2. Se suelta el puente de recepcion (`SecureInbound.detach`): deja de
+     *    mirar sesiones que ya no son de este nucleo.
+     * 3. `sender.abandonInFlight()` convierte cada `SENT` en vuelo en
+     *    `EXPIRED/TIMEOUT` CONSERVANDO su fila. No hay ACK posible al cerrar, y
+     *    un OUT eterno no es accionable; el tombstone si lo es.
+     * 4. `retryManager.shutdown()` detiene el hilo del scheduler: el defecto era
+     *    que `parar()` nunca lo apagaba y quedaba un temporizador vivo sobre un
+     *    nucleo muerto.
+     * 5. Se limpian los handlers para que nadie reciba estados de un nucleo
+     *    cerrado.
+     *
+     * Los `QUEUED` NO se tocan: el sucesor los rehidrata desde el `OfflineQueue`.
+     *
+     * Idempotente: dos llamadas no lanzan y la segunda no hace nada.
+     */
+    override fun close() {
+        synchronized(lifecycleLock) {
+            if (closed) return
+            closed = true
+            peerChannelSubscription?.cancel()
+            peerChannelSubscription = null
+            secureInbound?.detach()
+            sender.abandonInFlight()
+            retryManager.shutdown()
+            sender.clearStateHandlers()
+            receiver.clearMessageHandlers()
+            ackManager.clearAckHandlers()
+            stateChangeHandlers.clear()
+        }
+    }
+
+    /** Reintento explicito (R13). Solo terminales; conserva id y timestamp. */
+    override fun resend(messageId: MessageId): Result<Unit> {
+        if (closed) return Result.failure(IllegalStateException("el nucleo esta cerrado"))
+        return sender.resend(messageId)
+    }
+
+    /** Descarte explicito (R13). Solo terminales; borra la fila. */
+    override fun discard(messageId: MessageId): Result<Unit> {
+        if (closed) return Result.failure(IllegalStateException("el nucleo esta cerrado"))
+        return sender.discard(messageId)
     }
 
     /**
@@ -249,24 +366,83 @@ class KeyMessageCoreImpl(
      * `AckCorrelationTest` es lo que detects eso.
      */
     override fun createMessage(to: IdentityId, payload: ByteArray): Result<Message> = runCatching {
+        check(!closed) { "el nucleo esta cerrado" }
         val message = Message(
             messageId = MessageId(UUID.randomUUID()),
             from = localIdentity,
             to = to,
             payload = payload,
-            timestamp = Instant.now().toEpochMilli(),
+            timestamp = nextTimestamp(),
             state = MessageState.CREATED
         )
         messageStore.insert(message).getOrThrow()
         message
     }
 
+    /**
+     * R10 — marca de creacion MONOTONA dentro del proceso.
+     *
+     * Dos `createMessage` en el mismo milisegundo devuelven marcas DISTINTAS y
+     * crecientes: `max(now, last + 1)`. Sin esta guarda el orden de creacion
+     * empataba y lo decidia el UUID, que es exactamente el "desempate arbitrario"
+     * que R10 prohibe para mensajes de este emisor. El coste declarado es que la
+     * marca puede ir uno o dos milisegundos por delante del reloj de pared; el
+     * orden, que es lo que importa, deja de depender del allocator.
+     */
+    private fun nextTimestamp(): Long = synchronized(lifecycleLock) {
+        val now = Instant.now().toEpochMilli()
+        val next = maxOf(now, lastCreatedTimestamp + 1)
+        lastCreatedTimestamp = next
+        next
+    }
+
+    /**
+     * Envia [message] y, si el envio se RECHAZA, propaga la causa REAL.
+     *
+     * ## POR QUE EL `FailureCode` NO SE HARDCODEA
+     *
+     * Antes esto devolvia `FailureCode.INTERNAL_ERROR` para CUALQUIER fallo, y
+     * eso aplanaba la causa: un rechazo por falta de sesion (`AUTH_FAILED`,
+     * recuperable) llegaba al consumidor como `INTERNAL_ERROR`, que sugiere un
+     * bug interno. Peor: el `MessageStore` —la verdad observable— ya tenia
+     * escrito `FAILED/AUTH_FAILED`, de modo que el `SendResult` y el store
+     * DIVERGIAN y la promesa de que el store es la unica verdad se rompia.
+     *
+     * ## DE DONDE SALE EL CODIGO REAL
+     *
+     * De dos fuentes, en este orden:
+     *
+     *  1. El `MessageStore`, que es la verdad observable por API publica:
+     *     `SenderImpl.failSecure` escribe el `failureCode` ALLI antes de devolver
+     *     el fallo, asi que cuando esta linea corre ya esta escrito. Se lee el
+     *     mensaje por su `messageId`.
+     *  2. Si esa lectura falla o no trae codigo —un store que no persiste el
+     *     detalle, o un mensaje borrado por el camino— se deriva de la
+     *     `SecureSendRejectedException` que [SenderImpl] adjunta al `Result`.
+     *     El motivo fino de la excepcion es la causa del rechazo, y es lo unico
+     *     que queda cuando el store no la tiene.
+     *
+     * Si no hay ninguna de las dos —un fallo sin tipo y sin estado—, el codigo
+     * es `INTERNAL_ERROR`: no se inventa un codigo mas concreto que las fuentes
+     * no sostienen.
+     */
     override fun sendMessage(message: Message): Result<SendResult> = runCatching {
+        check(!closed) { "el nucleo esta cerrado" }
         val result = sender.send(message)
+        // R1/D5: el estado que se reporta es el REAL del store, no un `SENT`
+        // fijo. Un mensaje que se encolo esperando la cabeza del par esta
+        // `QUEUED`, y decirlo es lo unico que permite a la pantalla distinguirlo
+        // de uno que ya salio.
+        val stored = messageStore.get(message.messageId).getOrNull()
+        val state = stored?.state ?: MessageState.FAILED
         if (result.isSuccess) {
-            SendResult(message.messageId, MessageState.SENT)
+            SendResult(message.messageId, state)
         } else {
-            SendResult(message.messageId, MessageState.FAILED, FailureCode.INTERNAL_ERROR)
+            SendResult(
+                message.messageId,
+                state,
+                stored?.failureCode ?: failureCodeOfRejection(result.exceptionOrNull()),
+            )
         }
     }
 
@@ -305,3 +481,23 @@ class KeyMessageCoreImpl(
         stateChangeHandlers.add(handler)
     }
 }
+
+/**
+ * Deriva el `FailureCode` de un rechazo TIPADO del camino cifrado.
+ *
+ * Es la RED DE SEGURIDAD de [KeyMessageCoreImpl.sendMessage]: se usa cuando el
+ * `MessageStore` no tiene el codigo —un store que no persiste el detalle, o un
+ * mensaje que ya no esta— y lo unico que queda es la
+ * [SecureSendRejectedException] que `SenderImpl.failSecure` adjunta al `Result`.
+ *
+ * El mapeo NO se duplica aqui: se delega en
+ * [com.km.messaging.toFailureCode], que es el unico sitio donde la proyeccion
+ * `SecureSendReject -> FailureCode` esta escrita. Un segundo `when` aqui seria
+ * una copia que un dia dira algo distinto del original.
+ *
+ * Un fallo que no sea [SecureSendRejectedException] —un `NoSuchElementException`
+ * del store, un `IllegalStateException`— no tiene causa de rechazo que leer, y
+ * se reporta como `INTERNAL_ERROR`: es lo que ese fallo sin tipo significa.
+ */
+private fun failureCodeOfRejection(failure: Throwable?): FailureCode =
+    (failure as? SecureSendRejectedException)?.reason?.toFailureCode() ?: FailureCode.INTERNAL_ERROR

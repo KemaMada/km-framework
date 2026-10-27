@@ -6,6 +6,9 @@ import com.km.messaging.SecureInbound
 import com.km.messaging.SecureSessionRegistry
 import com.km.model.IdentityId
 import com.km.node.PeerTransportManager
+import com.km.protocol.DaemonRetryScheduler
+import com.km.protocol.RetryManagerImpl
+import com.km.protocol.RetryScheduler
 import com.km.protocol.Transport
 
 /**
@@ -61,6 +64,10 @@ class CoreFactory {
      * @param peerPublicKeyResolver clave de FIRMA de un peer, para autenticar
      *   sus `ACK`. Sin bundle verificado no hay clave de firma que verificar, y
      *   un resolvedor que inventa una seria peor que uno que devuelve `null`.
+     * @param retryScheduler reloj del motor de reintentos. El valor por defecto
+     *   es el de PRODUCCION ([DaemonRetryScheduler], un hilo daemon); el test
+     *   determinista inyecta uno manual para recorrer el techo de 155 s sin
+     *   dormir. NO cambia el backoff (5 s, x2, 5 intentos): eso sigue en km-core.
      * @throws IllegalArgumentException si [manager] no es el gestor que
      *   corresponde al [transport]. Es una invariante de ENSAMBLADO, no un
      *   fallo de transporte, y por eso se comprueba aqui y no en km-core.
@@ -71,6 +78,7 @@ class CoreFactory {
         transport: Transport,
         manager: PeerTransportManager,
         peerPublicKeyResolver: (IdentityId) -> ByteArray?,
+        retryScheduler: RetryScheduler = DaemonRetryScheduler(),
     ): CoreBundle {
         val registry = SecureSessionRegistry(localIdentity)
         val core = KeyMessageCoreImpl(
@@ -90,6 +98,10 @@ class CoreFactory {
             // enterarse de que llego un wire, y adivinar seria tratar bytes de
             // sesion como si fueran JSON.
             peerTransportManager = manager,
+            // D12: el reloj del reintento es INYECTABLE. En produccion es el
+            // mismo scheduler de siempre; en km-desktop tests se pasa uno manual
+            // para llegar al EXPIRED sin esperar 155 s reales.
+            retryManager = RetryManagerImpl(scheduler = retryScheduler),
         )
         return CoreBundle(core, registry, manager)
     }

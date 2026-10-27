@@ -172,6 +172,47 @@ class RelayDataCodec(
             put("signature", encoder.encodeToString(ack.signature))
         }.toString()
 
+    /**
+     * `SIGNAL` saliente: la EXTENSION de senalizacion del rele.
+     *
+     * ## POR QUE ESTA EN `km-transport` Y NO EN `km-core`
+     *
+     * Porque el socket y su dialecto viven aqui. `km-core` no tiene
+     * dependencias de red —es una regla del proyecto, no una preferencia— y un
+     * frame de senalizacion es un frame de RED: nace en el cable y se consume en
+     * el cable. Meterlo en el framework obligaria al framework a saber de
+     * sockets.
+     *
+     * ## EL `from` LO PONE EL RELE, NO ESTE CODIGO
+     *
+     * El `from` que sale es SIEMPRE la identidad local: el rele rechaza con
+     * `RELAY_NOT_AUTHORIZED` cualquier `from` que no sea el peer autenticado, y
+     * el anti-spoofing de `RelayServer.handleSignal` compara el `from` con la
+     * sesion. Un `from` escribible por el llamante seria una firma falsificable.
+     *
+     * ## LA CARGA ES Base64 ESTANDAR
+     *
+     * Es el mismo alfabeto que el campo `data` de un `MESSAGE` (RFC 4648 §4) y
+     * el mismo que usa el rele (`Base64Standard`). Mezclarlo con el Base64URL de
+     * los campos de autenticacion seria un fallo de interoperabilidad invisible:
+     * el rele rechazaria la carga y el emisor creeria que el par estaba offline.
+     */
+    fun encodeSignal(
+        from: IdentityId,
+        to: IdentityId,
+        kind: String,
+        contactBundle: ByteArray? = null,
+    ): String =
+        buildJsonObject {
+            put("type", TYPE_SIGNAL)
+            put("messageId", newUuid().toString())
+            put("timestamp", now())
+            put("from", from.value)
+            put("to", to.value)
+            put("kind", kind)
+            if (contactBundle != null) put("contactBundle", encoder.encodeToString(contactBundle))
+        }.toString()
+
     // ------------------------------------------------------------------
     // Entrada
     // ------------------------------------------------------------------
@@ -217,6 +258,53 @@ class RelayDataCodec(
             ?.let { runCatching { decoder.decode(it) }.getOrNull() }
             ?: return null
         return Ack(from, to, MessageId(original), status, timestamp, signature)
+    }
+
+    /**
+     * `SIGNAL` entrante. NUNCA LANZA.
+     *
+     * ## POR QUE NO LANZA
+     *
+     * Porque un frame ilegible se descarta SIN matar la conexion (§7.1, regla 4).
+     * Una excepcion aqui tumbaria la conexion entera por un `SIGNAL` de otro
+     * cliente con un `kind` que este no conoce, que es exactamente el caso de
+     * R10: "un cliente nuevo contra un rele sin senalizacion degrada sin romper".
+     *
+     * Los tres finales son EXPLICITOS, y cada uno lleva su codigo estable:
+     *
+     * - [DecodedSignal.Known]: la senal se entendio.
+     * - [DecodedSignal.UnknownKind]: el `kind` no es de este dialecto. Se
+     *   ignora con log y la conexion sigue viva.
+     * - [DecodedSignal.Invalid]: el frame no se pudo leer (envelope incompleto,
+     *   carga ausente o Base64 invalido). Se descarta con su codigo.
+     */
+    fun decodeSignal(frame: JsonObject): DecodedSignal {
+        val from = frame.identityId("from")
+            ?: return DecodedSignal.Invalid(CODE_SIGNAL_ENVELOPE_INVALID)
+        val to = frame.identityId("to")
+            ?: return DecodedSignal.Invalid(CODE_SIGNAL_ENVELOPE_INVALID)
+        val kind = frame.string("kind")
+            ?: return DecodedSignal.Invalid(CODE_SIGNAL_ENVELOPE_INVALID)
+
+        if (kind !in KNOWN_SIGNAL_KINDS) {
+            return DecodedSignal.UnknownKind(from, to, kind)
+        }
+
+        return when (kind) {
+            KIND_CONTACT_EXCHANGE -> {
+                val encoded = frame.string("contactBundle")
+                    ?: return DecodedSignal.Invalid(CODE_SIGNAL_BUNDLE_MISSING)
+                val bytes = runCatching { decoder.decode(encoded) }.getOrNull()
+                    ?: return DecodedSignal.Invalid(CODE_SIGNAL_BASE64_INVALID)
+                DecodedSignal.Known(from, to, kind, contactBundle = bytes)
+            }
+            KIND_SDP_OFFER, KIND_SDP_ANSWER, KIND_ICE_CANDIDATE -> {
+                val text = frame.string("sdp") ?: frame.string("candidate")
+                    ?: return DecodedSignal.Invalid(CODE_SIGNAL_ENVELOPE_INVALID)
+                DecodedSignal.Known(from, to, kind, text = text)
+            }
+            else -> DecodedSignal.UnknownKind(from, to, kind)
+        }
     }
 
     // ------------------------------------------------------------------
@@ -287,10 +375,117 @@ class RelayDataCodec(
         const val TYPE_MESSAGE: String = "MESSAGE"
         const val TYPE_ACK: String = "ACK"
 
+        /**
+         * Discriminante de la EXTENSION de senalizacion.
+         *
+         * No es un tipo de §8 del dialecto normativo: el documento no define como
+         * viajan SDP/ICE, y el rele lo anadio como extension. Se declara aqui, en el
+         * unico sitio donde se escriben y se leen los campos de un `SIGNAL`.
+         */
+        const val TYPE_SIGNAL: String = "SIGNAL"
+
+        /** `kind` del intercambio de contactos: el bundle del emisor. */
+        const val KIND_CONTACT_EXCHANGE: String = "contact_exchange"
+
+        const val KIND_SDP_OFFER: String = "sdp_offer"
+        const val KIND_SDP_ANSWER: String = "sdp_answer"
+        const val KIND_ICE_CANDIDATE: String = "ice_candidate"
+
+        /**
+         * Los `kind` que este dialecto conoce.
+         *
+         * Un `kind` que no esta aqui NO es un error: es una senal de otro
+         * cliente (o de otra version), y se ignora sin cortar la conexion.
+         */
+        val KNOWN_SIGNAL_KINDS: Set<String> = setOf(
+            KIND_CONTACT_EXCHANGE,
+            KIND_SDP_OFFER,
+            KIND_SDP_ANSWER,
+            KIND_ICE_CANDIDATE,
+        )
+
+        /** El envelope del `SIGNAL` no tiene `from`, `to` o `kind` utilizables. */
+        const val CODE_SIGNAL_ENVELOPE_INVALID: String = "SIGNAL_ENVELOPE_INVALID"
+
+        /** `contact_exchange` sin carga: el bundle no viaja. */
+        const val CODE_SIGNAL_BUNDLE_MISSING: String = "SIGNAL_BUNDLE_MISSING"
+
+        /** La carga no es Base64 estandar. */
+        const val CODE_SIGNAL_BASE64_INVALID: String = "SIGNAL_BASE64_INVALID"
+
         /** Longitud de un `identityId`: 32 bytes en hex. */
         const val IDENTITY_ID_HEX: Int = 64
 
         private val HEX = "0123456789abcdefABCDEF".toSet()
+    }
+}
+
+/**
+ * El resultado de leer un frame `SIGNAL`.
+ *
+ * ## POR QUE ES UN TIPO CERRADO Y NO UN `null`
+ *
+ * Porque "no se entendio" y "se entendio y se ignoro" son cosas DISTINTAS, y
+ * confundirlas es como se pierde un `SIGNAL` sin dejar rastro. Un `kind`
+ * desconocido se ignora CON RAZON (`SIGNAL_UNKNOWN_KIND`); un Base64 invalido es
+ * un rechazo CON CODIGO (`SIGNAL_BASE64_INVALID`); y un envelope sin `from` es
+ * un frame roto. Los tres se descartan, pero se cuentan distinto, y el log dice
+ * cual.
+ */
+sealed class DecodedSignal {
+
+    /** La senal se entendio y se puede entregar. */
+    class Known(
+        val from: IdentityId,
+        val to: IdentityId,
+        val kind: String,
+        /** Texto de la senal (`sdp`/`candidate`), o `null`. */
+        val text: String? = null,
+        /** Portador del contacto, o `null`. */
+        val contactBundle: ByteArray? = null,
+    ) : DecodedSignal() {
+        override fun equals(other: Any?): Boolean {
+            if (other !is Known) return false
+            if (from != other.from || to != other.to || kind != other.kind) return false
+            if (text != other.text) return false
+            val a = contactBundle
+            val b = other.contactBundle
+            if (a == null || b == null) return a == null && b == null
+            return a.contentEquals(b)
+        }
+
+        override fun hashCode(): Int {
+            var result = from.hashCode()
+            result = 31 * result + to.hashCode()
+            result = 31 * result + kind.hashCode()
+            result = 31 * result + (text?.hashCode() ?: 0)
+            result = 31 * result + (contactBundle?.contentHashCode() ?: 0)
+            return result
+        }
+
+        override fun toString(): String =
+            "Known(from=${from.value.take(8)}…, to=${to.value.take(8)}…, kind=$kind, " +
+                "bytes=${contactBundle?.size ?: 0})"
+    }
+
+    /**
+     * El `kind` no es de este dialecto.
+     *
+     * Se IGNORA, no se rechaza: la conexion sigue viva (R1) y el cliente puede
+     * ser de otra version. El codigo estable es `SIGNAL_UNKNOWN_KIND`.
+     */
+    class UnknownKind(
+        val from: IdentityId,
+        val to: IdentityId,
+        val kind: String,
+    ) : DecodedSignal() {
+        override fun toString(): String =
+            "UnknownKind(from=${from.value.take(8)}…, kind=$kind)"
+    }
+
+    /** El frame no se pudo leer. [code] dice por que. */
+    class Invalid(val code: String) : DecodedSignal() {
+        override fun toString(): String = "Invalid(code=$code)"
     }
 }
 

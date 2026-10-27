@@ -52,10 +52,18 @@ class NodeRuntimeImplTest {
             stopCount++
         }
 
+        override fun close() {}
+
         override fun createMessage(to: IdentityId, payload: ByteArray): Result<Message> =
             Result.failure(UnsupportedOperationException())
 
         override fun sendMessage(message: Message): Result<SendResult> =
+            Result.failure(UnsupportedOperationException())
+
+        override fun resend(messageId: MessageId): Result<Unit> =
+            Result.failure(UnsupportedOperationException())
+
+        override fun discard(messageId: MessageId): Result<Unit> =
             Result.failure(UnsupportedOperationException())
 
         override fun getMessageState(messageId: MessageId): Result<MessageState> =

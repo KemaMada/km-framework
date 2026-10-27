@@ -96,8 +96,11 @@ class SecureMessagingSession(
         }
         // 3. Solo ahora se entrega al transporte.
         val result = transport.sendData(localIdentity, peerContext, wire)
+        // El rechazo del TRANSPORTE viaja CON el wire: el ratchet ya lo produjo
+        // y su clave ya esta consumida, asi que tirarlo obligaria al reintento a
+        // re-cifrar (otra clave, otro frame) por un mensaje que no cambio.
         return if (result.isSuccess) SendResult.Ok(wire.size, wire)
-        else SendResult.Rejected(SendReject.TRANSPORT_REJECTED)
+        else SendResult.Rejected(SendReject.TRANSPORT_REJECTED, wire)
     }
 
     /**
@@ -130,7 +133,7 @@ class SecureMessagingSession(
         }
         val result = transport.sendData(localIdentity, peerContext, wire)
         return if (result.isSuccess) SendResult.Ok(wire.size, wire)
-        else SendResult.Rejected(SendReject.TRANSPORT_REJECTED)
+        else SendResult.Rejected(SendReject.TRANSPORT_REJECTED, wire)
     }
 
     /**
@@ -233,7 +236,22 @@ sealed class SendResult {
         override fun hashCode(): Int = 31 * bytes + wire.contentHashCode()
     }
 
-    data class Rejected(val reason: SendReject) : SendResult()
+    data class Rejected(
+        val reason: SendReject,
+        /**
+         * El frame que el ratchet YA produjo, cuando el rechazo es del
+         * transporte. Vacio en el resto: ahi no hay frame.
+         */
+        val wire: ByteArray = ByteArray(0),
+    ) : SendResult() {
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (other !is Rejected) return false
+            return reason == other.reason && wire.contentEquals(other.wire)
+        }
+
+        override fun hashCode(): Int = 31 * reason.hashCode() + wire.contentHashCode()
+    }
 }
 
 /** Motivos de rechazo al enviar. */

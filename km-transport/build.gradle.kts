@@ -106,6 +106,22 @@ dependencies {
     testImplementation("org.junit.jupiter:junit-jupiter:5.10.0")
 
     // ---------------------------------------------------------------------
+    // SOLO PARA PRUEBAS: el MISMO motor que usa Android
+    // ---------------------------------------------------------------------
+    //
+    // `NetworkRedialTest` mide la liveness contra un proxy que deja de
+    // reenviar sin cerrar (blackhole). El mecanismo que saca al motor de ese
+    // estado es el ping RFC 6455 configurado en el ENGINE: en Android es
+    // OkHttp (`RelayStackFactory.androidClient`) y en CIO la cota es 3x el
+    // intervalo, no 2x. Probar con el motor de produccion de Android es lo que
+    // hace que el test hable del camino real, no de una aproximacion.
+    //
+    // `testImplementation` a proposito: no entra en el POM publicado ni en
+    // ningun binario de producto; el motor de producto de este modulo sigue
+    // siendo CIO.
+    testImplementation("io.ktor:ktor-client-okhttp:3.1.3")
+
+    // ---------------------------------------------------------------------
     // SOLO PARA PRUEBAS: el rele de verdad
     // ---------------------------------------------------------------------
     //

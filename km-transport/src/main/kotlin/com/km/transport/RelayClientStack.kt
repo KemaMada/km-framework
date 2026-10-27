@@ -89,6 +89,38 @@ class RelayClientStack private constructor(
         transport.close()
     }
 
+    // ------------------------------------------------------------------
+    // Senalizacion: el intercambio de contactos
+    // ------------------------------------------------------------------
+
+    /**
+     * Envia el portador del contacto propio a [to] por `SIGNAL/contact_exchange`.
+     *
+     * ## POR QUE VIVE EN LA PILA Y NO EN EL MOTOR SOLO
+     *
+     * Porque el motor habla con el rele, y la pila es la que sabe que este
+     * cliente es "el que tiene contactos". Delegar aqui evita que el consumidor
+     * tenga que compositionar dos objetos y que las dos caras se puedan
+     * desalinear: el bundle que sale y el que entra usan el MISMO `kind` y el
+     * MISMO `RelayClientStack`.
+     */
+    fun sendContactBundle(to: IdentityId, bundle: ByteArray): Result<Unit> =
+        transport.sendSignal(to, RelayDataCodec.KIND_CONTACT_EXCHANGE, bundle)
+
+    /**
+     * Se suscribe al portador de contacto que llega de [from].
+     *
+     * MULTI-suscriptor, como `onPeerOnline`: uno mas no puede matar al otro.
+     */
+    fun onContactBundle(handler: (from: IdentityId, bundle: ByteArray) -> Unit) {
+        transport.onSignal { decoded ->
+            if (decoded !is DecodedSignal.Known) return@onSignal
+            if (decoded.kind != RelayDataCodec.KIND_CONTACT_EXCHANGE) return@onSignal
+            val bytes = decoded.contactBundle ?: return@onSignal
+            handler(decoded.from, bytes)
+        }
+    }
+
     companion object {
         /**
          * Compone la pila sobre un motor YA CONSTRUIDO.

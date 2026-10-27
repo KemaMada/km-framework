@@ -177,18 +177,45 @@ class EncryptedReceivePathTest {
     }
 
     @Test
-    fun `el Message entrante lleva timestamp 0 porque el sobre v1 no lleva tiempo`() {
-        // R4: `MessageEnvelope` v1 no tiene campo de tiempo. Se reconstruye con
-        // 0 y se DECLARA; inventar la hora de ahora seria un dato falso con
-        // apariencia de bueno.
+    fun `el Message entrante lleva el sello de llegada del receptor`() {
+        // R9: `MessageEnvelope` v1 no tiene campo de tiempo, luego la hora de
+        // ENVIO no esta en los bytes y no se puede reconstruir. Lo que SI se
+        // sabe es cuando llego: se sella la recepcion. Antes se ponia 0 y la
+        // conversacion se ordenaba por un empate que resolvia el rowid de
+        // SQLite; el orden dependia del almacenamiento y no del tiempo.
         val mundo = SecureWorld.open()
         val recibido = mutableListOf<Message>()
         mundo.bob.core.registerMessageHandler { recibido.add(it) }
 
+        val antes = System.currentTimeMillis()
         mundo.bob.deliverInboundAs(
              mundo.bobToAlice,
-            enviadoPorA(mundo),
+            framePor(mundo, requireNotNull(mundo.sessionA), "uno".toByteArray()),
         )
-        assertEquals(0L, recibido.single().timestamp, "el sobre v1 no lleva tiempo")
+        val despues = System.currentTimeMillis()
+
+        val primero = recibido.single()
+        assertTrue(primero.timestamp != 0L, "el sobre v1 no lleva tiempo: se sella la LLEGADA")
+        assertTrue(
+            primero.timestamp in antes..despues,
+            "y el sello cae dentro de la ventana en que el frame se entrego (${primero.timestamp} no esta en $antes..$despues)",
+        )
+
+        // Un segundo mensaje llega DESPUES: su sello no puede retroceder. Es lo
+        // que hace que ordenar por `timestamp` sea ordenar por llegada.
+        //
+        // El frame se produce DIRECTO con la sesion, no con `core.sendMessage`:
+        // con la puerta de cabecera el primer mensaje seguiria en vuelo sin ACK
+        // y el segundo esperaria su turno, de modo que este test estaria
+        // midiendo el orden del emisor y no el sello de recepcion.
+        mundo.bob.deliverInboundAs(
+             mundo.bobToAlice,
+            framePor(mundo, requireNotNull(mundo.sessionA), "dos".toByteArray()),
+        )
+        assertEquals(2, recibido.size, "el segundo frame tambien se entrego")
+        assertTrue(
+            recibido[1].timestamp >= recibido[0].timestamp,
+            "el sello de llegada no retrocede entre mensajes",
+        )
     }
 }

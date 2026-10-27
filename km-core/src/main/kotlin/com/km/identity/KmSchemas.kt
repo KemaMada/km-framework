@@ -148,7 +148,7 @@ object KmSchemas {
         }
         val m = value as Map<String, Any?>
 
-        if (schema.docValue != null && m["doc"] != schema.docValue) {
+        if (schema.docValue != null && m.containsKey("doc") && m["doc"] != schema.docValue) {
             throw KmIdSchemaException("FIELD_TYPE", "${path}doc debe ser ${schema.docValue}")
         }
 
@@ -188,11 +188,11 @@ object KmSchemas {
         "DeviceEntry",
         null,
         listOf(
-            Field("deviceId", "bstr32"),
+            Field("deviceId", "bstr32", required = false),
             Field("signingKey", "bstr32"),
             Field("agreementKey", "bstr32"),
-            Field("status", "uint", enum = KmIdConstants.DEVICE_STATUS_VALUES),
-            Field("addedAt", "uint"),
+            Field("status", "uint", required = false, enum = KmIdConstants.DEVICE_STATUS_VALUES),
+            Field("addedAt", "uint", required = false),
             Field("name", "text", required = false, size = KmIdConstants.MAX_NAME_BYTES),
             Field("revokedAt", "uint", required = false),
         ),
@@ -203,13 +203,13 @@ object KmSchemas {
         "DeviceRoster",
         KmIdConstants.DOC_ROSTER,
         listOf(
-            Field("doc", "doc", enum = KmIdConstants.DOC_ROSTER),
+            Field("doc", "doc", required = false, enum = KmIdConstants.DOC_ROSTER),
             Field("version", "uint"),
-            Field("identityRoot", "bstr32"),
-            Field("identityId", "bstr32"),
-            Field("sequence", "uint"),
-            Field("previous", "bstr32"),
-            Field("createdAt", "uint"),
+            Field("identityRoot", "bstr32", required = false),
+            Field("identityId", "bstr32", required = false),
+            Field("sequence", "uint", required = false),
+            Field("previous", "bstr32", required = false),
+            Field("createdAt", "uint", required = false),
             Field("devices", "array", maxLen = KmIdConstants.MAX_DEVICES),
             Field("signature", "bstr64"),
         ),
@@ -220,13 +220,13 @@ object KmSchemas {
         "SignedPrekey",
         KmIdConstants.DOC_SIGNED_PREKEY,
         listOf(
-            Field("doc", "doc", enum = KmIdConstants.DOC_SIGNED_PREKEY),
+            Field("doc", "doc", required = false, enum = KmIdConstants.DOC_SIGNED_PREKEY),
             Field("version", "uint"),
-            Field("deviceId", "bstr32"),
+            Field("deviceId", "bstr32", required = false),
             Field("keyId", "uint"),
             Field("publicKey", "bstr32"),
-            Field("createdAt", "uint"),
-            Field("expiresAt", "uint"),
+            Field("createdAt", "uint", required = false),
+            Field("expiresAt", "uint", required = false),
             Field("signature", "bstr64"),
         ),
         signatureFields = listOf("signature"),
@@ -261,19 +261,19 @@ object KmSchemas {
         "ContactBundle",
         KmIdConstants.DOC_CONTACT_BUNDLE,
         listOf(
-            Field("doc", "doc", enum = KmIdConstants.DOC_CONTACT_BUNDLE),
+            Field("doc", "doc", required = false, enum = KmIdConstants.DOC_CONTACT_BUNDLE),
             Field("version", "uint"),
-            Field("kind", "uint", enum = KmIdConstants.BUNDLE_KIND_VALUES),
-            Field("createdAt", "uint"),
+            Field("kind", "uint", required = false, enum = KmIdConstants.BUNDLE_KIND_VALUES),
+            Field("createdAt", "uint", required = false),
             Field("identityRoot", "bstr32"),
-            Field("identityId", "bstr32"),
+            Field("identityId", "bstr32", required = false),
             Field("roster", "map"),
             Field("subjectDeviceId", "bstr32"),
-            Field("subjectSigningKey", "bstr32"),
-            Field("subjectAgreementKey", "bstr32"),
+            Field("subjectSigningKey", "bstr32", required = false),
+            Field("subjectAgreementKey", "bstr32", required = false),
             Field("signedPrekey", "map"),
             Field("oneTimePrekeys", "array", maxLen = KmIdConstants.MAX_ONE_TIME_PREKEYS),
-            Field("capabilities", "uint", maxValue = KmIdConstants.MAX_CAPABILITIES_UINT),
+            Field("capabilities", "uint", required = false, maxValue = KmIdConstants.MAX_CAPABILITIES_UINT),
             Field("signature", "bstr64"),
             Field("expiresAt", "uint", required = false),
             Field("endpoints", "array", required = false, maxLen = KmIdConstants.MAX_ENDPOINTS),

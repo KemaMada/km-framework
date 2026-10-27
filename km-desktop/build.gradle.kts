@@ -74,7 +74,35 @@ dependencies {
     // ---------------------------------------------------------------------
     // Terminal
     // ---------------------------------------------------------------------
+    //
+    // `org.jline:jline` es el BUNDLE: ya trae `jline-terminal`, `jline-reader`,
+    // `jline-display` y tambien las CLASES del proveedor `jna` (verificado con
+    // `unzip -l`: `org/jline/terminal/impl/jna/...`). Lo que el bundle NO trae
+    // es `com.sun.jna`, porque su POM declara `jna` como `optional`.
+    //
+    // En Windows, sin `com.sun.jna` en el runtime, `TerminalBuilder` no puede
+    // usar el proveedor JNA y cae al terminal "dumb": se pierde el control de
+    // cursor y la TUI no arranca. Por eso `jna` va como `runtimeOnly`.
+    //
+    // `jline-terminal-jna` se declara ademas del bundle (decision del design
+    // G2/D1) para que la dependencia sea explicita y sobreviva a un cambio del
+    // bundle a modulos sueltos; hoy sus clases tambien estan en el bundle y son
+    // la misma version, asi que no hay dos implementaciones distintas.
     implementation("org.jline:jline:3.30.17")
+    runtimeOnly("org.jline:jline-terminal-jna:3.30.17")
+    // Version alineada con `jna.version` del jline-parent 3.30.17 (5.19.1).
+    runtimeOnly("net.java.dev.jna:jna:5.19.1")
+
+    // ---------------------------------------------------------------------
+    // QR en terminal
+    // ---------------------------------------------------------------------
+    //
+    // zxing-core 3.5.3: Apache-2.0, la MISMA version que usa la app Android
+    // (`libs.zxing.core`). Se usa solo para CODIFICAR el QR del portador propio
+    // (`QRCodeWriter`); no se implementa Reed-Solomon ni un codificador propio.
+    // El escritorio NO escanea QR: muestra el del contacto para que lo lea el
+    // movil.
+    implementation("com.google.zxing:core:3.5.3")
 
     // `kansi` queda FUERA a proposito.
     //

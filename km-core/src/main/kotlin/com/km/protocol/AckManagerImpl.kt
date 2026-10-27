@@ -78,6 +78,11 @@ class AckManagerImpl(
         ackHandlers.add(handler)
     }
 
+    /** D3 — un nucleo cerrado no procesa ni notifica `ACK`. */
+    internal fun clearAckHandlers() {
+        ackHandlers.clear()
+    }
+
     fun expectAck(messageId: MessageId) {
         pendingAcks[messageId] = mutableListOf()
     }

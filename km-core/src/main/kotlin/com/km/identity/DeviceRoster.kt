@@ -227,7 +227,8 @@ object DeviceRoster {
         expectedIdentityRoot: ByteArray? = null,
         requireChain: Boolean = true,
     ) {
-        val identityRoot = roster["identityRoot"] as ByteArray
+        val identityRoot = (roster["identityRoot"] as? ByteArray) ?: (expectedIdentityRoot
+            ?: throw KmIdVerificationException("MISSING_FIELD", "identityRoot ausente"))
         val devices = roster["devices"] as List<Map<String, Any?>>
 
         if (expectedIdentityRoot != null && !identityRoot.contentEquals(expectedIdentityRoot)) {
@@ -235,11 +236,13 @@ object DeviceRoster {
         }
 
         // Invariante: identityId es DERIVADA de identityRoot, nunca declarada.
-        val declaredIdentityId = roster["identityId"] as ByteArray
-        if (!declaredIdentityId.contentEquals(KmIds.identityId(identityRoot))) {
-            throw KmIdVerificationException(
-                "IDENTITY_ID_MISMATCH", "identityId no coincide con su derivacion"
-            )
+        if (roster.containsKey("identityId")) {
+            val declaredIdentityId = roster["identityId"] as ByteArray
+            if (!declaredIdentityId.contentEquals(KmIds.identityId(identityRoot))) {
+                throw KmIdVerificationException(
+                    "IDENTITY_ID_MISMATCH", "identityId no coincide con su derivacion"
+                )
+            }
         }
 
         if (devices.isEmpty()) {
@@ -258,17 +261,20 @@ object DeviceRoster {
         for (entry in devices) {
             KmSchemas.validate(KmSchemas.DEVICE_ENTRY, entry, "DeviceRoster.devices[].")
             val signingKey = entry["signingKey"] as ByteArray
-            val deviceId = entry["deviceId"] as ByteArray
-            if (!deviceId.contentEquals(KmIds.deviceId(signingKey))) {
-                throw KmIdVerificationException(
-                    "DEVICE_ID_MISMATCH", "deviceId no coincide con su derivacion"
-                )
+            val deviceId = (entry["deviceId"] as? ByteArray) ?: KmIds.deviceId(signingKey)
+            if (entry.containsKey("deviceId")) {
+                if (!deviceId.contentEquals(KmIds.deviceId(signingKey))) {
+                    throw KmIdVerificationException(
+                        "DEVICE_ID_MISMATCH", "deviceId no coincide con su derivacion"
+                    )
+                }
             }
             if (!seen.add(KmIdFixturesHex.of(deviceId))) {
                 throw KmIdVerificationException("DUPLICATE_DEVICE", "deviceId repetido en el roster")
             }
 
-            val isRevoked = entry["status"] == KmIdConstants.STATUS_REVOKED
+            val status = (entry["status"] as? Long) ?: KmIdConstants.STATUS_ACTIVE
+            val isRevoked = status == KmIdConstants.STATUS_REVOKED
             val hasRevokedAt = entry.containsKey("revokedAt")
             if (isRevoked != hasRevokedAt) {
                 throw KmIdVerificationException(
@@ -279,31 +285,33 @@ object DeviceRoster {
         }
 
         // Continuidad de la cadena.
-        val sequence = roster["sequence"] as Long
-        val previous = roster["previous"] as ByteArray
-        if (sequence == 1L) {
-            // El ancla genesis es comprobable sin estado externo: siempre.
-            if (!previous.contentEquals(genesisPrevious(identityRoot))) {
-                throw KmIdVerificationException("PREVIOUS_MISMATCH", "el ancla genesis no coincide")
-            }
-        } else if (!requireChain) {
-            // Contexto de bundle: la continuidad no es verificable aqui. Solo
-            // se comprueba que el enlace tenga tamano de hash.
-            if (previous.size != KmIdConstants.HASH_BYTES) {
-                throw KmIdVerificationException("PREVIOUS_MISMATCH", "previous debe tener 32 bytes")
-            }
-        } else {
-            if (previousRoster == null) {
-                throw KmIdVerificationException("MISSING_PREVIOUS", "se requiere el roster previo")
-            }
-            val prevRoot = previousRoster["identityRoot"] as ByteArray
-            if (!prevRoot.contentEquals(identityRoot)) {
-                throw KmIdVerificationException(
-                    "IDENTITY_MISMATCH", "el roster previo es de otra identidad"
-                )
-            }
-            if (!previous.contentEquals(chainPrevious(previousRoster))) {
-                throw KmIdVerificationException("PREVIOUS_MISMATCH", "el enlace de la cadena no coincide")
+        val sequence = (roster["sequence"] as? Long) ?: 1L
+        if (roster.containsKey("previous")) {
+            val previous = roster["previous"] as ByteArray
+            if (sequence == 1L) {
+                // El ancla genesis es comprobable sin estado externo: siempre.
+                if (!previous.contentEquals(genesisPrevious(identityRoot))) {
+                    throw KmIdVerificationException("PREVIOUS_MISMATCH", "el ancla genesis no coincide")
+                }
+            } else if (!requireChain) {
+                // Contexto de bundle: la continuidad no es verificable aqui. Solo
+                // se comprueba que el enlace tenga tamano de hash.
+                if (previous.size != KmIdConstants.HASH_BYTES) {
+                    throw KmIdVerificationException("PREVIOUS_MISMATCH", "previous debe tener 32 bytes")
+                }
+            } else {
+                if (previousRoster == null) {
+                    throw KmIdVerificationException("MISSING_PREVIOUS", "se requiere el roster previo")
+                }
+                val prevRoot = previousRoster["identityRoot"] as ByteArray
+                if (!prevRoot.contentEquals(identityRoot)) {
+                    throw KmIdVerificationException(
+                        "IDENTITY_MISMATCH", "el roster previo es de otra identidad"
+                    )
+                }
+                if (!previous.contentEquals(chainPrevious(previousRoster))) {
+                    throw KmIdVerificationException("PREVIOUS_MISMATCH", "el enlace de la cadena no coincide")
+                }
             }
         }
 
@@ -332,7 +340,8 @@ object DeviceRoster {
         @Suppress("UNCHECKED_CAST")
         val devices = roster["devices"] as List<Map<String, Any?>>
         for (entry in devices) {
-            val deviceId = entry["deviceId"] as ByteArray
+            val signingKey = entry["signingKey"] as ByteArray
+            val deviceId = (entry["deviceId"] as? ByteArray) ?: KmIds.deviceId(signingKey)
             if (deviceId.contentEquals(targetDeviceId)) return entry
         }
         return null

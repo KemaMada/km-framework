@@ -12,6 +12,73 @@ artefacto publicado.
 
 ## [No publicado]
 
+### Añadido — `km-desktop`: TUI de pantallas, lanzadores `./km` y `km.cmd`
+
+`km-desktop` deja de ser solo un REPL de líneas. El modo por defecto es una TUI
+de pantallas keyboard-first, con el mismo modelo puro para los tres modos
+(`--tui`, `--accessible`, `--no-tui`). No se toca el wire, ni `SecureFrame` v1
+(44 B), ni el ratchet, ni X3DH, ni HMAC: el shell **orquesta y pinta**, no habla
+protocolo.
+
+**Añadido** (`km-desktop/src/main/kotlin/com/km/desktop/`):
+
+- `ui/` — modelo inmutable (`ShellState`, `ShellAction`, `ShellEffect`), pila de
+  navegación pura (`ScreenStack`), keymap, `ShellReducer` sin IO, `ShellRenderer`
+  con cajas rectas y ancho exacto, `Sanitizer` (ESC/C0/C1/CSI/OSC/bidi),
+  `QrRenderer` (zxing-core, ISO-8859-1, margen 4, corrección L) y `Osc52`.
+- `shell/` — `JLineShell` y `ScreenWriter` como **único escritor** del terminal;
+  pantalla alternativa, `SIGWINCH`, restauración en salida normal, EOF, SIGINT y
+  excepción. `LineModeShell` conserva el REPL de G1.
+- `client/` — servicios sin UI de contacto, chat, recuperación, diagnóstico y
+  export. `RecoveryService` revela/copia la frase solo tras confirmación y
+  restaura con `IdentityKeystore.writeFromSeed` (solo identidad).
+- `platform/` — `ConfigPaths` (XDG/HOME en POSIX, APPDATA/USERPROFILE en Windows)
+  y `OwnerPermissions` (700/600 POSIX, ACL de propietario en Windows con aviso si
+  no hay soporte). Sin rutas POSIX hardcodeadas y sin shell-out.
+
+**Pantallas**: desbloqueo (passphrase enmascarada, identidad antes de red),
+INICIO/contactos con aviso de lista VOLÁTIL, IMPORTAR (texto, `.km` ISO-8859-1
+hasta 64 KiB, ver mi QR), COMPARTIR (QR de salida, OSC 52, `.km`), CONVERSACIÓN
+(`[OUT]` solo bytes aceptados, `[ENTREGADO]` solo ACK verificado, `[EXPIRADO
+motivo]` con `R`/`D`), FRASE (oculta, reveal confirmado, nunca en logs) y
+DIAGNÓSTICO/LOGS con filtro, copia y export redactado.
+
+**Añadido en la raíz**:
+
+- `km` — lanzador POSIX (LF, ejecutable). Si falta
+  `km-desktop/build/libs/km-desktop.jar`, publica `km-core` y `km-transport` en
+  `mavenLocal` y ejecuta `:km-desktop:shadowJar`; después lanza `exec java -jar`
+  con los argumentos intactos y el mismo código de salida. El build escribe en
+  stderr. `KM_REBUILD=1` fuerza el paso de build aunque el jar exista (Gradle decide qué recompilar).
+- `km.cmd` — equivalente batch (CRLF) para Windows 10+.
+
+**Corregido (CRITICAL-1 de la verificación #446)**: a 85x43 —el viewport mínimo
+del QR— la pantalla COMPARTIR metía el QR en la caja y lo recortaba a 81 columnas,
+sustituyendo además 5 filas por `… (5 líneas)`: un QR corrupto y sin aviso. Ahora,
+cuando el QR cabe en el viewport pero no en el marco, se pinta **sin caja** (las 43
+filas intactas); desde 89x47 vuelve el marco con título y barra de acciones, y por
+debajo de 85x43 se declara el mínimo y se ofrece texto/`.km`. Sin cambios en el
+portador, el wire ni la criptografía.
+
+**Guardas**: `DesktopIsAThinClientTest` cubre ahora `Deflater`/`Inflater`,
+`ContactBundle` y `Kce` —además de `Cipher`/`KeyPairGenerator`/`Signature`/`Mac`—
+y exige que `ui/` no referencie crypto, portador ni `com/km/transport/`.
+`TuiSingleWriterTest` pinza un solo escritor y cero `PrintWriter` en `ui/` y
+`client/`. `DesktopCarrierIsSharedTest` sigue siendo la guarda específica del
+codec del portador.
+
+**Documentación corregida**: el README de la raíz y el de `km-desktop` afirmaban
+que la carga viajaba **en claro** y ubicaban `JvmRelayTransport` dentro de
+`km-desktop`. Las dos afirmaciones eran falsas desde p5/p4: el texto viaja en
+`SecureFrame` y el motor vive en `:km-transport`. También se corrigen los límites
+reales: contactos y mensajes **solo en memoria**, sin store-and-forward, sin
+failover de endpoint en caliente, el escritorio **no escanea** QR y la TUI **no
+está auditada**.
+
+**Límites declarados**: `km.cmd`, las ACL de Windows y la TUI en un `pty` real no
+se han ejecutado en este repositorio; se revisan por lectura y tests puros. Los
+contactos siguen pendientes de `persist-contact-book`, que no está aplicado.
+
 ### Añadido — `km-desktop`: el escritorio se cablea al framework y deja de enviar en claro
 
 `km-desktop` era, hasta ahora, un cliente de relé que sabia hablar el dialecto

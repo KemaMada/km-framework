@@ -41,10 +41,13 @@ import java.util.concurrent.atomic.AtomicInteger
  * plaintext cifrado precisamente para que no puedan alterarse sin que la AEAD
  * lo note.
  *
- * **`timestamp` es 0**, y es una limitacion declarada, no un descuido: el
- * `MessageEnvelope` v1 no lleva tiempo. Un `Message` entrante reconstruido con
- * `0` es honesto —no se inventa una hora— y es lo que el formato permite. El
- * tiempo que el receptor puede afirmar es el de su reloj, no el del mensaje.
+ * **`timestamp` es la hora de LLEGADA del receptor**, y no la de envio: el
+ * `MessageEnvelope` v1 no lleva tiempo, asi que no hay forma de reconstruir
+ * cuando se escribio. Lo que si se sabe —y es lo unico que estos bytes
+ * respaldan— es cuando llegaron. Antes se ponia `0`, y con todos los mensajes
+ * empatados el orden de la conversacion lo decidia el rowid de SQLite: el orden
+ * dependia del almacenamiento y no del tiempo. Se declara hora de recepcion, no
+ * hora de envio, porque es lo unico que el formato permite afirmar (R9).
  */
 class SecureInbound(
     private val localIdentity: IdentityId,
@@ -190,10 +193,14 @@ class SecureInbound(
                 from = from,
                 to = localIdentity,
                 payload = envelope.payload,
-                // R4: `MessageEnvelope` v1 no lleva tiempo. Se pone 0 y se
-                // declara, en vez de inventar la hora de ahora o la de la
-                // sesion: ninguna de las dos seria la del mensaje.
-                timestamp = 0L,
+                // R9: el sobre v1 NO lleva tiempo, y por eso aqui NO se puede
+                // reconstruir el instante en que se escribio. Lo que SI se sabe
+                // es cuando LLEGO: se sella la hora de recepcion del dispositivo.
+                // Antes se ponia 0 y la conversacion se ordenaba por un empate
+                // que resolvia el rowid de SQLite: el orden dependia del
+                // almacenamiento, no del tiempo. Se declara hora de RECEPCION,
+                // no hora de envio, porque es lo unico que estos bytes respaldan.
+                timestamp = System.currentTimeMillis(),
             ),
         )
     }

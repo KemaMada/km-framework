@@ -239,9 +239,13 @@ class LocalRelay private constructor(
         /**
          * Arranca el rele y ESPERA a que el puerto este escuchando.
          *
+         * @param sessionExpiryMs vida de la sesion autenticada. El valor por
+         *   defecto es el del rele real (300 000). `RelaySessionExpiryTest` lo
+         *   baja para provocar la expiracion del caso HONOR (~10 min) en
+         *   milisegundos, con el MISMO `RelayServer` de produccion.
          * @throws AssertionError si el rele no arranca o no puede ligar.
          */
-        fun start(tag: String): LocalRelay {
+        fun start(tag: String, sessionExpiryMs: Long = 300_000L): LocalRelay {
             val relayKeyPair = SocketSecureWorld.ed25519.generateKeyPair()
             val relayId = SocketSecureWorld.identityOf(relayKeyPair.publicKey)
 
@@ -257,6 +261,7 @@ class LocalRelay private constructor(
                     limits = limits,
                 ),
                 relayIdentityId = relayId,
+                sessionExpiryMs = sessionExpiryMs,
             )
 
             val codec = JsonWireCodec()

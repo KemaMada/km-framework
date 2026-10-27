@@ -1,7 +1,7 @@
 # Dependencias de terceros
 
-Este directorio documenta el software de terceros que `km-core`, `km-daemon` y
-`km-webrtc` enlazan o embeben, y su licencia.
+Este directorio documenta el software de terceros que `km-core`, `km-daemon`,
+`km-desktop` y `km-webrtc` enlazan o embeben, y su licencia.
 
 `km-framework` está bajo MIT (ver [`LICENSE`](../LICENSE)). Ninguna dependencia
 de terceros se relicensifica ni se modifica: cada componente conserva su propia
@@ -180,6 +180,37 @@ Apache-2.0 ya está en `Apache-2.0.txt`, y logback se enlaza a
 <https://www.eclipse.org/legal/epl-1.0/> y
 <https://www.apache.org/licenses/LICENSE-2.0>.
 
+## Dependencias de `km-desktop`
+
+`km-desktop` consume `km-core` y `km-transport` por artefacto (declarados en su
+`build.gradle.kts`), y ademas enlaza el runtime de terminal y, desde G2, el
+codificador QR. Esta seccion registra las dependencias **directas nuevas de G2**
+y las que el modulo ya usaba y no estaban documentadas aqui.
+
+| Dependencia | Versión declarada | Dónde se declara | Licencia | Evidencia | Para qué se usa |
+|-------------|-------------------|------------------|----------|-----------|-----------------|
+| `com.google.zxing:core` | **3.5.3** | `implementation("com.google.zxing:core:3.5.3")` en `km-desktop/build.gradle.kts`; misma versión que `zxingCore` del catálogo | **Apache-2.0** | **Verificada en el POM padre.** El POM de `core-3.5.3` no tiene bloque `<licenses>`; lo declara `com.google.zxing:zxing-parent:3.5.3` como *The Apache Software License, Version 2.0*. El texto canónico ya está en `Apache-2.0.txt`. | **Solo codificar** el QR del portador propio (`QRCodeWriter`, ISO-8859-1, MARGIN 4, corrección L). El escritorio no escanea QR. |
+| `org.jline:jline` | **3.30.17** | `implementation("org.jline:jline:3.30.17")` | **BSD-3-Clause** | **Verificada en el POM padre.** `org.jline:jline-parent:3.30.17` declara *The BSD License* con URL `https://opensource.org/licenses/BSD-3-Clause`. El bundle no incrusta un `META-INF/LICENSE` propio; se enlaza al texto oficial. | Terminal, lector de líneas y (G2) renderer de pantallas. Es el **único dueño** del terminal. |
+| `org.jline:jline-terminal-jna` | **3.30.17** | `runtimeOnly("org.jline:jline-terminal-jna:3.30.17")` | **BSD-3-Clause** | **Verificada en el POM padre.** Mismo `jline-parent` 3.30.17. | Proveedor de terminal para Windows. El bundle `org.jline:jline` ya incluye estas clases; se declara explícito para que la dependencia sobreviva a un cambio del bundle a módulos sueltos. |
+| `org.jline:jline-terminal`, `org.jline:jline-native` | **3.30.17** (transitivas de `jline-terminal-jna`) | Arrastradas por la fila anterior | **BSD-3-Clause** | **Verificada en el POM padre** (mismo `jline-parent`). | Base del proveedor de terminal y sus binarios nativos por plataforma. |
+| `net.java.dev.jna:jna` | **5.19.1** | `runtimeOnly("net.java.dev.jna:jna:5.19.1")` | **LGPL-2.1-or-later o Apache-2.0** (elegimos **Apache-2.0**) | **Verificada en el POM.** `jna-5.19.1.pom` declara las dos licencias y dice literalmente que se puede elegir. Se elige Apache-2.0, compatible con MIT y sin obligaciones de copyleft. | Binding nativo que necesita el proveedor JNA de JLine en Windows. Sin él, `TerminalBuilder` cae a terminal "dumb". |
+
+### Sobre JNA y la elección de licencia
+
+JNA está **dual-licensed** (`LGPL-2.1-or-later` o `Apache-2.0`) y el propio POM
+dice que el usuario decide. Este proyecto elige **Apache-2.0**: es compatible con
+la MIT de km-framework y no activa las obligaciones de la LGPL sobre enlace
+dinámico. No se modifica ni se relicensifica JNA.
+
+### Sobre JLine y el bundle
+
+`org.jline:jline` es un artefacto **bundle** que contiene las clases de
+`jline-terminal`, `jline-reader`, `jline-display` y también las del proveedor
+`jna` (verificado con `unzip -l`). Declarar además `jline-terminal-jna` no
+introduce una implementación distinta: es la misma versión del mismo proyecto.
+El motivo de declararla es que la dependencia quede explícita y no dependa de
+que el bundle siga empaquetando ese proveedor.
+
 ## En el catálogo pero no en los módulos publicables
 
 `gradle/libs.versions.toml` declara bastante más de lo que `km-core`,
@@ -189,8 +220,12 @@ Apache-2.0 ya está en `Apache-2.0.txt`, y logback se enlaza a
 `io.github.webrtc-sdk:android:125.6422.07`, `androidx.core:core-ktx`,
 `androidx.room:*`, `androidx.security:security-crypto`,
 `androidx.navigation:navigation-compose`, `androidx.compose.*`,
-`com.google.android.material:material`, `com.google.zxing:core`,
-`com.journeyapps:zxing-android-embedded`, `com.squareup.okhttp3:okhttp`.
+`com.google.android.material:material`, `com.journeyapps:zxing-android-embedded`,
+`com.squareup.okhttp3:okhttp`.
+
+`com.google.zxing:core` ya **no** está solo en el catálogo: `km-desktop` lo
+declara desde G2 para pintar el QR del portador propio (ver la sección
+anterior).
 
 `io.github.webrtc-sdk:android` merece un comentario: es el SDK de WebRTC para
 Android, distinto de `dev.onvoid.webrtc:webrtc-java`, que es el de escritorio.

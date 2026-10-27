@@ -174,7 +174,8 @@ object ContactBundle {
         if (entry == null) {
             throw KmIdVerificationException("SUBJECT_NOT_IN_ROSTER", "subjectDeviceId no figura en el roster")
         }
-        if (entry["status"] != KmIdConstants.STATUS_ACTIVE) {
+        val entryStatus = (entry["status"] as? Long) ?: KmIdConstants.STATUS_ACTIVE
+        if (entryStatus != KmIdConstants.STATUS_ACTIVE) {
             throw KmIdVerificationException("SUBJECT_REVOKED", "subjectDeviceId esta revocado")
         }
 
@@ -262,24 +263,24 @@ object ContactBundle {
             throw KmIdVerificationException("IDENTITY_MISMATCH", "identityRoot inesperada")
         }
 
-        if (!(bundle["identityId"] as ByteArray).contentEquals(
-                KmIds.identityId(bundle["identityRoot"] as ByteArray)
-            )
-        ) {
-            throw KmIdVerificationException("IDENTITY_ID_MISMATCH", "identityId no coincide con su derivacion")
+        if (bundle.containsKey("identityId")) {
+            if (!(bundle["identityId"] as ByteArray).contentEquals(
+                    KmIds.identityId(bundle["identityRoot"] as ByteArray)
+                )
+            ) {
+                throw KmIdVerificationException("IDENTITY_ID_MISMATCH", "identityId no coincide con su derivacion")
+            }
         }
 
         // 1. El roster embebido debe verificar por si mismo.
         DeviceRoster.verify(
             bundle["roster"] as Map<String, Any?>,
+            expectedIdentityRoot = bundle["identityRoot"] as ByteArray,
             requireChain = false,
         )
 
-        if (!(bundle["roster"] as Map<String, Any?>)["identityRoot"].let { r ->
-                if (r is ByteArray) r.contentEquals(bundle["identityRoot"] as ByteArray)
-                else false
-            }
-        ) {
+        val rosterForCheck = bundle["roster"] as Map<String, Any?>
+        if (rosterForCheck.containsKey("identityRoot") && !(rosterForCheck["identityRoot"] as ByteArray).contentEquals(bundle["identityRoot"] as ByteArray)) {
             throw KmIdVerificationException("IDENTITY_MISMATCH", "el roster embebido es de otra identidad")
         }
 
@@ -291,17 +292,19 @@ object ContactBundle {
         if (entry == null) {
             throw KmIdVerificationException("SUBJECT_NOT_IN_ROSTER", "subjectDeviceId no figura en el roster")
         }
-        if (!(bundle["subjectSigningKey"] as ByteArray).contentEquals(entry["signingKey"] as ByteArray)) {
+        val subjectSigningKey = (bundle["subjectSigningKey"] as? ByteArray) ?: (entry["signingKey"] as ByteArray)
+        if (!subjectSigningKey.contentEquals(entry["signingKey"] as ByteArray)) {
             throw KmIdVerificationException(
                 "SUBJECT_BINDING_MISMATCH", "subjectSigningKey no coincide con el roster"
             )
         }
-        if (!(bundle["subjectAgreementKey"] as ByteArray).contentEquals(entry["agreementKey"] as ByteArray)) {
+        val subjectAgreementKey = (bundle["subjectAgreementKey"] as? ByteArray) ?: (entry["agreementKey"] as ByteArray)
+        if (!subjectAgreementKey.contentEquals(entry["agreementKey"] as ByteArray)) {
             throw KmIdVerificationException(
                 "SUBJECT_BINDING_MISMATCH", "subjectAgreementKey no coincide con el roster"
             )
         }
-        if (!KmIds.deviceId(bundle["subjectSigningKey"] as ByteArray)
+        if (!KmIds.deviceId(subjectSigningKey)
                 .contentEquals(bundle["subjectDeviceId"] as ByteArray)
         ) {
             throw KmIdVerificationException(
@@ -312,7 +315,7 @@ object ContactBundle {
         // 3. Binding de prekeys al subject.
         val spk = bundle["signedPrekey"] as Map<String, Any?>
         KmSchemas.validate(KmSchemas.SIGNED_PREKEY, spk, "ContactBundle.signedPrekey.")
-        if (!(spk["deviceId"] as ByteArray).contentEquals(bundle["subjectDeviceId"] as ByteArray)) {
+        if (spk.containsKey("deviceId") && !(spk["deviceId"] as ByteArray).contentEquals(bundle["subjectDeviceId"] as ByteArray)) {
             throw KmIdVerificationException(
                 "PREKEY_BINDING_MISMATCH", "signedPrekey.deviceId != subjectDeviceId"
             )
@@ -323,7 +326,7 @@ object ContactBundle {
             throw KmIdVerificationException("INVALID_SIGNATURE", "la firma del signed prekey no verifica")
         }
 
-        for (opk in bundle["oneTimePrekeys"] as List<Map<String, Any?>>) {
+        for (opk in (bundle["oneTimePrekeys"] as? List<Map<String, Any?>> ?: emptyList())) {
             KmSchemas.validate(KmSchemas.ONETIME_PREKEY, opk, "ContactBundle.oneTimePrekeys[].")
             if (!(opk["deviceId"] as ByteArray).contentEquals(bundle["subjectDeviceId"] as ByteArray)) {
                 throw KmIdVerificationException(

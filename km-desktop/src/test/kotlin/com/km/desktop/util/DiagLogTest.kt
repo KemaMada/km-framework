@@ -265,4 +265,81 @@ class DiagLogTest {
 
         assertEquals(0, DiagLog.lines().size, "y clear lo vacia")
     }
+
+    // ------------------------------------------------------------------
+    // 1.3 — Marca temporal y REDACCION de secretos
+    // ------------------------------------------------------------------
+
+    @Test
+    fun `cada linea lleva marca temporal y el canal sigue primero`() {
+        DiagLog.event("[RELAY]", "conectado")
+
+        val linea = sumidero.lines().single()
+        val cuerpo = linea.split("|")[2]
+        assertTrue(
+            cuerpo.startsWith("[RELAY] "),
+            "el token de canal sigue al principio, para que grep y deCanal funcionen: $cuerpo",
+        )
+        assertTrue(
+            Regex("""\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} """).containsMatchIn(cuerpo),
+            "la linea lleva fecha y hora: $cuerpo",
+        )
+        assertTrue(
+            DiagLog.lines().single().contains("conectado"),
+            "y el mensaje se conserva",
+        )
+    }
+
+    @Test
+    fun `una frase mnemonica se redacta`() {
+        val frase = listOf(
+            "abandon", "ability", "able", "about", "above", "absent", "absorb", "abstract",
+            "absurd", "abuse", "access", "accident", "account", "accuse", "achieve", "acid",
+            "acoustic", "acquire", "across", "act", "action", "actor", "actress", "actual",
+        ).joinToString(" ")
+
+        DiagLog.event("[CONTACT]", "mnemonic: $frase")
+
+        val linea = sumidero.lines().single()
+        assertFalse(linea.contains("abandon"), "la frase no se escribe: $linea")
+        assertFalse(linea.contains("actual"), "ni la ultima palabra: $linea")
+        assertTrue(linea.contains("<redactado>"), "se declara que se redacto: $linea")
+    }
+
+    @Test
+    fun `una clave base64 larga se redacta`() {
+        val clave = java.util.Base64.getEncoder().encodeToString(ByteArray(32) { 7 })
+
+        DiagLog.event("[SESSION]", "clave=$clave")
+
+        val linea = sumidero.lines().single()
+        assertFalse(linea.contains(clave), "una clave de 32 B no sale al log: $linea")
+        assertTrue(linea.contains("<redactado>"))
+    }
+
+    @Test
+    fun `un token asignado se redacta`() {
+        DiagLog.event("[AUTH]", "token=abc123def456")
+
+        val linea = sumidero.lines().single()
+        assertFalse(linea.contains("abc123def456"), "el valor del token no sale: $linea")
+        assertTrue(linea.contains("token=<redactado>"), "y se ve QUE campo se redacto: $linea")
+    }
+
+    /**
+     * CONTROL NEGATIVO de la redaccion: no se come el texto normal.
+     *
+     * Sin esto, "no aparece el secreto" seria compatible con un log vacio o con
+     * un redactor que borra cualquier linea.
+     */
+    @Test
+    fun `control negativo el texto normal NO se redacta`() {
+        DiagLog.event("[RELAY]", "estado=ONLINE intento=3")
+        DiagLog.messageReceived("11223344556677889900aabbccddeeff", "ffeeddccbbaa99887766554433221100")
+
+        val todo = sumidero.lines().joinToString("\n")
+        assertTrue(todo.contains("estado=ONLINE"), "un estado no es un secreto: $todo")
+        assertTrue(todo.contains("intento=3"), "ni un contador: $todo")
+        assertTrue(todo.contains("112233445566…"), "el id truncado sigue visible: $todo")
+    }
 }

@@ -50,14 +50,17 @@ class DesktopIsAThinClientTest {
      * escanear tambien los tests haria que la guardia se pusiera roja con el
      * defecto puesto.
      */
-    private fun clasesDeEscritorio(): List<File> {
+    private fun clasesDeEscritorio(): List<File> = clasesDe("com.km.desktop")
+
+    /** Las clases de un paquete concreto del build de produccion. */
+    private fun clasesDe(paquete: String): List<File> {
         val main = Class.forName("com.km.desktop.DesktopMainKt")
         val raiz = File(main.protectionDomain.codeSource.location.toURI())
-        val paquete = File(raiz, "com/km/desktop")
-        check(paquete.isDirectory) {
-            "el build no produjo ${paquete.path}: la guardia mediria el disco, no el build"
+        val dir = File(raiz, paquete.replace('.', '/'))
+        check(dir.isDirectory) {
+            "el build no produjo ${dir.path}: la guardia mediria el disco, no el build"
         }
-        return paquete.walkTopDown().filter { it.isFile && it.name.endsWith(".class") }.toList()
+        return dir.walkTopDown().filter { it.isFile && it.name.endsWith(".class") }.toList()
     }
 
     /** Busca un simbolo del pool de constantes en los bytes de una clase. */
@@ -107,6 +110,27 @@ class DesktopIsAThinClientTest {
 
     /** Simbolo que solo puede aparecer en [cifradoEnReposo]. */
     private val cipher = "javax/crypto/Cipher"
+
+    /**
+     * 4.3 — El portador y el sobre KCE tampoco se leen aqui.
+     *
+     * `Deflater`/`Inflater` y el orden `decompress -> Kce.validate ->
+     * ContactBundle.verified` viven en `km-core` (`CarrierCodec`). Si el
+     * escritorio los repitiera, tendria una SEGUNDA lectura del mismo formato y
+     * volveria el defecto de G1: un portador real de Android que este cliente
+     * no entiende.
+     *
+     * `DesktopCarrierIsSharedTest` pinza el codec del portador con su propia
+     * historia. Aqui se repite el invariante como parte de la guarda del
+     * cliente DELGADO: la frontera es "el escritorio orquesta y pinta", y esa
+     * frontera incluye el portador, no solo la criptografia de protocolo.
+     */
+    private val simbolosDePortador = listOf(
+        "java/util/zip/Deflater",
+        "java/util/zip/Inflater",
+        "com/km/identity/ContactBundle",
+        "com/km/identity/Kce",
+    )
 
     @Test
     fun `6-1 cero criptografia de PROTOCOLO en el escritorio`() {
@@ -162,6 +186,50 @@ class DesktopIsAThinClientTest {
     }
 
     /**
+     * 4.3 — El deflate del portador y la validacion del sobre KCE son de km-core.
+     *
+     * Se mide el BYTECODE de todo `com.km.desktop`, incluida `ui/`: un comentario
+     * que explique el formato no pone rojo esto, una llamada si.
+     */
+    @Test
+    fun `4-3 el escritorio delega deflate y sobre KCE en km-core`() {
+        val culpables = clasesDeEscritorio().filter { clase ->
+            simbolosDePortador.any { contiene(clase, it) }
+        }.map { clase ->
+            "${clase.name} -> ${simbolosDePortador.filter { contiene(clase, it) }}"
+        }
+
+        assertTrue(
+            culpables.isEmpty(),
+            "el portador se lee en km-core (CarrierCodec); el escritorio no repite deflate ni KCE.\n" +
+                culpables.joinToString("\n") { "  $it" },
+        )
+    }
+
+    /**
+     * 4.3 — La capa `ui/` es modelo y pintura: ni crypto, ni portador, ni wire.
+     *
+     * Es la capa que se prueba sin terminal y sin red. Si pudiera referenciar el
+     * motor del rele o el codec del portador, el reducer dejaria de ser puro y
+     * el test de `ui/` empezaria a necesitar medio framework para correr.
+     */
+    @Test
+    fun `4-3 la capa ui no habla protocolo, portador ni wire`() {
+        val prohibidosUi = simbolosProhibidos + simbolosDePortador + cipher + "com/km/transport/"
+        val culpables = clasesDe("com.km.desktop.ui").filter { clase ->
+            prohibidosUi.any { contiene(clase, it) }
+        }.map { clase ->
+            "${clase.name} -> ${prohibidosUi.filter { contiene(clase, it) }}"
+        }
+
+        assertTrue(
+            culpables.isEmpty(),
+            "ui/ solo reduce y pinta: crypto, portador y wire viven fuera.\n" +
+                culpables.joinToString("\n") { "  $it" },
+        )
+    }
+
+    /**
      * CONTROL POSITIVO: el escaner de bytecode SI ve cada simbolo prohibido.
      *
      * Sin esto, "cero criptografia propia" seria verde con un escaner que nunca
@@ -169,7 +237,7 @@ class DesktopIsAThinClientTest {
      */
     @Test
     fun `control positivo el escaner SI ve cada simbolo prohibido`() {
-        for (simbolo in simbolosProhibidos + cipher) {
+        for (simbolo in simbolosProhibidos + simbolosDePortador + cipher) {
             val sintetizado = "prefijo:$simbolo:sufijo".toByteArray(Charsets.ISO_8859_1)
             assertTrue(
                 contieneEn(sintetizado, simbolo),
@@ -192,7 +260,7 @@ class DesktopIsAThinClientTest {
             contieneEn(sintetizado, "com/km/transport/JvmRelayTransport"),
             "control positivo: el simbolo que SI esta, se ve",
         )
-        for (simbolo in simbolosProhibidos + cipher) {
+        for (simbolo in simbolosProhibidos + simbolosDePortador + cipher) {
             assertTrue(
                 !contieneEn(sintetizado, simbolo),
                 "y $simbolo NO esta en el buffer: el escaner no puede inventarlo",

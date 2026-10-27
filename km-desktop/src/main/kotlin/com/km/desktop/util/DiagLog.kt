@@ -1,6 +1,8 @@
 package com.km.desktop.util
 
 import java.io.PrintStream
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
@@ -129,6 +131,46 @@ object DiagLog {
 
     private val buffer = CopyOnWriteArrayList<String>()
 
+    /** Formato de las lineas: fecha y hora local, al principio del mensaje. */
+    private val STAMP: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
+
+    /**
+     * Patrones de SECRETO que no deben llegar al log ni al export.
+     *
+     * ## POR QUE REDACTAR SI LA API DE DOMINIO NO ADMITE PAYLOAD
+     *
+     * Porque `event()` es un canal abierto para el diagnostico del propio
+     * cliente y del transporte (`--verbose`), y una linea de error puede
+     * arrastrar un valor que el llamante copio de una excepcion. La garantia
+     * estructural de [messageSent]/[messageReceived] sigue siendo la primera
+     * linea de defensa; esto es la segunda, y cubre el texto libre.
+     *
+     * Se redacta lo que TIENE FORMA de secreto, no cualquier palabra:
+     *
+     *  - una frase mnemonica (12-24 palabras en minusculas seguidas),
+     *  - una asignacion `passphrase=`, `frase de paso:`, `token=`, `seed=`...,
+     *  - un blob Base64/Base64URL de 43 caracteres o mas (32 bytes: el tamano
+     *    de una clave Ed25519/X25519 o de una clave de sesion),
+     *  - un blob hex de 64 o mas caracteres.
+     *
+     * Los identificadores de 64 hex que usa el protocolo se truncan ANTES de
+     * llegar aqui con [truncar]; el umbral de 64 hex es el de una clave, no el
+     * de un id.
+     */
+    private val MNEMONICA: Regex =
+        Regex("\\b(?:[a-z]{3,8}\\s+){11,23}[a-z]{3,8}\\b")
+
+    private val ASIGNACION_SECRETO: Regex = Regex(
+        "(?i)\\b(passphrase|passwd|password|frase(?:\\s+de\\s+paso)?|mnemonic|seed|token|secret|api[-_]?key)\\b" +
+            "\\s*[=:]\\s*(\"[^\"]*\"|'[^']*'|\\S+)"
+    )
+
+    private val B64_LARGO: Regex = Regex("[A-Za-z0-9+/_=-]{43,}")
+
+    private val HEX_LARGO: Regex = Regex("\\b[0-9a-fA-F]{64,}\\b")
+
+    private const val REDACTADO: String = "<redactado>"
+
     /** Sustituye el sumidero. Lo usan el arranque y los tests. */
     fun install(newSink: DiagSink) {
         sink = newSink
@@ -137,8 +179,29 @@ object DiagLog {
     /** El sumidero activo, para poder afirmar sobre el. */
     fun active(): DiagSink = sink
 
+    /** Marca temporal local de una linea. */
+    fun timestamp(): String = LocalDateTime.now().format(STAMP)
+
+    /**
+     * Devuelve [text] con los secretos reconocibles sustituidos por
+     * [REDACTADO]. Es idempotente: redactar dos veces da lo mismo.
+     */
+    fun redact(text: String): String {
+        var limpio = MNEMONICA.replace(text, REDACTADO)
+        limpio = ASIGNACION_SECRETO.replace(limpio) { match ->
+            "${match.groupValues[1]}=$REDACTADO"
+        }
+        limpio = B64_LARGO.replace(limpio, REDACTADO)
+        limpio = HEX_LARGO.replace(limpio, REDACTADO)
+        return limpio
+    }
+
     /**
      * Emite un evento del canal [channel] con [message].
+     *
+     * La linea guardada y enviada al sumidero empieza por el TOKEN de canal
+     * (para que `grep` y [MemoryDiagSink.deCanal] sigan funcionando), sigue con
+     * la marca temporal y termina con el mensaje ya redactado.
      *
      * @throws IllegalArgumentException si [channel] no es uno de los ocho. Es una
      *   excepcion y no un `Log.w`: un canal mal escrito es un bug del cliente, y
@@ -148,7 +211,7 @@ object DiagLog {
         require(CHANNELS.contains(channel)) {
             "canal desconocido: $channel; los ocho son $CHANNELS"
         }
-        val linea = "$channel $message"
+        val linea = "$channel ${timestamp()} ${redact(message)}"
         buffer.add(linea)
         while (buffer.size > MAX_BUFFERED_LINES) buffer.removeAt(0)
         sink.log(level, TAG, linea)

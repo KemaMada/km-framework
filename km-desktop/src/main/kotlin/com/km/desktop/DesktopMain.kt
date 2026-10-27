@@ -1,8 +1,23 @@
 package com.km.desktop
 
 import com.km.api.KeyMessageCore
+import com.km.desktop.client.ChatService
+import com.km.desktop.client.ClientEvent
+import com.km.desktop.client.ClientEvents
+import com.km.desktop.client.ContactService
+import com.km.desktop.client.DiagnosticsService
+import com.km.desktop.client.ExportService
+import com.km.desktop.client.RecoveryService
 import com.km.desktop.config.BootstrapConfig
 import com.km.desktop.core.CoreFactory
+import com.km.desktop.platform.ConfigPaths
+import com.km.desktop.platform.OwnerPermissions
+import com.km.desktop.shell.LineModeShell
+import com.km.desktop.shell.JLineShell
+import com.km.desktop.shell.ScreenWriter
+import com.km.desktop.shell.ShellMode
+import com.km.desktop.shell.UnlockGate
+import com.km.desktop.ui.Size
 import com.km.model.Ack
 import com.km.model.IdentityId
 import com.km.model.Message
@@ -17,17 +32,16 @@ import com.km.protocol.ConnectionState
 // significarian dos protocolos, dos `MAX_RESEND` y dos vectores de ratchet
 // duplicados. Ver `km-transport/src/main/kotlin/com/km/transport`.
 import com.km.desktop.util.DiagLog
-import com.km.desktop.net.BootstrapAllFailed
+import com.km.identity.LocalDeviceKeyStore
+import com.km.identity.LocalDeviceKeys
 import com.km.desktop.net.EndpointSequence
 import com.km.desktop.net.RelayStackFactory
 import com.km.transport.JvmRelayTransport
 import com.km.transport.RelayClientStack
 import com.km.transport.RelayDataCodec
 import com.km.transport.RelayStatus
-import org.jline.reader.EndOfFileException
 import org.jline.reader.LineReader
 import org.jline.reader.LineReaderBuilder
-import org.jline.reader.UserInterruptException
 import org.jline.terminal.Terminal
 import org.jline.terminal.TerminalBuilder
 import java.io.PrintWriter
@@ -56,6 +70,30 @@ sealed class Command {
     /** `peer <identityIdHex> <clavePublicaBase64>` */
     data class Peer(val identityIdHex: String, val publicKeyBase64: String) : Command()
 
+    /** `import @<ruta>` o `import <portador>`. */
+    data class Import(val arg: String) : Command()
+
+    /** `export [ruta]`: escribe el `.km` propio. */
+    data class Export(val path: String?) : Command()
+
+    /** `announce <identityIdHex>`: SIGNAL del bundle propio y, tras Delivered, PREKEY. */
+    data class Announce(val to: IdentityId) : Command()
+
+    /** `session <identityIdHex>`: abre la sesion cifrada con un contacto. */
+    data class SessionCmd(val to: IdentityId) : Command()
+
+    /** `contacts`: lista los contactos verificados (EN MEMORIA). */
+    data object Contacts : Command()
+
+    /** `history <identityIdHex>`: historial conocido del par. */
+    data class History(val peer: IdentityId) : Command()
+
+    /** `resend <uuid>`: reintenta un tombstone; conserva el id. */
+    data class Resend(val messageId: MessageId) : Command()
+
+    /** `discard <uuid>`: descarta un tombstone. */
+    data class Discard(val messageId: MessageId) : Command()
+
     data class Unknown(val input: String) : Command()
 
     companion object {
@@ -81,6 +119,14 @@ sealed class Command {
                 "connect", "conectar" -> Connect(parts.getOrNull(1))
                 "send", "enviar" -> parseSend(trimmed, parts)
                 "peer" -> parsePeer(trimmed, parts)
+                "import", "importar" -> Import(trimmed.substringAfter(' ', "").trim())
+                "export", "exportar" -> Export(parts.getOrNull(1))
+                "contacts", "contactos" -> Contacts
+                "announce", "anunciar" -> parseIdentity(trimmed, parts)?.let { Announce(it) } ?: Unknown(trimmed)
+                "session", "sesion" -> parseIdentity(trimmed, parts)?.let { SessionCmd(it) } ?: Unknown(trimmed)
+                "history", "historial" -> parseIdentity(trimmed, parts)?.let { History(it) } ?: Unknown(trimmed)
+                "resend", "reintentar" -> parseUuid(parts.getOrNull(1))?.let { Resend(it) } ?: Unknown(trimmed)
+                "discard", "descartar" -> parseUuid(parts.getOrNull(1))?.let { Discard(it) } ?: Unknown(trimmed)
                 else -> Unknown(trimmed)
             }
         }
@@ -107,251 +153,38 @@ sealed class Command {
             return Peer(parts[1], parts[2])
         }
 
+        /** Un `identityId` de 64 hex, validado por FORMA. */
+        private fun parseIdentity(original: String, parts: List<String>): IdentityId? {
+            if (parts.size != 2) return null
+            val hex = parts[1].lowercase()
+            if (hex.length != RelayDataCodec.IDENTITY_ID_HEX) return null
+            if (hex.any { it !in "0123456789abcdef" }) return null
+            return IdentityId(hex)
+        }
+
+        /** Un `messageId`, que es un UUID. Se acepta la forma completa. */
+        private fun parseUuid(raw: String?): MessageId? {
+            if (raw == null) return null
+            return runCatching { MessageId.fromString(raw.trim()) }.getOrNull()
+        }
+
         val TABLE: List<Pair<String, String>> = listOf(
             "connect [endpoint]" to "conecta al rele; sin argumento usa $DEFAULT",
             "identity" to "muestra identityId y claves publicas de esta sesion",
             "status" to "estado del transporte, sesion y ultimo error",
             "send <identityIdHex> <texto>" to "crea y envia un mensaje a un peer",
             "peer <identityIdHex> <claveBase64>" to "registra la clave de firma de un peer, para poder verificar sus ACK",
+            "import <portador|@ruta>" to "importa un contacto .km verificado (ISO-8859-1)",
+            "export [ruta]" to "escribe TU bundle .km (0 OPK) para compartirlo",
+            "announce <identityIdHex>" to "publica tu bundle por SIGNAL y, tras Delivered, abre sesion y entrega PREKEY",
+            "session <identityIdHex>" to "abre la sesion cifrada con un contacto ya importado",
+            "contacts" to "lista los contactos verificados (SOLO EN MEMORIA)",
+            "history <identityIdHex>" to "historial conocido del par",
+            "resend <uuid>" to "reintenta un mensaje EXPIRADO conservando su id",
+            "discard <uuid>" to "descarta un mensaje EXPIRADO",
             "help" to "esta ayuda",
             "quit" to "desconecta y sale",
         )
-    }
-}
-
-/**
- * Bucle de lectura.
- *
- * `LineReader` se construye una vez y sobrevive a los errores: una excepcion de
- * una linea se imprime y el bucle sigue. Perder el reader porque un usuario
- * escribio un `to` corto seria peor que el error.
- */
-class DesktopTui(
-    private val terminal: Terminal,
-    private val reader: LineReader,
-    private val out: PrintWriter,
-    private val session: Session,
-) {
-    private var running = true
-
-    fun run() {
-        banner()
-        while (running) {
-            out.print(Ansi.prompt())
-            out.flush()
-            val line = try {
-                reader.readLine()
-            } catch (_: UserInterruptException) {
-                continue
-            } catch (_: EndOfFileException) {
-                out.println()
-                dispatch(Command.Quit)
-                continue
-            }
-            dispatch(Command.parse(line))
-        }
-    }
-
-    private fun dispatch(command: Command) {
-        when (command) {
-            is Command.Help -> help()
-            is Command.Identity -> identity()
-            is Command.Status -> status()
-            is Command.Quit -> quit()
-            is Command.Connect -> connect(command.endpoint)
-            is Command.Send -> send(command)
-            is Command.Peer -> peer(command)
-            is Command.Unknown -> {
-                if (command.input.isNotEmpty()) {
-                    out.println(Ansi.red("comando desconocido: '${command.input.take(40)}'"))
-                    out.println(Ansi.dim("escribe 'help'"))
-                }
-            }
-        }
-    }
-
-    private fun banner() {
-        out.println(Ansi.bold("KeyMessage Desktop") + Ansi.dim("  ·  cliente TUI de km-framework"))
-        out.println(Ansi.dim("  connect · identity · status · send · help · quit"))
-        out.println()
-        out.println(Ansi.dim("  almacen de identidad: ${session.keystorePath}"))
-        out.println()
-    }
-
-    private fun help() {
-        out.println(Ansi.bold("Comandos"))
-        Command.TABLE.forEach { (name, description) ->
-            out.println("  " + Ansi.cyan(name.padEnd(30)) + description)
-        }
-        out.println()
-    }
-
-    private fun identity() {
-        val identity = session.identity
-        out.println(Ansi.bold("Identidad local"))
-        out.println("  identityId   ${identity.identityId.value}")
-        out.println("  ed25519      ${fingerprint(identity.ed25519PublicKey)}  (firma)")
-        out.println("  x25519       ${fingerprint(identity.x25519PublicKey)}  (acuerdo)")
-        out.println("  almacen      ${session.keystorePath}")
-        out.println("  sha256       ${session.identityDigest.take(16)}…")
-        out.println()
-    }
-
-    private fun status() {
-        val status = session.status()
-        val state = when (status.state) {
-            ConnectionState.ONLINE -> Ansi.green(status.state.name)
-            ConnectionState.RECONNECTING -> Ansi.yellow(status.state.name)
-            ConnectionState.CONNECTING, ConnectionState.AUTHENTICATING -> Ansi.yellow(status.state.name)
-            ConnectionState.DISCONNECTED -> Ansi.dim(status.state.name)
-        }
-        out.println(Ansi.bold("Estado"))
-        out.println("  transporte   ${session.transport.name}")
-        out.println("  conexion     $state")
-        out.println("  endpoint     ${status.endpoint}")
-        out.println("  sessionId    ${status.sessionId ?: Ansi.dim("—")}")
-        out.println("  rele         ${status.relayIdentityId?.let { it.take(16) + "…" } ?: Ansi.dim("—")}")
-        out.println("  reconexion   ${status.reconnectAttempt}  ${status.nextRetryInMs?.let { "(en ${it}ms)" } ?: ""}")
-        out.println("  online       ${if (session.transport.isOnline()) Ansi.green("si") else Ansi.dim("no")}")
-        status.lastError?.let { out.println("  ultimo error ${Ansi.red(it)}") }
-        val online = session.onlinePeers()
-        out.println("  peers        ${if (online.isEmpty()) Ansi.dim("ninguno") else online.joinToString { it.value.take(16) + "…" }}")
-        // Distinguir "no hay peers en linea" de "no hay claves de firma" importa:
-        // lo primero es estado del rele, lo segundo es por que los `ACK` no se
-        // verifican. Una linea de estado que no los distinga deja al usuario
-        // buscando en el sitio equivocado.
-        // Sesiones CIFRADAS, que es lo que decide si un `send` sale. Se imprime
-        // junto a los peers en linea y NO en la misma linea: "esta en linea" y
-        // "puedo escribirle" son dos hechos distintos, y una linea que los
-        // mezcla deja al usuario escribiendo a alguien a quien el escritorio le
-        // va a rechazar el mensaje.
-        val conSesion = session.sessionPeers()
-        out.println(
-            "  sesiones    " + when {
-                conSesion.isEmpty() -> Ansi.yellow("ninguna: 'send' se RECHAZARA hasta establecer sesion")
-                else -> Ansi.green("${conSesion.size} con sesion cifrada")
-            }
-        )
-        val keys = session.peerKeys.known()
-        out.println(
-            "  claves       " + when {
-                keys.isEmpty() -> Ansi.yellow("ninguna: los ACK entrantes NO se podran autenticar")
-                keys.size == online.size && keys.isNotEmpty() -> Ansi.green("${keys.size} de los peers en linea")
-                else -> Ansi.dim("${keys.size} registradas")
-            }
-        )
-        out.println()
-    }
-
-    /**
-     * Conectar, recorriendo los bootstraps EN ORDEN.
-     *
-     * Sin argumento, recorre la lista configurada. Con un endpoint explicito,
-     * prueba solo ese: un operador que escribe `connect wss://x` ha pedido x, y
-     * caer de vuelta a la lista seria una arquitectura distinta de la que pide.
-     *
-     * El FAILOVER no es una excepcion: `EndpointSequence` prueba el siguiente
-     * cuando uno falla, y solo lanza `BootstrapAllFailed` cuando se han probado
-     * todos. Ese es el unico caso que se imprime como error, y dice cuales.
-     */
-    private fun connect(endpoint: String?) {
-        val objetivo = endpoint?.let { listOf(it) } ?: session.bootstraps
-        out.println("conectando a ${Ansi.cyan(objetivo.joinToString(" → "))} …")
-        val fallo = runCatching {
-            EndpointSequence(objetivo) { target ->
-                session.switchEndpoint(target).getOrThrow()
-            }.recorrer()
-        }.exceptionOrNull()
-        if (fallo == null) {
-            out.println(Ansi.green("conectado") + "  sesion ${session.status().sessionId ?: "—"}")
-        } else if (fallo is BootstrapAllFailed) {
-            out.println(Ansi.red("ningun bootstrap respondio") + ": ${fallo.tried.joinToString(", ")}")
-        } else {
-            out.println(Ansi.red("no se pudo conectar") + ": ${fallo.message}")
-        }
-        out.println()
-    }
-
-    /**
-     * Enviar, por el camino CIFRADO y solo por ese.
-     *
-     * Lo que se imprime distingue tres casos que antes se confundian en un solo
-     * "no se pudo enviar":
-     *
-     *  - `SENT` — salio por el backend como `SecureFrame`.
-     *  - `FAILED` con `NO_SESSION` — no hay sesion con ese par, y el mensaje NO
-     *    salio. No es un reintento pendiente: es un rechazo.
-     *  - otro `FAILED` — fallo de transporte o de cifrado, distinto del anterior.
-     *
-     * El caso que no admite matiz es el segundo: si el texto dijera "pendiente"
-     * o "encolado", el usuario creeria que su mensaje saldra, y no saldra nunca
-     * por esa via.
-     */
-    private fun send(command: Command.Send) {
-        val core: KeyMessageCore = session.core.core
-        core.createMessage(command.to, command.text.toByteArray(Charsets.UTF_8))
-            .mapCatching { core.sendMessage(it).getOrThrow() }
-            .onSuccess { result ->
-                DiagLog.messageSent(
-                    messageId = result.messageId.value.toString(),
-                    peerId = command.to.value,
-                    resultado = result.state.name,
-                    failureCode = result.failureCode?.name,
-                )
-                if (result.state == MessageState.SENT) {
-                    out.println(
-                        Ansi.green("enviado") + " ${result.messageId.value.toString().take(8)}… " +
-                            Ansi.dim("estado=${result.state} · cifrado")
-                    )
-                } else {
-                    val sinSesion = !session.sessionPeers().contains(command.to)
-                    val motivo = result.failureCode?.name ?: "sin motivo declarado"
-                    val etiqueta = if (sinSesion) {
-                        Ansi.red("NO ENVIADO: no hay sesion cifrada con ${command.to.value.take(16)}…")
-                    } else {
-                        Ansi.red("NO ENVIADO: $motivo")
-                    }
-                    out.println(etiqueta + " " + Ansi.dim("(estado=${result.state})"))
-                }
-            }
-            .onFailure { out.println(Ansi.red("no se pudo enviar") + ": ${it.message}") }
-        out.println()
-    }
-
-    /**
-     * Registra la clave de firma de un peer.
-     *
-     * Sin esto, `AckManagerImpl` recibe la clave por defecto del core —`{ null }`—
-     * y descarta todos los `ACK` sin verificar: llegan, y el emisor no se entera.
-     * El error que se reporta es el de [PeerKeyDirectory], no uno generico de
-     * "comando mal", porque lo que se rechaza no es la sintaxis: es una clave que
-     * no deriva la identidad a la que se quiere asignar.
-     */
-    private fun peer(command: Command.Peer) {
-        val problem = session.peerKeys.registerEncoded(command.identityIdHex, command.publicKeyBase64)
-        if (problem == null) {
-            session.peerKeys.save()
-            out.println(Ansi.green("peer registrado") + " ${command.identityIdHex.take(16)}…")
-        } else {
-            out.println(Ansi.red("no se pudo registrar el peer") + ": $problem")
-        }
-        out.println()
-    }
-
-    private fun quit() {
-        running = false
-        session.close()
-        out.println("hasta luego")
-    }
-
-    /** Huella corta de una clave publica: SHA-256 en hex, los primeros 16 nibbles. */
-    private fun fingerprint(publicKey: ByteArray): String {
-        val digest = java.security.MessageDigest.getInstance("SHA-256").digest(publicKey)
-        return digest.take(FINGERPRINT_BYTES).joinToString("") { "%02x".format(it) }
-    }
-
-    companion object {
-        private const val FINGERPRINT_BYTES = 8
     }
 }
 
@@ -400,8 +233,91 @@ class Session(
      * nombre invita a limpiarla cuando hay que conservarla.
      */
     val peerKeys: PeerKeyDirectory = PeerKeyDirectory(),
+    /**
+     * El material PRIVADO del dispositivo (SPK, OPK, IK), si el almacen lo tiene.
+     *
+     * `null` en las pruebas que solo ejercitan transporte y en un arranque sin
+     * aprovisionar. Los servicios de contacto responden entonces con
+     * `MISSING_LOCAL_IDENTITY`, que es la verdad: sin material no hay bundle
+     * propio que publicar.
+     */
+    val deviceKeys: LocalDeviceKeys? = null,
+    /** Donde se persiste el consumo de un OPK. `null` si no hay almacen cableado. */
+    val deviceKeyStore: LocalDeviceKeyStore? = null,
+    /** El bus de eventos: es lo UNICO que los handlers publican. */
+    val events: ClientEvents = ClientEvents(),
+    /**
+     * La frase de paso del almacen, EN MEMORIA y solo mientras vive el proceso.
+     *
+     * Hace falta para dos cosas que reescriben el contenedor cifrado: guardar el
+     * consumo de un OPK y RESTAURAR la identidad desde la frase. No se persiste
+     * en ningun sitio ni se registra; si es `null` (arranque sin retenerla), las
+     * operaciones que la necesitan responden con un codigo en vez de inventarla.
+     */
+    val passphrase: CharArray? = null,
 ) {
     private val peers = java.util.concurrent.ConcurrentHashMap.newKeySet<IdentityId>()
+
+    /**
+     * El registro de contactos del escritorio.
+     *
+     * En MEMORIA y se dice: no hay persistencia de contactos (persist-contact-book
+     * sigue sin apply). El usuario tiene que saber que al cerrar el proceso se
+     * pierden, en vez de descubrirlo.
+     */
+    val contacts: com.km.identity.ContactRegistry = com.km.identity.InMemoryContactRegistry()
+
+    private val intake = com.km.identity.ContactIntake(contacts) { localIdentity() }
+
+    /** La retencion acotada de PREKEY de pares que aun no son contacto. */
+    val exchange: com.km.transport.contact.ContactExchangeCoordinator =
+        com.km.transport.contact.ContactExchangeCoordinator(
+            conocido = { emisor -> registry.find(emisor) != null || contacts.find(emisor) != null },
+            // El clasificador del wire lo aporta el cliente: km-transport no
+            // importa `com.km.frame` (su guard de separacion lo prohibe).
+            esPrekey = { wire -> com.km.frame.PrekeyFrame.esPrekey(wire) },
+        )
+
+    /** Los servicios de contacto: sin terminal y sin protocolo propio. */
+    val contactService = ContactService(
+        events = events,
+        contacts = contacts,
+        intake = intake,
+        stack = { stack },
+        sessionRegistry = { core.registry },
+        identity = { identity },
+        deviceKeys = { deviceKeys },
+        // El MISMO directorio que se paso al nucleo como resolver: el import y
+        // el contact_exchange registran la clave de firma del contacto aceptado,
+        // y el mapa vivo hace que el ACK se autentique sin reconstruir nada.
+        peerKeys = { peerKeys },
+        onOneTimePreKeyConsumed = { keyId -> deviceKeyStore?.consumeOneTimePreKey(keyId) },
+    )
+
+    /** Los servicios de mensajeria. */
+    val chatService = ChatService(events) { core.core }
+
+    /** La frase, la validacion y la restauracion de la identidad. */
+    val recovery: RecoveryService by lazy {
+        RecoveryService(
+            identity = { identity },
+            keystorePath = keystorePath,
+            passphrase = { passphrase },
+        )
+    }
+
+    /** Diagnostico y logs de la pantalla: solo lineas del buffer redactado. */
+    val diagnostics: DiagnosticsService by lazy { DiagnosticsService() }
+
+    /** Escrituras de `.km` y export de logs, junto al almacen. */
+    val exportService: ExportService by lazy {
+        ExportService(
+            baseDir = keystorePath.toAbsolutePath().parent
+                ?: java.nio.file.Paths.get("."),
+        )
+    }
+
+    private fun localIdentity(): IdentityId? = identity.identityId
 
     /** SHA-256 del `identityId` en hex: la huella corta que muestra `identity`. */
     val identityDigest: String =
@@ -485,39 +401,67 @@ class Session(
         peers.clear()
     }
 
-    fun bind(emit: (String) -> Unit) {
+    /**
+     * Cablea los ganchos del motor y del core.
+     *
+     * ## LOS HANDLERS NO IMPRIMEN
+     *
+     * Publican [ClientEvent]s en [events]. Antes esto recibia una lambda que
+     * hacia `out.println` desde el hilo del motor: en un REPL de lineas se
+     * toleraba, pero es exactamente lo que corrompe una pantalla y lo que
+     * impide que el terminal tenga un solo escritor. El que pinta es la TUI,
+     * suscrita al bus.
+     */
+    fun bind() {
         // El camino LEGADO se da de alta EXPLICITAMENTE y una sola vez.
         //
         // Sin esto, cablear las dos caras deja el camino en claro sin nada: el
         // motor entrega lo opaco por `onDataReceived` (que alimenta al
         // `PeerTransportManager` y de ahi a las sesiones cifradas) y lo
-        // clasificado por `onLegacyInboundFrame`, que sin compositor no
-        // entrega nada. El resultado se parece muchisimo a "funciona": el
-        // cifrado entra, y el legado desaparece sin decir por que.
+        // clasificado por `onLegacyInboundFrame`, que sin compositor no entrega
+        // nada. El resultado se parece muchisimo a "funciona": el cifrado entra,
+        // y el legado desaparece sin decir por que.
         //
         // El `false` de un segundo `attachLegacy` es un RECHAZO, no un no-op
-        // silencioso: dos conductores sobre el mismo slot harian que cada
-        // frame se entregase DOS veces por el camino en claro.
+        // silencioso: dos conductores sobre el mismo slot harian que cada frame
+        // se entregase DOS veces por el camino en claro.
         val montado = stack.attachLegacy()
-        emit(
-            if (montado) "camino legado: dado de alta"
-            else "camino legado: ya estaba dado de alta (no se duplica)",
+        events.emit(
+            ClientEvent.Info(
+                if (montado) "camino legado: dado de alta"
+                else "camino legado: ya estaba dado de alta (no se duplica)",
+            ),
         )
 
-        transport.onStateChange { state -> emit("conexion: ${state.name}") }
+        transport.onStateChange { state -> events.emit(ClientEvent.TransportState(state.name)) }
         transport.onPeerOnline { peer ->
             peers.add(peer)
-            emit("peer en linea: ${peer.value.take(16)}…")
+            // La presencia se le pasa al CONDUCTOR de ese par, si existe: sin
+            // esto el binding se queda en `NEW` y `sendData` rechaza. La app ya
+            // lo hacia; el escritorio no, porque hasta G1 nunca abria sesion.
+            stack.driverOf(peer)?.onPeerOnline(peer)
+            events.emit(ClientEvent.PeerPresence(peer, online = true))
         }
         transport.onPeerOffline { peer ->
             peers.remove(peer)
-            emit("peer fuera de linea: ${peer.value.take(16)}…")
+            stack.driverOf(peer)?.onPeerOffline(peer)
+            events.emit(ClientEvent.PeerPresence(peer, online = false))
         }
         transport.setStoredHandler { receipt ->
-            emit("STORED: el rele guardo ${receipt.originalMessageId.value.toString().take(8)}… hasta ${receipt.expiresAt}")
+            events.emit(
+                ClientEvent.Info(
+                    "STORED: el rele guardo ${receipt.originalMessageId.value.toString().take(8)}... " +
+                        "hasta ${receipt.expiresAt}",
+                ),
+            )
         }
         transport.setRelayExpiredHandler { notice ->
-            emit("RELAY_EXPIRED: ${notice.originalMessageId.value.toString().take(8)}… (${notice.reason})")
+            events.emit(
+                ClientEvent.Warn(
+                    "RELAY_EXPIRED: ${notice.originalMessageId.value.toString().take(8)}... " +
+                        "(${notice.reason})",
+                ),
+            )
         }
         // El gancho de INSTALACION: cada sesion que entra en el registro abre
         // su canal de par en el rele.
@@ -533,18 +477,32 @@ class Session(
         // re-conducir el enlace, y un `onData` del manager no distingue la
         // sesion nueva de la vieja.
         val observarInstalacion = registry.onInstall { sesion ->
-            stack.driverFor(sesion.peerContext)
+            val conductor = stack.driverFor(sesion.peerContext)
+            // La presencia se PREGUNTA al motor y no se guarda en un set propio:
+            // el snapshot de presencia del rele llega DURANTE `connect()` y el
+            // suscriptor se da de alta DESPUES. Preguntar siempre es correcto;
+            // recordar eventos se queda vacio justo en el caso que importa.
+            if (transport.isPeerPresent(sesion.remotePeerId)) {
+                conductor.onPeerPresent(sesion.remotePeerId)
+            }
             DiagLog.event("[SESSION]", "instalada peer=${DiagLog.truncar(sesion.remotePeerId.value)}")
-            emit("sesion cifrada con ${sesion.remotePeerId.value.take(16)}…")
+            events.emit(ClientEvent.SessionOpened(sesion.remotePeerId))
         }
 
         val motor = core.core
         motor.registerMessageHandler { message: Message ->
             DiagLog.messageReceived(message.messageId.value.toString(), message.from.value)
-            emit("mensaje de ${message.from.value.take(8)}… (${message.payload.size}B)")
+            events.emit(ClientEvent.MessageReceived(message))
         }
-        motor.registerAckHandler { ack: Ack -> emit("ACK ${ack.status} de ${ack.from.value.take(8)}…") }
-        motor.registerStateChangeHandler { id: MessageId, state: MessageState -> emit("mensaje ${id.value.toString().take(8)}… -> ${state.name}") }
+        motor.registerAckHandler { ack: Ack -> events.emit(ClientEvent.AckReceived(ack)) }
+        motor.registerStateChangeHandler { id: MessageId, state: MessageState ->
+            events.emit(ClientEvent.MessageStateChanged(id, state))
+        }
+
+        // Las DOS caras de la senalizacion: bytes opacos del canal de par
+        // (PREKEY) y portador del contacto. Se cablean en el SERVICIO, no aqui,
+        // para que el orden SIGNAL/PREKEY y la retencion tengan un solo dueno.
+        contactService.attachInbound(stack, exchange)
 
         // Un `bind` por gancho vivo. `bind` es idempotente por el mismo motivo
         // que `attachLegacy`: un segundo `bind` LOWBEA el gancho anterior antes de
@@ -582,16 +540,25 @@ fun main(args: Array<String>) {
         return
     }
 
+    // La ruta por defecto la decide `ConfigPaths`: XDG en Linux, APPDATA en
+    // Windows y ~/Library en macOS. `IdentityKeystore.defaultPath` delega en
+    // ella, asi que este arranque y el resto del modulo no pueden discrepar.
     val keystorePath = options.keystorePath ?: runCatching { IdentityKeystore.defaultPath() }.getOrElse {
         System.err.println(it.message)
         kotlin.system.exitProcess(2)
     }
     // El directorio de peers se resuelve DESPUES del almacen, porque su
-    // defecto es "junto a el". Resolverlo antes obligaria a repetir el
-    // `defaultPath()` y las dos rutas podrian divergir.
+    // defecto es "junto a el". Resolverlo antes obligaria a repetir la
+    // resolucion de la ruta y las dos podrian divergir.
     val peersPath = options.peersPath
         ?: keystorePath.toAbsolutePath().parent?.resolve(DesktopOptions.PEERS_FILE_NAME)
         ?: Paths.get(DesktopOptions.PEERS_FILE_NAME)
+    // El directorio que contiene el almacen es material secreto: si ya existe,
+    // se asegura antes de escribir nada. Si no existe, lo crea y asegura la
+    // primera escritura (`IdentityKeystore.write`).
+    keystorePath.toAbsolutePath().parent
+        ?.takeIf { java.nio.file.Files.isDirectory(it) }
+        ?.let { OwnerPermissions.DEFAULT.secureDirectory(it) }
     if (options.reset && IdentityKeystore.exists(keystorePath)) {
         java.nio.file.Files.delete(keystorePath)
         System.err.println("almacen eliminado: $keystorePath")
@@ -612,15 +579,81 @@ fun main(args: Array<String>) {
     // El color se decide por si HAY una terminal en stdout, no por si JLine ha
     // conseguido abrir una: `km-desktop | tee log` tiene terminal para JLine y
     // no la tiene para el pipe, y es el pipe el que no quiere secuencias SGR.
-    Ansi.detect(stdoutTerminal = System.console() != null, env = System.getenv())
+    Ansi.detect(
+        // `--ascii` apaga el color ademas de los glifos: es el modo que pide
+        // una salida limpia, y las secuencias SGR tambien son "no ASCII".
+        stdoutTerminal = System.console() != null && !options.ascii,
+        env = System.getenv(),
+    )
+
+    // La TUI de pantallas exige una terminal con direccionamiento de cursor y
+    // al menos 60x20. Si no la hay, se DICE y se usa el modo lineas: adaptar una
+    // pantalla a 40 columnas esconde datos sin avisar.
+    val tamanoInicial = runCatching { terminal.size }.getOrNull()
+    val tuiViable = options.mode == ShellMode.TUI &&
+        terminal.type != Terminal.TYPE_DUMB &&
+        terminal.type != Terminal.TYPE_DUMB_COLOR &&
+        tamanoInicial != null &&
+        tamanoInicial.columns >= Size.MIN_COLUMNS &&
+        tamanoInicial.rows >= Size.MIN_ROWS
+
+    if (options.mode == ShellMode.TUI && !tuiViable) {
+        out.println(
+            Ansi.yellow(
+                "TUI no disponible en esta terminal (" + (tamanoInicial?.let { "${it.columns}x${it.rows}" } ?: terminal.type) +
+                    "): minimo ${Size.MIN_COLUMNS}x${Size.MIN_ROWS}; se usa el modo lineas",
+            ),
+        )
+        out.flush()
+    }
+
+    if (tuiViable) {
+        val writer = ScreenWriter(terminal, attributes = Ansi.enabled && !options.ascii)
+        val gate = UnlockGate(
+            terminal = terminal,
+            writer = writer,
+            keystorePath = keystorePath,
+            bootstraps = options.bootstraps,
+            ascii = options.ascii,
+        )
+        val sesion = try {
+            gate.run { passphrase ->
+                runCatching {
+                    composeSession(options, keystorePath, peersPath, fuenteFija(passphrase))
+                }
+            }
+        } catch (fallo: Exception) {
+            // Un fallo de la propia pantalla (I/O del terminal) no puede dejar el
+            // usuario dentro de la alternativa ni propagar sin decir nada.
+            runCatching { writer.exit() }
+            runCatching { terminal.close() }
+            System.err.println("no se pudo abrir la interfaz: ${fallo.message}")
+            kotlin.system.exitProcess(1)
+        }
+        if (sesion == null) {
+            // Ctrl-C o EOF en el desbloqueo: no se toco la red y no hay nada que
+            // cerrar. El terminal SI hay que sacarlo de la pantalla alternativa.
+            runCatching { writer.exit() }
+            runCatching { terminal.close() }
+            return
+        }
+        try {
+            JLineShell(terminal, writer, sesion, options.ascii).run()
+        } finally {
+            sesion.close()
+            runCatching { terminal.close() }
+        }
+        return
+    }
 
     val reader = runCatching { LineReaderBuilder.builder().terminal(terminal).build() }.getOrElse {
         System.err.println("no se pudo iniciar el lector de lineas: ${it.message}")
         kotlin.system.exitProcess(1)
     }
 
-    val identity = try {
-        IdentityKeystore.loadOrCreate(keystorePath, jlinePassphraseSource(reader, out))
+    val fuente = jlinePassphraseSource(reader, out)
+    val sesion = try {
+        composeSession(options, keystorePath, peersPath, fuente)
     } catch (e: KeystoreException) {
         out.println(Ansi.red(e.message ?: "no se pudo abrir el almacen"))
         out.flush()
@@ -628,47 +661,92 @@ fun main(args: Array<String>) {
         kotlin.system.exitProcess(1)
     }
 
+    // `--no-tui` y `--accessible` comparten el bucle lineal: es append-only, no
+    // direcciona el cursor y por tanto sirve para scripts y lectores de pantalla.
+    val shell = LineModeShell(terminal, reader, out, sesion)
+    try {
+        shell.run()
+    } finally {
+        sesion.close()
+        terminal.close()
+    }
+}
+
+/**
+ * Deja el `--verbose` del motor en el canal `[RELAY]` del diagnostico.
+ */
+private fun relayLog(options: DesktopOptions): (String) -> Unit =
+    { message -> if (options.verbose) DiagLog.event("[RELAY]", message) }
+
+/**
+ * Una fuente de frase de paso FIJA: la que ya se tecleo en la pantalla de
+ * desbloqueo.
+ *
+ * ## POR QUE NO SE VUELVE A PREGUNTAR
+ *
+ * Porque la TUI ya la pidio enmascarada ANTES de tocar la red. Volver a
+ * preguntarla por el `LineReader` sacaria al usuario de la pantalla alternativa y
+ * dejaria el terminal en un estado intermedio. La frase se entrega como
+ * `CharArray` y solo vive lo que dura la apertura.
+ */
+private fun fuenteFija(passphrase: CharArray): PassphraseSource = object : PassphraseSource {
+    override fun passphrase(creation: Boolean): String? = String(passphrase)
+}
+
+/**
+ * Compone la sesion COMPLETA: identidad, material, transporte, pila, nucleo,
+ * directorio de peers y enlace de handlers.
+ *
+ * ## EL ORDEN NO ES NEGOCIABLE
+ *
+ * 1. Identidad + material (cifrado en reposo) — ANTES de cualquier red.
+ * 2. Transporte y pila.
+ * 3. Nucleo con el resolver de claves.
+ * 4. `bind()` de los ganchos, que solo publican eventos.
+ *
+ * Se extrajo de `main` para que la TUI pueda abrirla DESPUES del desbloqueo sin
+ * duplicar el cableado y sin que el modo lineas cambie de comportamiento.
+ */
+private fun composeSession(
+    options: DesktopOptions,
+    keystorePath: Path,
+    peersPath: Path,
+    source: PassphraseSource,
+): Session {
+    // La frase se pide UNA vez y se conserva SOLO para el adaptador del material
+    // de dispositivo: cada guardado de OPK reescribe el contenedor cifrado, y
+    // para eso hace falta la misma frase. Vive en memoria.
+    var fraseDePaso: CharArray? = null
+    val fuenteQueRecuerda = object : PassphraseSource {
+        override fun passphrase(creation: Boolean): String? =
+            source.passphrase(creation)?.also { fraseDePaso = it.toCharArray() }
+    }
+    val contenido = IdentityKeystore.loadOrCreateWithDeviceKeys(keystorePath, fuenteQueRecuerda)
+
+    val identity = contenido.identity
     val transport = JvmRelayTransport(
         identity = identity.identityId,
         ed25519PublicKey = identity.ed25519PublicKey,
         ed25519PrivateKey = identity.ed25519PrivateKey,
         endpoint = options.endpoint,
         relayIdentity = options.relayIdentity,
-        log = { message -> if (options.verbose) DiagLog.event("[RELAY]", message) },
+        log = relayLog(options),
     )
-
-    // La pila del rele, NO el motor suelto: motor + manager (con ESE motor por
-    // backend) + drivers. Se compone con `RelayStackFactory` para que el
-    // escritorio no tenga que recordar el orden de las piezas ni pueda montar
-    // un manager con otro backend por debajo, que es el fallo silencioso que
-    // `RelayClientStack.compose` rechaza.
     val stack = RelayStackFactory.stackFor(transport)
-
-    // F2/D3, la pieza que faltaba: sin esto el core recibe el valor por defecto
-    // `{ null }`, `AckManagerImpl` no puede verificar ninguna firma y devuelve
-    // `success` sin procesar. Cada `ACK` que llega —autentico o no— se pierde en
-    // silencio, y el emisor no ve confirmarse nunca un mensaje.
-    //
-    // La clave de cada peer sale del directorio, y no se deriva ni se adivina:
-    // una clave inventada autentica contra la identidad equivocada, que es peor
-    // que no autenticar nada.
     val peers = PeerKeyDirectory(peersPath).load()
     if (peers.known().isEmpty()) {
-        // Se avisa en stderr y no en la pantalla: la TUI todavia no ha escrito
-        // su banner cuando se construye la sesion.
+        // stderr y no pantalla: esto ocurre antes de que la TUI (o el REPL)
+        // escriba su primer frame, y es una condicion de arranque, no un evento
+        // de la sesion.
         System.err.println(
             "sin claves de peers registradas ($peersPath); los ACK entrantes no se podran autenticar. " +
                 "usa 'peer <identityIdHex> <claveBase64>'"
         )
     }
-
     val core = CoreFactory().create(
         localIdentity = identity.identityId,
         localPrivateKey = identity.ed25519PrivateKey,
         transport = transport,
-        // El manager de la PILA, no uno propio: el cable de recepcion de los
-        // `SecureFrame` tiene que estar en el mismo motor por el que salen los
-        // bytes, o el envio pareceria funcionar y no llegaria.
         manager = stack.manager,
         peerPublicKeyResolver = peers.resolver(),
     )
@@ -677,21 +755,32 @@ fun main(args: Array<String>) {
     DiagLog.event("[CONTACT]", "directorio de peers leido: ${peers.known().size}")
     DiagLog.integrity("arranque", ok = true)
 
-    val session = Session(identity, keystorePath, stack, core, peers)
-    // Los bootstraps configurados los fija la sesion: son una decision de
-    // arranque, no de conexion, y `connect` los recorre en orden.
+    val events = ClientEvents()
+    val deviceKeyStore = fraseDePaso?.let { KeystoreDeviceKeyStore(keystorePath, it) }
+    val session = Session(
+        identity = contenido.identity,
+        keystorePath = keystorePath,
+        stack = stack,
+        core = core,
+        peerKeys = peers,
+        deviceKeys = contenido.deviceKeys,
+        deviceKeyStore = deviceKeyStore,
+        events = events,
+        // La MISMA frase que abrio el almacen: restaurar y guardar un OPK
+        // reescriben el contenedor y no pueden pedirla por otra via.
+        passphrase = fraseDePaso,
+    )
     session.bootstraps = options.bootstraps
     DiagLog.event("[BOOTSTRAP]", "origen=linea-o-entorno destinos=${options.bootstraps.size}")
-    session.bind { message -> out.println(Ansi.dim(message)) }
-
-    val tui = DesktopTui(terminal, reader, out, session)
-    try {
-        tui.run()
-    } finally {
-        session.close()
-        terminal.close()
-    }
+    DiagLog.event(
+        "[CONTACT]",
+        "material de dispositivo ${if (contenido.deviceKeys == null) "AUSENTE" else "cargado"} " +
+            "opk=${contenido.deviceKeys?.oneTimePreKeys?.size ?: 0}",
+    )
+    session.bind()
+    return session
 }
+
 
 /**
  * Fuente de frase de paso: variable de entorno primero, prompt enmascarado si no.
@@ -746,6 +835,15 @@ class DesktopOptions(
     val reset: Boolean,
     val verbose: Boolean,
     val help: Boolean,
+    /**
+     * Como se presenta la sesion. Por defecto [ShellMode.TUI]; en esta fase el
+     * unico shell implementado es el lineal, y la Fase 3 sustituye TUI y
+     * ACCESSIBLE por el renderer de pantallas. El flag existe ya para que el
+     * lanzador `km`/`km.cmd` y el manual no cambien de contrato despues.
+     */
+    val mode: ShellMode = ShellMode.TUI,
+    /** `--ascii`: sin glifos Unicode ni secuencias de color. */
+    val ascii: Boolean = false,
 ) {
     companion object {
         const val RELAY_ENV: String = "KM_RELAY_URL"
@@ -767,7 +865,23 @@ class DesktopOptions(
             var reset = false
             var verbose = false
             var help = false
+            var ascii = false
+            var mode: ShellMode? = null
             var i = 0
+
+            /**
+             * Los tres modos son EXCLUYENTES: pedir dos a la vez es un error de
+             * uso, no "gana el ultimo". Un operador que escribe `--no-tui
+             * --accessible` cree que ha pedido una cosa y no sabria cual se
+             * aplico.
+             */
+            fun elegirModo(candidate: ShellMode, flag: String) {
+                require(mode == null || mode == candidate) {
+                    "modo ya elegido ($mode); $flag es incompatible con la opcion anterior"
+                }
+                mode = candidate
+            }
+
             while (i < args.size) {
                 when (args[i]) {
                     "--relay" ->
@@ -791,6 +905,10 @@ class DesktopOptions(
                     "--peers" -> peers = Paths.get(args.getOrNull(++i) ?: throw IllegalArgumentException("--peers sin valor"))
                     "--reset" -> reset = true
                     "--verbose" -> verbose = true
+                    "--tui" -> elegirModo(ShellMode.TUI, "--tui")
+                    "--accessible" -> elegirModo(ShellMode.ACCESSIBLE, "--accessible")
+                    "--no-tui" -> elegirModo(ShellMode.LINE, "--no-tui")
+                    "--ascii" -> ascii = true
                     "--help", "-h" -> help = true
                     else -> throw IllegalArgumentException("opcion desconocida: ${args[i]}")
                 }
@@ -807,6 +925,8 @@ class DesktopOptions(
                 reset = reset,
                 verbose = verbose,
                 help = help,
+                mode = mode ?: ShellMode.TUI,
+                ascii = ascii,
             )
         }
 
@@ -837,16 +957,25 @@ class DesktopOptions(
                                      el AUTH_REQUEST (tambien $RELAY_IDENTITY_ENV).
                                      Sin ella el campo se omite y se anuncia el
                                      que venga en el AUTH_CHALLENGE.
-              --keystore <ruta>     almacen de identidad
-                                     (por defecto XDG: ~/.config/keymessage/${IdentityKeystore.IDENTITY_FILE_NAME})
+              --keystore <ruta>     almacen de identidad. Por defecto:
+                                     Linux  ${'$'}XDG_CONFIG_HOME/keymessage/${IdentityKeystore.IDENTITY_FILE_NAME}
+                                            (o ~/.config/keymessage/...)
+                                     Windows %APPDATA%\keymessage\${IdentityKeystore.IDENTITY_FILE_NAME}
+                                     macOS  ~/Library/Application Support/keymessage/${IdentityKeystore.IDENTITY_FILE_NAME}
               --peers <ruta>        directorio de claves de firma de los peers,
                                      del que sale el resolver que autentica los ACK
                                      (por defecto, junto al almacen: $PEERS_FILE_NAME)
               --reset               borra el almacen y el directorio de peers antes de arrancar
               --verbose             traza del transporte por stderr
+              --tui                 TUI de pantallas (defecto)
+              --accessible          salida lineal, sin direccionamiento de cursor
+              --no-tui              REPL de lineas de G1 (scripts y emergencia)
+              --ascii               sin glifos Unicode ni color
               -h, --help            esta ayuda
 
             Comandos dentro de la sesion: connect, identity, status, send, peer, help, quit.
+            Camino de contacto y mensajeria: import, export, announce, session,
+            contacts, history, resend, discard (los mismos de `help`).
         """.trimIndent()
     }
 }

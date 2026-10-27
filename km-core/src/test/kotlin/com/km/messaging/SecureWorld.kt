@@ -259,8 +259,16 @@ object SecureWorld {
             if (establish) handshake()
         }
 
-        /** Abre e instala las dos sesiones. Idempotente por construccion del mundo. */
-        fun handshake(): Pair<SecureMessagingSession, SecureMessagingSession> {
+        /**
+         * Abre e instala las dos sesiones. Idempotente por construccion del mundo.
+         *
+         * @param driveConnected si es `false`, las sesiones se instalan pero los
+         *   bindings NO se conducen a `CONNECTED`. Es el escenario de la ventana
+         *   de reconexion (D8): la sesion existe, el canal del par todavia no, y
+         *   un envio ahi NO puede quedarse muerto. Cuando el llamante conduzca
+         *   el binding (`driveConnected`), el nucleo despierta la cabeza.
+         */
+        fun handshake(driveConnected: Boolean = true): Pair<SecureMessagingSession, SecureMessagingSession> {
             val initiated = establisher.initiate(
                 localIdentity = alice.device.identityId,
                 peerContext = aliceToBob,
@@ -274,8 +282,10 @@ object SecureWorld {
                 prekeyFrameWire = initiated.prekeyFrame,
                 transport = bob.peerTransport,
             )
-            alice.driveConnected(initiated.session)
-            bob.driveConnected(accepted.session)
+            if (driveConnected) {
+                alice.driveConnected(initiated.session)
+                bob.driveConnected(accepted.session)
+            }
             alice.registry.install(initiated.session)
             // `installOnReceiver = false` deja al RECEPTOR sin sesion: el caso
             // real de "me llega algo cifrado de alguien con quien no he

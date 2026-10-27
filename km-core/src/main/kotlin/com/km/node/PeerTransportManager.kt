@@ -381,16 +381,45 @@ class PeerTransportManager(
     // DataChannel
     // ===================================================================
 
+    /**
+     * Lleva el binding activo a `CONNECTED`.
+     *
+     * ## LA TRANSICION INVALIDA ES UN `Failure`, NO UNA EXCEPCION
+     *
+     * [PeerTransportBinding.withConnected] LANZA `IllegalArgumentException`
+     * desde `NEW`, `CONNECTED`, `CLOSED` o `FAILED`. Dejar que escape es lo que
+     * convertia un `PEER_ONLINE` repetido —o el propio `PEER_ONLINE` de una
+     * reautenticacion, con el binding aun en `CONNECTED`— en una excepcion
+     * capturada por el frame-loop: el canal sobrevivia, pero el fallo se
+     * repetia en cada frame y nadie podia leerlo como un estado.
+     *
+     * Este metodo mapea la excepcion a [TransportError.INVALID_STATE_TRANSITION],
+     * el mismo contrato que [receiveAnswer] y [addIceCandidate]. NO es un
+     * "success idempotente" desde `CONNECTED`: la doble transicion se sigue
+     * viendo como fallo, no se esconde. Y en el fallo no se notifica nada: un
+     * `markConnected` rechazado no puede decirle a nadie que hay enlace.
+     *
+     * `CLOSED` y `FAILED` ni siquiera llegan a `withConnected`: [getActiveBinding]
+     * los filtra y devuelven [TransportError.BINDING_NOT_FOUND], que es lo que
+     * significa "no hay binding activo", no "transicion ilegal".
+     */
     fun markConnected(localIdentity: IdentityId, peerContext: PeerContext): TransportResult<PeerTransportBinding> {
         val key = localIdentity to peerContext.remotePeerId
         val binding = getActiveBinding(key) ?: return TransportResult.Failure(
             TransportError.BINDING_NOT_FOUND, "no hay binding activo"
         )
-        val updated = binding.withConnected()
-        bindings[key] = updated
-        notifyStateChange(peerContext.remotePeerId, PeerTransportState.CONNECTED)
-        notifyConnectionState(peerContext.remotePeerId, connected = true)
-        return TransportResult.Success(updated)
+        return try {
+            val updated = binding.withConnected()
+            bindings[key] = updated
+            notifyStateChange(peerContext.remotePeerId, PeerTransportState.CONNECTED)
+            notifyConnectionState(peerContext.remotePeerId, connected = true)
+            TransportResult.Success(updated)
+        } catch (e: IllegalArgumentException) {
+            TransportResult.Failure(
+                TransportError.INVALID_STATE_TRANSITION,
+                "estado invalido para marcar CONNECTED: ${binding.state}"
+            )
+        }
     }
 
     /**

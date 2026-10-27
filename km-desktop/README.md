@@ -67,7 +67,7 @@ está en el [README de la raíz](../README.md#ram-y-máquinas-ajustadas).
 | Requisito | Detalle |
 |-----------|---------|
 | JRE | **11 o superior.** El jar es bytecode Java 11. |
-| Terminal | Cualquiera. Sin terminal, `Ansi` desactiva el color solo. `NO_COLOR` y `TERM=dumb` también. |
+| Terminal | TUI: terminal real de al menos **60x20** con direccionamiento de cursor. Por debajo de eso, `TERM=dumb` o salida no-tty, se avisa y se usa el modo líneas. `NO_COLOR` y `--ascii` desactivan color y glifos. |
 | Red | Alcanzabilidad del relé. Ver abajo. |
 | Privilegios | **Ninguno.** |
 
@@ -96,11 +96,24 @@ ningún caso.
 git clone https://github.com/KemaMada/km-framework.git
 cd km-framework
 
-# 2. Publicar km-core en mavenLocal. NO es opcional: este módulo lo consume como
-#    artefacto publicado (com.km:km-core:0.1.0-SNAPSHOT), no como proyecto del
-#    build. Sin este paso, el paso 3 no resuelve la dependencia.
+# 2. Arrancar con el lanzador de la RAÍZ. La primera vez compila: publica
+#    km-core y km-transport en mavenLocal y ejecuta :km-desktop:shadowJar.
+./km
+```
+
+`./km` no usa `gradlew run`: compila si falta el jar y ejecuta
+`exec java -jar`, así que los argumentos, la señal y el código de salida son los
+del cliente. En Windows, el equivalente es `km.cmd`. Gradle exige **JDK 27**; el
+jar corre en JRE 11 o superior.
+
+Los mismos pasos a mano, si prefieres controlar cada fase:
+
+```sh
+# 2. Publicar km-core y km-transport en mavenLocal. NO es opcional: este módulo
+#    los consume como artefactos publicados (0.1.0-SNAPSHOT), no como proyectos
+#    del build. Sin este paso, el paso 3 no resuelve las dependencias.
 ./gradlew -Dorg.gradle.java.home=/usr/lib/jvm/java-27-openjdk \
-          :km-core:publishToMavenLocal
+          :km-core:publishToMavenLocal :km-transport:publishToMavenLocal
 
 # 3. Compilar el fat jar de un solo fichero
 ./gradlew -Dorg.gradle.java.home=/usr/lib/jvm/java-27-openjdk \
@@ -118,8 +131,9 @@ Contra un relé propio, en vez del desplegado:
           :km-daemon:installDist
 ./km-daemon/build/install/km-daemon/bin/km-daemon
 
-# En otra: la TUI apuntada a él
-java -jar km-desktop/build/libs/km-desktop.jar --relay ws://127.0.0.1:8080/km
+# En otra: la TUI apuntada a él (con el lanzador o con el jar)
+./km --relay ws://127.0.0.1:8080/km
+# o: java -jar km-desktop/build/libs/km-desktop.jar --relay ws://127.0.0.1:8080/km
 ```
 
 El `km-daemon` **no enruta por ruta**: acepta el handshake WebSocket en
@@ -140,21 +154,23 @@ sin claves de peers registradas (.../peers.json); los ACK entrantes no se podran
 
 Eso no es un error: sin la clave de firma de un peer, sus `ACK` llegan y se
 descartan sin verificar. El comando `peer` es lo que la resuelve. Ver
-[Bootstrap de contactos](#bootstrap-de-contactos--diseñado-no-implementado).
+[Bootstrap de contactos](#bootstrap-de-contactos--implementado-en-g1-con-limites).
 
 ---
 
 ## Construir
 
-`km-core` se consume como **artefacto publicado**, no como proyecto del build.
-Por eso el primer paso es publicarlo:
+`km-core` y `km-transport` se consumen como **artefactos publicados**, no como
+proyectos del build. Por eso el primer paso es publicarlos:
 
 ```bash
-# desde la raiz del mono-repo
-./gradlew :km-core:publishToMavenLocal
+# desde la raiz del mono-repo; Gradle exige JDK 27
+./gradlew -Dorg.gradle.java.home=/usr/lib/jvm/java-27-openjdk \
+          :km-core:publishToMavenLocal :km-transport:publishToMavenLocal
 
 # luego, el cliente
-./gradlew :km-desktop:shadowJar
+./gradlew -Dorg.gradle.java.home=/usr/lib/jvm/java-27-openjdk \
+          :km-desktop:shadowJar
 ```
 
 El resultado es un único jar con todo dentro:
@@ -164,8 +180,9 @@ km-desktop/build/libs/km-desktop.jar
 java -jar km-desktop/build/libs/km-desktop.jar
 ```
 
-El módulo también se compila **aislado**, sin el resto del mono-repo, gracias a
-su propio `settings.gradle.kts`:
+Desde la raíz, `./km` hace esos dos pasos solo si falta el jar. El módulo también
+se compila **aislado**, sin el resto del mono-repo, gracias a su propio
+`settings.gradle.kts`, pero **solo después** de publicar los dos artefactos:
 
 ```bash
 # Con un Gradle 9.5.0 en el PATH, no con el wrapper: este settings.gradle.kts
@@ -200,31 +217,63 @@ build integrado por conflicto de plugin.
 ## Ejecutar
 
 ```bash
+# recomendado: lanzador de la raíz del repo (compila si falta el jar)
+./km
+# Windows
+km.cmd
+
+# o el jar ya construido
 java -jar km-desktop/build/libs/km-desktop.jar
-# o, durante desarrollo
-./gradlew :km-desktop:run
 # o, instalado
 ./km-desktop/build/install/km-desktop/bin/km-desktop
 ```
 
+`./km` y `km.cmd` solo construyen cuando `km-desktop/build/libs/km-desktop.jar`
+no existe; `KM_REBUILD=1` fuerza el paso de build aunque exista. El build escribe
+en **stderr** y el cliente conserva stdout. Variables del lanzador:
+
+| Variable | Efecto |
+|---|---|
+| `KM_REBUILD=1` | Fuerza el paso de build aunque el jar exista (Gradle decide qué recompilar). |
+| `KM_JAVA=<ruta>` | JVM que ejecuta el jar; por defecto `java` del `PATH`. |
+| `KM_GRADLE_JAVA_HOME=<ruta>` | JDK que ejecuta Gradle; por defecto `JAVA_HOME`. El build exige JDK 27. |
+
 Al arrancar, si no hay identidad, la crea y pide una frase de paso nueva
 (dos veces, para confirmar). Si ya existe, pide la que la abre.
+
+Por defecto se abre la **TUI de pantallas**. Exige una terminal real de al menos
+**60x20** con direccionamiento de cursor; si no la hay, se avisa y se usa el modo
+líneas. Los tres modos comparten modelo, servicios y comandos:
+
+| Modo | Cómo se pide | Para qué |
+|---|---|---|
+| TUI de pantallas | `./km` o `--tui` | Uso normal: contactos, conversación, importar/compartir, frase, diagnóstico. |
+| Accesible | `--accessible` | Salida lineal append-only, sin repintado: lectores de pantalla y terminales sin cursor. |
+| Líneas (REPL G1) | `--no-tui` | Scripts, emergencia y terminales que no soportan TUI. Los comandos son los de la tabla de `help`. |
 
 ### Opciones
 
 Argumentos de línea de comandos. Son pocos a propósito: esto es una TUI, no un
-CLI, y lo que se usa a menudo son los comandos de dentro de la sesión.
+CLI, y lo que se usa a menudo son las teclas y los comandos de dentro de la
+sesión.
 
 | Opción | Efecto |
 |---|---|
 | `--relay <endpoint>` | Relé alternativo. También se lee de `KM_RELAY_URL`. Sin él, `wss://keymessage.xyz/km`. |
 | `--relay-identity <64hex>` | Identidad del relé que se anuncia en el `AUTH_REQUEST`. También se lee de `KM_RELAY_IDENTITY`. |
-| `--keystore <ruta>` | Ruta del almacén de identidad. Por defecto, `$XDG_CONFIG_HOME/keymessage/identity.kmkey`, o `~/.config/keymessage/identity.kmkey`. |
+| `--keystore <ruta>` | Ruta del almacén de identidad. Por defecto, `$XDG_CONFIG_HOME/keymessage/identity.kmkey`, `%APPDATA%\keymessage\identity.kmkey` en Windows o `~/Library/Application Support/keymessage/identity.kmkey` en macOS. |
 | `--bootstrap <url>` | Bootstrap del relé, **repetible** y en orden: se prueban uno detrás de otro hasta que uno responda. Por defecto, los de `KM_BOOTSTRAPS` (separados por coma) o `KM_BOOTSTRAP_URL`, y en su defecto `JvmRelayTransport.DEFAULT_ENDPOINT`. |
 | `--peers <ruta>` | Ruta del directorio de claves de firma de los peers, del que sale el resolver que autentica los `ACK`. Por defecto `peers.json`, **junto** al almacén de identidad. |
 | `--reset` | Borra el almacén **y** el directorio de peers antes de arrancar. |
+| `--tui` | TUI de pantallas (defecto). |
+| `--accessible` | Salida lineal, sin direccionamiento de cursor. |
+| `--no-tui` | REPL de líneas de G1. |
+| `--ascii` | Sin glifos Unicode ni color. |
 | `--verbose` | Traza del transporte por **stderr**. |
-| `-h`, `--help` | Ayuda, sin arrancar. |
+| `-h`, `--help` | Ayuda, sin arrancar ni abrir la red. |
+
+`--tui`, `--accessible` y `--no-tui` son **excluyentes**: pedir dos a la vez es un
+error de uso, no «gana el último».
 
 Un `identityId` mal escrito falla **al parsear**, con un mensaje de línea de
 comandos, no veinte segundos después con un `AUTH_FAIL`. Un argumento
@@ -243,7 +292,11 @@ desconocido también: sale con código `2`.
 
 ## Comandos
 
-Se escriben dentro de la sesión, en el prompt `km>`.
+La tabla es el **modo líneas** (`--no-tui`), que se escribe en el prompt `km>`.
+En la TUI de pantallas se navega con teclas (Tab/Shift-Tab, flechas o `j`/`k`,
+Enter, Esc, `?` para la ayuda del keymap); las acciones equivalentes —importar,
+compartir, abrir sesión, enviar, reintentar, descartar— se hacen desde las
+pantallas.
 
 | Comando | Qué hace |
 |---|---|
@@ -252,10 +305,19 @@ Se escriben dentro de la sesión, en el prompt `km>`.
 | `status` | Estado del transporte, `sessionId`, relé, intento y cuenta atrás de reconexión, último error, peers vistos, **pares con sesión cifrada** y cuántas claves de firma hay registradas. Las dos listas son distintas a propósito: «está en línea» no es «puedo escribirle». |
 | `send <identityIdHex> <texto>` | Crea y envía un mensaje por la API de `KeyMessageCore`, **por el camino cifrado**. Sin sesión con ese par el resultado es `FAILED` y **no sale ningún byte**; la línea lo dice como `NO ENVIADO`, nunca como «pendiente». |
 | `peer <identityIdHex> <claveBase64>` | Registra la clave de firma de un peer y la guarda en `peers.json`. Es lo que permite autenticar sus `ACK`. Rechaza una clave que no derive ese `identityId`. |
+| `import <portador\|@ruta>` | Importa un contacto desde el portador comprimido o desde un fichero `.km`. El portador se verifica con el codec compartido de `km-core`. |
+| `export [ruta]` | Escribe **tu** bundle `.km` (0 OPK) para compartirlo. |
+| `announce <identityIdHex>` | Publica tu bundle por SIGNAL y, solo tras `Delivered`, abre sesión y entrega PREKEY. |
+| `session <identityIdHex>` | Abre la sesión cifrada con un contacto ya importado. |
+| `contacts` | Lista los contactos verificados (**solo en memoria**). |
+| `history <identityIdHex>` | Historial conocido del par. |
+| `resend <uuid>` | Reintenta un mensaje `EXPIRED` conservando su `messageId`. |
+| `discard <uuid>` | Descarta un mensaje `EXPIRED`. |
 | `help` | Ayuda. |
 | `quit` | Desconecta y sale. |
 
-Alias: `conectar`, `enviar`, `id`, `q`, `exit`, `?`, `h`.
+Alias: `conectar`, `enviar`, `importar`, `exportar`, `anunciar`, `sesion`,
+`contactos`, `historial`, `reintentar`, `descartar`, `id`, `q`, `exit`, `?`, `h`.
 
 ---
 
@@ -274,19 +336,25 @@ Alias: `conectar`, `enviar`, `id`, `q`, `exit`, `?`, `h`.
 │    KeyMessageCoreImpl ─ SenderImpl ─ ReceiverImpl ─ AckMgr   │
 │    JsonEncoder / JsonDecoder      RelayControlCodec          │
 │    Ed25519 · X25519 · TranscriptBuilder · Base64Url          │
-└───────────────┬──────────────────────────┬───────────────────┘
-                │ implementa RelayTransport│
-                ▼                          │  (nunca al revés)
-┌──────────────────────────────────────────┴───────────────────┐
+└───────────────┬──────────────────────────────────────────────┘
+                │ implementa RelayTransport
+                ▼
+┌──────────────────────────────────────────────────────────────┐
+│  km-transport  (artefacto, no submodule)                     │
+│    JvmRelayTransport  ── KM-WIRE-RELAY sobre Ktor WS         │
+│    RelayDataCodec     ── MESSAGE / ACK (secciones 10/11)     │
+└───────────────┬──────────────────────────────────────────────┘
+                │ lo compone RelayStackFactory
+                ▼
+┌──────────────────────────────────────────────────────────────┐
 │  km-desktop                                                  │
-│    JvmRelayTransport  ── KM-WIRE-RELAY sobre Ktor WS ──┐     │
-│    RelayDataCodec     ── MESSAGE / ACK (secciones 10/11)│    │
-│    IdentityKeystore   ── Argon2id + AES-256-GCM          │    │
-│    Ansi               ── secuencias SGR                   │    │
-└──────────────────────────────────────────────────────────┘    │
-                                    │                            │
-                                    ▼                            │
-                    wss://keymessage.xyz/km  →  km-daemon ◄─────┘
+│    DesktopMain · ui/ · shell/  ── TUI y modo líneas          │
+│    client/  ── contacto, chat, recovery, diagnóstico         │
+│    IdentityKeystore   ── Argon2id + AES-256-GCM              │
+└──────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+                    wss://keymessage.xyz/km  →  km-daemon
 ```
 
 ### Cómo queda cableado al framework
@@ -345,7 +413,7 @@ procesar: el `ACK` llega, y el emisor se queda esperando uno que ya tiene.
 
 No es criptografía y no implementa nada de KM-ID-0001: es el almacén de la mitad
 **pública** de una relación que ya se estableció en otro sitio. Ver
-[Bootstrap de contactos](#bootstrap-de-contactos--diseñado-no-implementado) para
+[Bootstrap de contactos](#bootstrap-de-contactos--implementado-en-g1-con-limites) para
 lo que se sabe y lo que no.
 
 ### `IdentityKeystore` — almacén cifrado de identidad
@@ -378,22 +446,24 @@ Contiene el `IdentityId` y los pares **Ed25519** (firma) y **X25519**
 (acuerdo). El `identityId` se **re-deriva** al abrir y se rechaza si no
 coincide con la clave pública guardada.
 
-### `JvmRelayTransport` — el dialecto sobre el cable
+### `JvmRelayTransport` (en `km-transport`) — el dialecto sobre el cable
 
-Implementa `com.km.node.RelayTransport`. El ciclo de vida del socket corre en su
-propio `CoroutineScope`; `connect()` es síncrono porque `Transport` lo declara
-así, y espera al `AUTH_OK` con un límite de 20 s.
+Implementa `com.km.node.RelayTransport`. **Vive en `:km-transport`** desde p4
+(`com.km.transport.JvmRelayTransport`); `km-desktop` no aloja copia: lo compone
+con `RelayStackFactory` y `RelayClientStack`. El ciclo de vida del socket corre
+en su propio `CoroutineScope`; `connect()` es síncrono porque `Transport` lo
+declara así, y espera al `AUTH_OK` con un límite de 20 s.
 
 | Frame | Dirección | Dónde se implementa |
 |---|---|---|
-| `AUTH_REQUEST` | cliente → relé | aquí |
-| `AUTH_CHALLENGE` | relé → cliente | aquí |
-| `AUTH_RESPONSE` | cliente → relé | aquí, firmando con `Ed25519` de `km-core` el transcript de 152 B de `TranscriptBuilder` |
-| `AUTH_OK` / `AUTH_FAIL` | relé → cliente | aquí |
-| `MESSAGE` | ambos | `RelayDataCodec`, campo `data` en Base64 estándar |
-| `ACK` | ambos | `RelayDataCodec`; el relé **no** lo reenvía |
-| `PING` / `PONG` | ambos | aquí, correlacionados por `originalMessageId` |
-| `PEER_ONLINE` / `PEER_OFFLINE` | relé → cliente | aquí |
+| `AUTH_REQUEST` | cliente → relé | `km-transport` |
+| `AUTH_CHALLENGE` | relé → cliente | `km-transport` |
+| `AUTH_RESPONSE` | cliente → relé | `km-transport`, firmando con `Ed25519` de `km-core` el transcript de 152 B de `TranscriptBuilder` |
+| `AUTH_OK` / `AUTH_FAIL` | relé → cliente | `km-transport` |
+| `MESSAGE` | ambos | `RelayDataCodec` de `km-transport`, campo `data` en Base64 estándar |
+| `ACK` | ambos | `RelayDataCodec` de `km-transport`; el relé **no** lo reenvía |
+| `PING` / `PONG` | ambos | `km-transport`, correlacionados por `originalMessageId` |
+| `PEER_ONLINE` / `PEER_OFFLINE` | relé → cliente | `km-transport` |
 | `STORED` / `RELAY_EXPIRED` | relé → cliente | `JsonRelayControlCodec` de `km-core` |
 | `RELAY_ERROR` | relé → cliente | `JsonRelayControlCodec` de `km-core` |
 
@@ -431,14 +501,36 @@ un fallo silencioso en producción.
 
 Lo que **no** está hecho, y conviene no dar por hecho:
 
-- **La carga del `Message` no está cifrada en este camino.** Es la limitación más
-  importante de la lista. `KeyMessageCoreImpl` **firma** el `Message` que produce
-  (`SenderImpl`), pero `Km52` y `SecureFrame` **no están cableados** a este
-  transporte. Lo que viaja por el cable es exactamente lo que `km-core` produce
-  hoy, sin nada más. Las primitivas criptográficas existen y están testeadas en
-  `km-core` (`SecureFrame`, `DoubleRatchetSession`, `X3dh`); lo que falta es la
-  conexión. **Firmar no es cifrar**, y con este camino abierto un intermediario lee
-  el texto en claro.
+- **La carga del `Message` SÍ va cifrada en este camino.** Desde p5,
+  `DesktopMain` compone `KeyMessageCoreImpl` con `secureSessionRegistry` y
+  `PeerTransportManager` (`CoreFactory`), y `send` pasa por
+  `SecureOutbound`/`SecureInbound` con ratchet y `SecureFrame`. Sin sesión con el
+  par, `send` devuelve `FAILED` y **no sale ni un byte**
+  (`SecureSendRejectionTest`); `DesktopSendCiphertextTest` comprueba que el texto
+  no aparece en el cable, y la recepción en claro está cerrada
+  (`allowLegacyCleartextReceive = false`). Lo que **no** existe es entrega
+  garantizada: `SENT` solo significa que el socket local aceptó bytes, y sin
+  `ACK` verificado no se pinta `ENTREGADO`.
+- **Contactos y mensajes viven SOLO en memoria.** `InMemoryContactBook` e
+  `InMemoryMessageStore`: se pierden al reiniciar y el relé no guarda nada. La
+  TUI lo avisa de forma permanente en INICIO y en el modo líneas. La persistencia
+  de contactos (`persist-contact-book`) está especificada y **no aplicada**; no
+  se promete.
+- **La TUI de pantallas no está auditada.** Está cubierta por tests puros
+  (reducer, renderer, saneo, QR), por tests de bytecode (un solo escritor, sin
+  crypto ni portador en `ui/`) y por la suite de `km-desktop`, pero **no** se ha
+  probado en un `pty` real, ni en un terminal Windows, ni con revisión externa.
+  El arranque interactivo, el resize real y la restauración por señal quedan
+  como prueba manual.
+- **Windows no se ha ejecutado.** `km.cmd`, las rutas de `ConfigPaths` y las ACL
+  de `OwnerPermissions` están implementadas y declaradas, pero no hay runner
+  Windows en este repositorio: se revisan por lectura, no por ejecución.
+- **El QR se muestra, no se escanea.** El escritorio no tiene cámara por diseño.
+  A 80x24 un portador de ~469 B no cabe (necesita 85x43): si el terminal es más
+  pequeño, la pantalla lo declara y ofrece texto y `.km`. Con el viewport justo a
+  85x43 el QR se pinta **sin el marco de caja** (ocupa la pantalla entero), porque
+  el marco se come 4 columnas y 4 filas y lo dejaría ilegible; a partir de 89x47
+  vuelve el marco con título y barra de acciones.
 - **No hay verificación de `serverSignature`.** El transcript de 120 B necesita el
   `serverNonce`, y la tabla de campos de `AUTH_OK` (§9.6) no lo lista, así que la
   firma llega sin material verificable. Es la divergencia P6 del propio
@@ -557,11 +649,16 @@ Qué hay hoy:
 
 ---
 
-## Bootstrap de contactos — DISEÑADO, no implementado
+## Bootstrap de contactos — implementado en G1, con limites
 
-> **Estado: DISEÑADO.** No hay comando, opción ni formato de fichero que haga
-> esto hoy, salvo el comando `peer`. Está aquí para que quede escrito antes de que
-> se implemente, y para que nadie asuma que ya existe.
+> **Estado: IMPLEMENTADO en G1.** `import`, `export`, `announce` y `session`
+> existen en el REPL, y la TUI tiene las pantallas IMPORTAR (texto, `.km`, ver mi
+> QR) y COMPARTIR. Límites que siguen abiertos: el escritorio **no escanea** QR
+> (no tiene cámara); los contactos son **volátiles**; y el reenvío tras
+> reconexión es acotado (un solo `contact_exchange`, 25 s) y su prueba en red real
+> sigue pendiente. Lo que ya no es cierto es que falte el camino: el portador, la
+> fábrica del bundle propio y la secuencia SIGNAL → PREKEY viven en el framework
+> desde G1.
 
 Un protocolo sin servidor de descubrimiento necesita una manera de que dos
 personas se queden con la clave pública de la otra. El diseño tiene dos caminos.
@@ -584,18 +681,17 @@ mensaje) y lo importa.
   pertenece al dispositivo X mientras lleva las claves de Y.
 
 Lo que un `.km` **no** hace es cifrar el mensaje. Solo da la clave pública con la
-que luego se establece la sesión (X3DH + Double Ratchet), y esa parte del camino
-todavía **no está cableada al transporte** (ver
-[Estado y límites honestos](#estado-y-límites-honestos)).
+que luego se establece la sesión (X3DH + Double Ratchet). Esa parte **sí está
+cableada** en el camino actual del escritorio (`SecureOutbound`/`SecureInbound`);
+ver [Estado y límites honestos](#estado-y-límites-honestos).
 
 ### El camino reducido: una clave pública a pelo
 
-Para un contacto técnico, o para probar, importar una clave Ed25519 desnuda es
-suficiente — y si no viene nombre, **el nombre por defecto es `user`**. Es
-deliberado: un contacto sin nombre es un dato que existe, y `user` es mejor que
-una cadena vacía o que un `identityId` hexadecimal.
+Para un contacto técnico, o para probar, el comando `peer <identityIdHex>
+<claveBase64>` registra una clave Ed25519 desnuda. Es deliberado que exista: sirve
+para autenticar los `ACK` de un par sin haber intercambiado un bundle.
 
-Esto tiene una consecuencia práctica y es a propósito: **importar una clave a
+Esto tiene una consecuencia práctica y es a propósito: **registrar una clave a
 pelo no establece ninguna relación criptográfica**. Sirve para poder *responder* a
 alguien que ya te tiene a ti, y para autenticar sus `ACK`. Para escribirle la
 primera vez hace falta un `ContactBundle` con prekeys.
@@ -612,12 +708,13 @@ Qué hay hoy de todo esto:
 | Pieza | Estado |
 |-------|--------|
 | `ContactBundle` en `km-core`: estructura, firma, invariante de binding, vectores dorados | **IMPLEMENTADO** |
-| `PeerKeyDirectory.registerFromContactBundle`, que somete la clave del bundle a la misma comprobación que una clave a pelo | **IMPLEMENTADO** en la librería, pero **no expuesto** por ninguna opción de CLI ni comando de TUI |
-| Comando `peer <identityIdHex> <claveBase64>`: el camino reducido, y **sin nombre** | **IMPLEMENTADO** |
-| Nombre visible por contacto | **NO EMPEZADO.** `peers.json` guarda `identityId` y `publicKey`, nada más |
-| Fichero `.km`, importación y exportación | **NO EMPEZADO** |
-| Nombre por defecto `user` al importar una clave a pelo | **NO EMPEZADO** |
-| QR de contacto en el escritorio | **NO EMPEZADO**; el escaneo, por diseño, tampoco |
+| Codec del portador compartido (`CarrierCodec`: deflate + ISO-8859-1 + topes) y `CarrierFileCodec` | **IMPLEMENTADO** en `km-core` (G1) |
+| Fábrica del bundle propio (`SelfBundleFactory`, 0 OPK para QR) | **IMPLEMENTADO** en `km-core` (G1) |
+| Fichero `.km`, importación y exportación desde el escritorio | **IMPLEMENTADO** (G1): comandos `import`/`export` y pantallas IMPORTAR/COMPARTIR |
+| `announce`/`session`: SIGNAL `contact_exchange` y PREKEY solo tras `Delivered` | **IMPLEMENTADO** en `km-transport` (G1), cableado en el escritorio |
+| QR de contacto en el escritorio | **IMPLEMENTADO como SALIDA** con zxing-core; el escaneo no aplica (no hay cámara). Con viewport ≥ 85x43 el QR se pinta completo (sin marco a 85x43, con marco desde 89x47); por debajo se declara el mínimo y se ofrece texto/`.km` |
+| Nombre visible por contacto | **NO EMPEZADO.** La lista muestra la huella del `identityId`, no un alias |
+| Persistencia de contactos | **NO EMPEZADO.** `InMemoryContactBook`; `persist-contact-book` está especificado y no aplicado |
 | QR de identidad en Android | **IMPLEMENTADO**, en el repositorio del cliente |
 
 ---
@@ -650,14 +747,22 @@ definitivas.
 
 | Dependencia | Versión | Licencia | Para qué |
 |---|---|---|---|
-| `com.km:km-core` | 0.1.0-SNAPSHOT | MIT | framework: core, crypto, codec, modelo |
+| `com.km:km-core` | 0.1.0-SNAPSHOT | MIT | framework: core, crypto, codec, modelo, portador |
+| `com.km:km-transport` | 0.1.0-SNAPSHOT | MIT | motor del relé, `RelayClientStack` y orquestación del intercambio |
 | `com.fasterxml.jackson.module:jackson-module-kotlin` | 2.15.2 | Apache-2.0 | la ejecuta `JsonRelayControlCodec` de `km-core` |
 | `org.bouncycastle:bcprov-jdk18on` | 1.86 | MIT | Argon2id del almacén cifrado |
 | `io.ktor:ktor-client-core` / `-cio` / `-websockets` | 3.1.3 | Apache-2.0 | transporte WebSocket |
 | `org.jline:jline` | 3.30.17 | BSD-3-Clause / EPL-2.0 | terminal y edición de línea |
+| `org.jline:jline-terminal-jna` | 3.30.17 | BSD-3-Clause | proveedor de terminal para Windows |
+| `net.java.dev.jna:jna` | 5.19.1 | LGPL-2.1-or-later **o** Apache-2.0 (se elige Apache-2.0) | binding nativo que necesita JLine en Windows |
+| `com.google.zxing:core` | 3.5.3 | Apache-2.0 | codificar el QR de salida del portador propio (no escanear) |
 | `org.jetbrains.kotlinx:kotlinx-serialization-json` | 1.8.1 | Apache-2.0 | JSON del cable (solo API de árbol) |
 | `org.jetbrains.kotlinx:kotlinx-coroutines-core` | 1.10.2 | Apache-2.0 | ciclo de vida del socket |
 | `org.slf4j:slf4j-simple` | 2.0.17 | MIT | binding de SLF4J |
+
+Las licencias de `zxing-core`, `jna` y `jline-terminal-jna` están verificadas en
+su POM y registradas, con su texto cuando aplica, en
+[`THIRD-PARTY-LICENSES/`](../THIRD-PARTY-LICENSES/).
 
 `kotlinx-serialization` se usa **solo por su API de árbol**
 (`buildJsonObject`, `Json.parseToJsonElement`), así que el módulo no necesita el

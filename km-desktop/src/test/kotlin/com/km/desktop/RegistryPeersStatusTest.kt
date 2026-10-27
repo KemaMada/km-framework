@@ -92,7 +92,7 @@ class RegistryPeersStatusTest {
     @Test
     fun `3-4 tras instalar una sesion, status lista UN par`() {
         val s = sesion()
-        s.bind { }
+        s.bindToStrings { }
         assertEquals(0, s.sessionPeers().size, "antes de instalar no hay pares con sesion")
 
         val instalada = s.registry.install(sesionRemota(s, "bob"))
@@ -108,7 +108,7 @@ class RegistryPeersStatusTest {
     @Test
     fun `3-4 tras remove, status deja de listarlo`() {
         val s = sesion()
-        s.bind { }
+        s.bindToStrings { }
         val instalada = s.registry.install(sesionRemota(s, "bob"))
         assertEquals(1, s.sessionPeers().size, "precontrol: hay uno antes de quitarlo")
 
@@ -121,7 +121,7 @@ class RegistryPeersStatusTest {
     @Test
     fun `3-4 dos sesiones dan DOS pares y quitar una deja el otro`() {
         val s = sesion()
-        s.bind { }
+        s.bindToStrings { }
         val conBob = s.registry.install(sesionRemota(s, "bob"))
         val conMallory = s.registry.install(sesionRemota(s, "mallory"))
 
@@ -144,7 +144,7 @@ class RegistryPeersStatusTest {
     @Test
     fun `control negativo un par EN LINEA sin sesion no aparece entre los de sesion`() {
         val s = sesion()
-        s.bind { }
+        s.bindToStrings { }
 
         assertEquals(0, s.onlinePeers().size, "sin conexion, el rele no declara a nadie")
         assertEquals(0, s.sessionPeers().size, "y tampoco hay sesiones")
@@ -159,7 +159,7 @@ class RegistryPeersStatusTest {
     @Test
     fun `control el registro no inventa pares tras vaciarlo`() {
         val s = sesion()
-        s.bind { }
+        s.bindToStrings { }
         s.registry.install(sesionRemota(s, "bob"))
 
         s.registry.clear()
@@ -171,4 +171,16 @@ class RegistryPeersStatusTest {
         )
     }
 
+}
+
+/**
+ * `bind` publica [com.km.desktop.client.ClientEvent]s; este atajo los convierte
+ * en lineas para los tests que afirman sobre lo que se DICE.
+ *
+ * Se suscribe ANTES de [com.km.desktop.Session.bind] para no perder lo que pasa
+ * durante el cableado.
+ */
+private fun com.km.desktop.Session.bindToStrings(sink: (String) -> Unit) {
+    events.subscribe { event -> sink(event.let { e -> events.describe(e) }) }
+    bind()
 }

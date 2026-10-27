@@ -1,12 +1,16 @@
 package com.km.messaging
 
+import com.km.codec.JsonEncoder
 import com.km.frame.BinarySecureFrameCodec
 import com.km.frame.FrameType
 import com.km.frame.SecureFrameSpec
+import com.km.model.Ack
+import com.km.model.AckStatus
 import com.km.model.FailureCode
 import com.km.model.Message
 import com.km.model.MessageId
 import com.km.model.MessageState
+import com.km.protocol.AckTranscript
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
@@ -30,6 +34,42 @@ class SecureSendRoutingTest {
     private fun mensajesDe(mundo: SecureWorld.World, id: MessageId): List<Message> =
         mundo.alice.core.getConversation(mundo.bobRoot.identityId).getOrThrow()
             .filter { it.messageId == id }
+
+    /**
+     * Entrega a Alice un `ACK` de Bob, firmado de verdad por el dispositivo de
+     * Bob y correlacionado por su id de RAIZ.
+     *
+     * ## POR QUE HACE FALTA UN `ACK` AUTENTICADO
+     *
+     * D6 mueve el borrado de la entrada persistida del momento del drenado al
+     * momento del `ACK`: hasta que llega, el mensaje ya salio pero sigue
+     * pendiente, porque un cierre del proceso antes de la confirmacion lo
+     * perderia. Para observar ese cierre no vale cualquier byte: `AckManagerImpl`
+     * solo dispara sus handlers tras verificar la firma, y un `ACK` inventado
+     * dejaria el `OfflineQueue` lleno y el test en verde por el motivo
+     * equivocado.
+     */
+    private fun entregarAck(
+        mundo: SecureWorld.World,
+        messageId: MessageId,
+        status: AckStatus = AckStatus.DELIVERED,
+    ) {
+        val from = mundo.bobRoot.identityId
+        val to = mundo.aliceRoot.identityId
+        val timestamp = 1_790_000_000_000L
+        val ack = Ack(
+            from = from,
+            to = to,
+            originalMessageId = messageId,
+            status = status,
+            timestamp = timestamp,
+            signature = SecureWorld.ed25519.sign(
+                mundo.bob.device.signingKeyPair.privateKey,
+                AckTranscript.build(from, to, messageId, status, timestamp),
+            ).bytes,
+        )
+        mundo.alice.transport.deliverLegacyAck(JsonEncoder().encodeAck(ack).getOrThrow())
+    }
 
     // ===================================================================
     // 3.1 — Con sesion, sale SecureFrame
@@ -265,7 +305,7 @@ class SecureSendRoutingTest {
     }
 
     // ===================================================================
-    // 4.1 — onPeerOnline drena la cola por el camino cifrado
+    // 4.1 — onPeerOnline DESPIERTA la cabeza por el camino cifrado
     // ===================================================================
 
     @Test
@@ -302,9 +342,26 @@ class SecureSendRoutingTest {
             envelopeDe(mundo, wire).messageId,
             "el sobre lleva el messageId del mensaje ENCOLADO, no uno nuevo",
         )
+        // D6: el drenado NO borra la entrada persistida. El mensaje YA salio,
+        // pero mientras no haya `ACK` sigue pendiente: si el proceso muere aqui,
+        // tiene que poder rehidratarse. Borrar al drenar era exactamente la
+        // perdida silenciosa que este cambio cierra.
+        assertEquals(
+            1,
+            mundo.alice.offlineQueue.peekAll().getOrThrow().size,
+            "la cola sigue INTACTA tras drenar: el borrado se difiere al ACK",
+        )
+        assertEquals(
+            MessageState.SENT,
+            mensajesDe(mundo, creado.messageId).single().state,
+            "y el mensaje consta como SENT, esperando confirmacion",
+        )
+
+        // 3. El `ACK` autenticado cierra el ciclo: ahora si se borra.
+        entregarAck(mundo, creado.messageId)
         assertTrue(
             mundo.alice.offlineQueue.peekAll().getOrThrow().isEmpty(),
-            "y la cola queda vacia tras el exito",
+            "y la cola queda vacia tras el ACK, que es la prueba de entrega",
         )
     }
 
@@ -389,16 +446,13 @@ class SecureSendRoutingTest {
         // se mira la pila de par.
         assertTrue(capturados.isEmpty(), "tampoco sale un SecureFrame: no sale nada de ninguna manera")
 
-        // (b) DESPUES: la cola sigue INTACTA. Un rechazo no puede vaciar la cola,
-        //     porque vaciarla es exactamente el momento en que el mensaje
-        //     volveria a salir por el camino legado al siguiente intento.
+        // (b) DESPUES: la COLA ya no lo tiene, porque un terminal no espera. La
+        //     evidencia durable es la FILA `FAILED`, no la entrada de cola: el
+        //     tombstone es lo que el usuario puede ver y reenviar (R13). Antes
+        //     esta entrada se conservaba y `expireHead` la borraba: dos caminos
+        //     con dos respuestas para el mismo hecho.
         val cola = mundo.alice.offlineQueue.peekAll().getOrThrow()
-        assertEquals(1, cola.size, "el mensaje sigue esperando: un rechazo no lo descarga")
-        assertEquals(
-            creado.messageId,
-            cola.single().messageId,
-            "y es el MISMO mensaje, con el messageId que permitiria reintentarlo",
-        )
+        assertEquals(0, cola.size, "un rechazo terminal saca el mensaje de la cola de espera")
 
         // (c) Y POR ULTIMO el estado, que es el rechazo OBSERVABLE por API
         //     publica. Sin esto el drenado fallido seria indistinguible de uno

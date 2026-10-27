@@ -43,24 +43,34 @@ class EncryptedSendReceiveIntegrationTest {
         val capturados = mundo.alice.captureOutbound()
 
         // --- A envia, y lo que sale por el cable se mira antes de entregarlo ---
-        val ids = secretos.map { carga ->
+        //
+        // La cabeza de cada par avanza con el ACK, no con la escritura (R8). Por
+        // eso el bucle es un ida y vuelta: si se enviaran los tres seguidos sin
+        // confirmar el primero, el 2 y el 3 esperarian su turno —que es
+        // exactamente la garantia de orden— y este test mediria una sola salida
+        // en vez del punto a punto.
+        val ids = mutableListOf<com.km.model.MessageId>()
+        val wires = mutableListOf<ByteArray>()
+        secretos.forEach { carga ->
             val creado = mundo.alice.core.createMessage(mundo.bobRoot.identityId, carga).getOrThrow()
             mundo.alice.core.sendMessage(creado).getOrThrow()
-            creado.messageId
+            ids += creado.messageId
+            wires += capturados.last()
+
+            // B recibe por su camino de par y emite su ACK firmado. Devolverlo a
+            // A promueve la siguiente cabeza: es el ciclo real, no un atajo.
+            mundo.bob.deliverInboundAs(mundo.bobToAlice, capturados.last())
+            mundo.alice.transport.deliverLegacyAck(mundo.bob.transport.sentAcks.last())
         }
+        assertEquals(secretos.size, wires.size, "un frame por mensaje")
         assertEquals(secretos.size, capturados.size, "un frame por mensaje")
         assertEquals(0, mundo.alice.transport.sendCount, "nada por el camino legado en claro")
 
-        capturados.forEach { wire ->
+        wires.forEach { wire ->
             assertEquals(SecureFrameSpec.VERSION.toByte(), wire[0], "cada frame es un SecureFrame v1")
         }
         secretos.forEachIndexed { i, carga ->
-            assertFalse(capturados[i].containsBytesOf(carga), "la carga $i no viaja en claro")
-        }
-
-        // --- B recibe por su camino de par ---
-        capturados.forEach { wire ->
-            mundo.bob.deliverInboundAs(mundo.bobToAlice, wire)
+            assertFalse(wires[i].containsBytesOf(carga), "la carga $i no viaja en claro")
         }
 
         assertEquals(secretos.size, recibidos.size, "B recibe todos, en orden")

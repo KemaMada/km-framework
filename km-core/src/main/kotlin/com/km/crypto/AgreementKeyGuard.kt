@@ -76,8 +76,22 @@ import java.math.BigInteger
  */
 internal object AgreementKeyGuard {
 
-    /** `p = 2^255 - 19`. Calculado, no copiado. */
-    private val P: BigInteger = BigInteger.TWO.pow(255).subtract(BigInteger.valueOf(19))
+    /**
+     * `p = 2^255 - 19`. Calculado, no copiado.
+     *
+     * `BigInteger.valueOf(2)` y NO `BigInteger.TWO`: el campo estatico `TWO`
+     * solo existe en Android a partir de API 33, y la app declara
+     * `minSdk = 28`. En un Galaxy S8+ (Android 9 / API 28) la
+     * inicializacion de este `object` reventaba con
+     * `NoSuchFieldError: No static field TWO of type Ljava/math/BigInteger`,
+     * la sesion E2E no se abria y el envio terminaba en `AUTH_FAILED`.
+     *
+     * El PRIMO NO CAMBIA: `BigInteger.TWO` y `BigInteger.valueOf(2)` son el
+     * mismo valor (2) y `pow` es determinista, asi que `P` es bit a bit el
+     * mismo numero de antes. Lo unico que cambia es COMO se escribe, y esa
+     * forma es API 1.
+     */
+    private val P: BigInteger = BigInteger.valueOf(2).pow(255).subtract(BigInteger.valueOf(19))
 
     /**
      * Orden pequeno (RFC 7748 §6.1).

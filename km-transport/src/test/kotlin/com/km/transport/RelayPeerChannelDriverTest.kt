@@ -11,7 +11,9 @@ import com.km.transport.SocketSecureWorld.awaitOrFail
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNotSame
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.Timeout
@@ -46,14 +48,17 @@ import java.util.concurrent.CopyOnWriteArrayList
  * silencioso de todos: el conductor simplemente nunca conecta y el envio falla
  * como `INVALID_STATE_TRANSITION` sin que nada diga por que.
  *
- * ## LO QUE ESTA FUERA, Y SE DICE
+ * ## EL DEFECTO QUE PC-08..PC-12 CIERRAN
  *
- * El ciclo `onPeerOffline` -> nueva presencia esta DECLARADO como defecto
- * abierto: `onPeerOffline` saca al par de `conectados` pero deja el binding en
- * `CONNECTED`, y volver a presentar presencia mete al par en `markConnected` desde
- * `CONNECTED`, que `withConnected` rechaza. Ver el CHANGELOG. Este fichero
- * comprueba lo que el contrato SI dice —que la presencia se olvida— y no fija
- * como invariante un comportamiento que es un fallo.
+ * `onPeerOffline` saca al par de `conectados` pero deja el binding en
+ * `CONNECTED` —correcto: el binding es del manager—, y la version anterior
+ * volvia a presentar presencia metia al par en `markConnected` desde
+ * `CONNECTED`, que `withConnected` rechaza. Ese `IllegalArgumentException`
+ * moria en el frame-loop y el conductor se quedaba diciendo que no habia
+ * enlace con el binding `CONNECTED`. Los casos PC-08 (duplicado sobre
+ * `CONNECTED`), PC-09/PC-10 (`CLOSED` y `FAILED`) y PC-12 (reauth
+ * OFFLINE->ONLINE) fijan el contrato nuevo; PC-01..PC-07 siguen fijando el
+ * anterior sin cambios.
  */
 class RelayPeerChannelDriverTest {
 
@@ -531,6 +536,246 @@ class RelayPeerChannelDriverTest {
             PeerTransportState.ANSWER_RECEIVED,
             aliceManager.getBinding(aliceRoot.identityId, carolRoot.identityId)?.state,
             "y el de Carol tampoco: el conductor no gobierna el enlace de Carol",
+        )
+    }
+
+    // ==================================================================
+    // PC-08 — R1: duplicado sobre un binding que YA esta CONNECTED
+    // ==================================================================
+
+    /**
+     * El escenario exacto del defecto: el binding esta `CONNECTED` y el memo
+     * del conductor no lo sabe.
+     *
+     * Lo produce cualquier cosa que conecte el binding fuera de este conductor
+     * —una segunda instancia de la pila, la sesion segura que abrio el binding,
+     * o la reautenticacion que se prueba en PC-12—, y con el codigo anterior
+     * esta llamada entraba en `markConnected` desde `CONNECTED` y lanzaba
+     * dentro del frame-loop. Aqui el binding se conduce con el API del MANAGER,
+     * que es el mismo ciclo que usa el conductor, y despues se le manda el
+     * `PEER_ONLINE` duplicado.
+     */
+    @Test
+    @Timeout(180)
+    fun `PC-08 PEER_ONLINE duplicado con binding CONNECTED es idempotente - R1`() {
+        val m = montaje()
+        val estados = CopyOnWriteArrayList<PeerTransportState>()
+        m.manager.onStateChange { _, state -> estados.add(state) }
+
+        // Un binding CONNECTED que el conductor no ha conducido.
+        assertTrue(m.manager.createBinding(m.alice, m.context).isSuccess)
+        assertTrue(m.manager.sendOffer(m.alice, m.context, "", m.bob).isSuccess)
+        assertTrue(m.manager.receiveAnswer(m.alice, m.bob, "").isSuccess)
+        assertTrue(m.manager.markConnected(m.alice, m.context).isSuccess)
+        val binding = m.manager.getBinding(m.alice, m.bob)
+        assertEquals(PeerTransportState.CONNECTED, binding?.state, "precondicion: binding CONNECTED")
+        assertFalse(m.driver.isConnected(m.bob), "sin memo no hay enlace declarado, aunque el binding este CONNECTED")
+
+        awaitOrFail("el rele debe anunciar a Bob", trace = { trace.toString() }) {
+            m.engine.isPeerPresent(m.bob)
+        }
+        m.driver.onPeerPresent(m.bob)
+        // El duplicado que emitia cada reautenticacion.
+        m.driver.onPeerOnline(m.bob)
+
+        assertTrue(m.driver.isConnected(m.bob), "el conductor debe reconocer el canal que YA existe")
+        assertSame(binding, m.manager.getBinding(m.alice, m.bob), "el binding no se recrea: es el mismo")
+        assertEquals(1, m.manager.bindingsForLocalIdentity(m.alice).size, "un solo binding por par")
+        assertEquals(
+            1,
+            estados.count { it == PeerTransportState.CONNECTED },
+            "UN solo evento CONNECTED en todo el escenario: $estados",
+        )
+    }
+
+    // ==================================================================
+    // PC-09 — R3: binding CLOSED se reabre con uno NUEVO
+    // ==================================================================
+
+    @Test
+    @Timeout(180)
+    fun `PC-09 un binding CLOSED se reemplaza y vuelve a CONNECTED - R3`() {
+        val m = montaje()
+        awaitOrFail("el rele debe anunciar a Bob", trace = { trace.toString() }) {
+            m.engine.isPeerPresent(m.bob)
+        }
+        m.driver.onPeerPresent(m.bob)
+        assertTrue(m.driver.isConnected(m.bob), "precondicion: conectado")
+        val cerrado = m.manager.getBinding(m.alice, m.bob)
+
+        assertTrue(m.manager.closeBinding(m.alice, m.bob).isSuccess)
+        assertFalse(
+            m.driver.isConnected(m.bob),
+            "binding CLOSED: la conjuncion memo+binding no puede seguir afirmando enlace",
+        )
+
+        m.driver.onPeerOnline(m.bob)
+
+        val nuevo = m.manager.getBinding(m.alice, m.bob)
+        assertNotSame(cerrado, nuevo, "CLOSED se REEMPLAZA: createBinding no reabre el inactivo")
+        assertEquals(PeerTransportState.CONNECTED, nuevo?.state, "el par recupera canal sin reiniciar el proceso")
+        assertTrue(m.driver.isConnected(m.bob))
+        assertEquals(1, m.manager.bindingsForLocalIdentity(m.alice).size, "un solo binding, el nuevo")
+    }
+
+    // ==================================================================
+    // PC-10 — R3: binding FAILED se reabre con uno NUEVO
+    // ==================================================================
+
+    @Test
+    @Timeout(180)
+    fun `PC-10 un binding FAILED se reemplaza y vuelve a CONNECTED - R3`() {
+        val m = montaje()
+        awaitOrFail("el rele debe anunciar a Bob", trace = { trace.toString() }) {
+            m.engine.isPeerPresent(m.bob)
+        }
+        m.driver.onPeerPresent(m.bob)
+        assertTrue(m.driver.isConnected(m.bob), "precondicion: conectado")
+        val fallido = m.manager.getBinding(m.alice, m.bob)
+
+        assertTrue(m.manager.failBinding(m.alice, m.bob, "timeout ICE simulado").isSuccess)
+        assertFalse(m.driver.isConnected(m.bob))
+
+        m.driver.onPeerOnline(m.bob)
+
+        val nuevo = m.manager.getBinding(m.alice, m.bob)
+        assertNotSame(fallido, nuevo, "FAILED se REEMPLAZA: no se reabre el fallido")
+        assertEquals(PeerTransportState.CONNECTED, nuevo?.state)
+        assertTrue(m.driver.isConnected(m.bob))
+    }
+
+    // ==================================================================
+    // PC-11 — R1/R3: aviso de binding y presencia concurrentes
+    // ==================================================================
+
+    /**
+     * El aviso del manager y el frame de presencia llegan por hilos distintos.
+     * Dos intentos a la vez no pueden producir dos bindings ni dos
+     * `CONNECTED`: el monitor del conductor es por par y dentro se relee el
+     * estado.
+     */
+    @Test
+    @Timeout(180)
+    fun `PC-11 install y presencia concurrentes producen UN handshake - R1`() {
+        val m = montaje()
+        val estados = CopyOnWriteArrayList<PeerTransportState>()
+        m.manager.onStateChange { _, state -> estados.add(state) }
+        awaitOrFail("el rele debe anunciar a Bob", trace = { trace.toString() }) {
+            m.engine.isPeerPresent(m.bob)
+        }
+
+        val salida = java.util.concurrent.CountDownLatch(1)
+        val hilos = listOf(
+            kotlin.concurrent.thread(name = "install") { salida.await(); m.driver.onBindingCreated(m.bob) },
+            kotlin.concurrent.thread(name = "presence") { salida.await(); m.driver.onPeerPresent(m.bob) },
+        )
+        salida.countDown()
+        hilos.forEach { it.join(120_000) }
+        hilos.forEach { assertFalse(it.isAlive, "un intento no puede quedarse colgado del lock") }
+
+        assertTrue(m.driver.isConnected(m.bob), "el resultado converge a conectado")
+        assertEquals(1, m.manager.bindingsForLocalIdentity(m.alice).size, "un solo binding")
+        assertEquals(
+            1,
+            estados.count { it == PeerTransportState.CONNECTED },
+            "un solo handshake: $estados",
+        )
+    }
+
+    // ==================================================================
+    // PC-12 — R2: reautenticacion (OFFLINE + ONLINE) con binding CONNECTED
+    // ==================================================================
+
+    /**
+     * `MessageRouter.establishSession` desregistra y registra sus handlers en
+     * cada reautenticacion, y eso emite `PEER_OFFLINE` + `PEER_ONLINE` con el
+     * binding todavia `CONNECTED`.
+     *
+     * Aqui se mide el contrato: el memo se olvida (PC-04), el binding NO se
+     * resetea ni se recrea, y el canal se restablece UNA vez. NO hay segundo
+     * `CONNECTED` porque el binding nunca dejo de estarlo: la autoridad es el
+     * binding y no hay transicion que hacer. Eso es idempotencia, no una
+     * conexion nueva.
+     */
+    @Test
+    @Timeout(180)
+    fun `PC-12 reauth OFFLINE y ONLINE conserva UN binding y el canal - R2`() {
+        val m = montaje()
+        val estados = CopyOnWriteArrayList<PeerTransportState>()
+        m.manager.onStateChange { _, state -> estados.add(state) }
+        awaitOrFail("el rele debe anunciar a Bob", trace = { trace.toString() }) {
+            m.engine.isPeerPresent(m.bob)
+        }
+        m.driver.onPeerPresent(m.bob)
+        assertTrue(m.driver.isConnected(m.bob), "precondicion: conectado")
+        val binding = m.manager.getBinding(m.alice, m.bob)
+        assertEquals(1, estados.count { it == PeerTransportState.CONNECTED }, "precondicion: un CONNECTED")
+
+        // Reauth: el rele dice que el par se fue...
+        m.driver.onPeerOffline(m.bob)
+        assertFalse(m.driver.isConnected(m.bob), "OFFLINE olvida el memo (PC-04)")
+        assertEquals(
+            PeerTransportState.CONNECTED,
+            m.manager.getBinding(m.alice, m.bob)?.state,
+            "OFFLINE no toca el binding: cerrarlo es del manager",
+        )
+
+        // ...y vuelve a anunciarlo.
+        m.driver.onPeerOnline(m.bob)
+
+        assertTrue(m.driver.isConnected(m.bob), "ONLINE restablece el canal")
+        assertSame(binding, m.manager.getBinding(m.alice, m.bob), "el binding NO se resetea ni se recrea")
+        assertEquals(1, m.manager.bindingsForLocalIdentity(m.alice).size, "un solo binding")
+        assertEquals(
+            1,
+            estados.count { it == PeerTransportState.CONNECTED },
+            "la reauth no re-negocia: un solo CONNECTED en total: $estados",
+        )
+        assertTrue(
+            m.manager.sendData(m.alice, m.context, wire(0x44)).isSuccess,
+            "el canal sigue sirviendo despues de la reautenticacion",
+        )
+    }
+
+    // ------------------------------------------------------------------
+    // Montaje comun de PC-08..PC-12
+    // ------------------------------------------------------------------
+
+    private class Montaje(
+        val alice: com.km.model.IdentityId,
+        val bob: com.km.model.IdentityId,
+        val engine: JvmRelayTransport,
+        val manager: PeerTransportManager,
+        val driver: RelayPeerChannelDriver,
+        val context: PeerContext,
+    )
+
+    /**
+     * Alice y Bob en el rele real, con el conductor de Alice declarado hacia
+     * Bob. Bob queda ONLINE antes de devolver, de modo que su presencia es un
+     * hecho del rele y no una lista maquillada.
+     */
+    private fun montaje(): Montaje {
+        startRelay()
+        val bobRoot = IdentityRoot()
+        node(bobRoot).connectAndAwait()
+
+        val aliceRoot = IdentityRoot()
+        val aliceEngine = node(aliceRoot)
+        val manager = PeerTransportManager(aliceEngine)
+        val context = contextTowards(Device("bob"), emptyList(), bobRoot)
+        aliceEngine.connectAndAwait()
+
+        val driver = RelayPeerChannelDriver(manager, aliceEngine, aliceEngine.relayIdentityId())
+            .forPeer(context)
+
+        return Montaje(
+            alice = aliceRoot.identityId,
+            bob = bobRoot.identityId,
+            engine = aliceEngine,
+            manager = manager,
+            driver = driver,
+            context = context,
         )
     }
 }
