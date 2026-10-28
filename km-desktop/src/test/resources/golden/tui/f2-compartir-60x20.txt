@@ -1,0 +1,20 @@
+KEYMESSAGE ┃ MI CONTACTO                    P2P[o] conectado
+▌INICIO    FRASE    DIAGNOSTICO                             
+portador 469 B · opk 0                                      
+el QR no cabe: minimo 85x43; usa [C] copiar o [W] guardar .k
+[C] copiar (OSC 52, no confirmable)  [W] .km  [T] texto  [ES
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+yo ffffffff… · P2P[o] conectado · par[?] · S1 K2 · VOLÁTIL  
+· [C] copiar  [W] .km  [T] texto  [?] ayuda                 

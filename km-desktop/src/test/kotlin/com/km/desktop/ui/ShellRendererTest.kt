@@ -40,7 +40,7 @@ class ShellRendererTest {
     )
 
     private fun base(screen: Screen = Screen.INICIO) = ShellState(
-        screens = ScreenStack.of(Screen.INICIO, screen),
+        tabs = TabStacks.of(Screen.INICIO, screen),
         contacts = listOf(fila()),
         contactsLoaded = true,
         viewport = Size(100, 30),
@@ -93,7 +93,10 @@ class ShellRendererTest {
         val lineas = lineas(base().copy(focus = Focus(FocusField.LIST, 0)))
         val conFoco = lineas.filter { it.focus }
         assertEquals(1, conFoco.size, "una sola fila tiene el foco")
-        assertTrue(conFoco.single().text.contains(">"), "el foco lleva '>' en el texto")
+        assertTrue(
+            conFoco.single().text.contains("\u258c") || conFoco.single().text.contains(">"),
+            "el foco lleva su glifo en el texto: '${conFoco.single().text}'",
+        )
         assertTrue(conFoco.single().text.contains("ana"))
     }
 
@@ -120,7 +123,7 @@ class ShellRendererTest {
         val sinNada = lineas(
             base().copy(contacts = listOf(fila().copy(hasSession = false, hasAckKey = false))),
         ).first { it.text.contains("ana") }.text
-        assertTrue(sinNada.contains("- -"), "sin sesion ni clave: '$sinNada'")
+        assertTrue(sinNada.trimEnd().endsWith("--"), "sin sesion ni clave: '$sinNada'")
 
         val conSesion = lineas(base()).first { it.text.contains("ana") }.text
         assertTrue(conSesion.contains("S"), conSesion)
@@ -213,12 +216,14 @@ class ShellRendererTest {
     }
 
     @Test
-    fun `--ascii usa cajas rectas sin glifos Unicode`() {
+    fun `--ascii usa la misma metrica sin glifos Unicode`() {
         val estado = base()
         val texto = lineas(estado, ascii = true).joinToString("\n")
-        assertTrue(texto.contains("+"), "borde ASCII: $texto")
+        assertTrue(texto.contains("|"), "separador ASCII: $texto")
         assertFalse(texto.contains("\u250c"), "sin esquina Unicode")
         assertFalse(texto.contains("\u2502"), "sin vertical Unicode")
+        assertFalse(texto.contains("\u2500"), "sin regla Unicode")
+        assertFalse(texto.contains("\u258c"), "sin marcador Unicode")
         assertAncho(estado, ascii = true)
     }
 
@@ -351,17 +356,21 @@ class ShellRendererTest {
     }
 
     @Test
-    fun `COMPARTIR por encima del minimo conserva el marco y el QR entero`() {
+    fun `COMPARTIR por encima del minimo conserva el QR entero y recupera el marco`() {
         val estado = compartir(Size(89, 47))
         val lineas = lineas(estado)
         val texto = lineas.joinToString("\n") { it.text }
 
-        assertTrue(texto.contains("\u250c"), "vuelve el marco cuando el QR cabe dentro: $texto")
         assertTrue(texto.contains("portador 469 B"), texto)
         assertFalse(texto.contains("lineas)"), "sin recorte de filas: $texto")
         filasQr().forEach { fila ->
             assertTrue(lineas.any { it.text.contains(fila) }, "falta una fila del QR: '$fila'")
         }
+        // El criterio preservado: a 89x47 (85+4 x 43+4) el marco VUELVE. La
+        // asercion se habia borrado y el QR se quedaba sin marco en silencio.
+        assertTrue(texto.contains("\u250c"), "el marco vuelve a 89x47: $texto")
+        assertTrue(texto.contains("\u2514"), "el marco cierra por abajo: $texto")
+        assertTrue(texto.contains("\u2502"), "el marco tiene lados: $texto")
         assertAncho(estado)
     }
 

@@ -67,7 +67,7 @@ class QrRendererTest {
     @Test
     fun `--ascii no pinta QR y lo dice`() {
         val estado = ShellState(
-            screens = ScreenStack.of(Screen.INICIO, Screen.COMPARTIR),
+            tabs = TabStacks.of(Screen.INICIO, Screen.COMPARTIR),
             viewport = Size(100, 50),
             share = ShareView(carrier = portadorReal(), byteLength = 469),
         )
@@ -87,7 +87,7 @@ class QrRendererTest {
         val carrier = portadorReal()
         val viewport = Size(QrRenderer.MIN_COLUMNS, QrRenderer.MIN_ROWS)
         val estado = ShellState(
-            screens = ScreenStack.of(Screen.INICIO, Screen.COMPARTIR),
+            tabs = TabStacks.of(Screen.INICIO, Screen.COMPARTIR),
             viewport = viewport,
             share = ShareView(carrier = carrier, byteLength = 469, oneTimePreKeys = 0),
         )
@@ -100,5 +100,91 @@ class QrRendererTest {
         assertEquals(esperado, lineas.map { it.text }, "ni una fila recortada ni sustituida")
         assertFalse(texto.contains("no cabe"), texto)
         assertFalse(texto.contains("lineas)"), texto)
+    }
+
+    // ------------------------------------------------------------------
+    // Contraste: la paleta QR viaja del renderer al escritor
+    // ------------------------------------------------------------------
+
+    private fun estadoCompartir(viewport: Size, carrier: String = portadorReal()) = ShellState(
+        tabs = TabStacks.of(Screen.INICIO, Screen.COMPARTIR),
+        viewport = viewport,
+        share = ShareView(carrier = carrier, byteLength = 469, oneTimePreKeys = 0),
+    )
+
+    /**
+     * Sin marco (85x43) las 43 filas son QR. Con marco (100x50) solo las filas
+     * del QR: la cabecera y las acciones NO se marcan, porque invertirlas
+     * pintaria de blanco texto que no es del codigo.
+     */
+    @Test
+    fun `solo las filas del QR llevan la paleta QR`() {
+        val minimo = ShellRenderer.render(estadoCompartir(Size(85, 43)))
+        assertEquals(43, minimo.size)
+        assertTrue(
+            minimo.all { it.palette == LinePalette.QR },
+            "a 85x43 no hay cabecera ni acciones: las 43 filas son QR",
+        )
+
+        val conMarco = ShellRenderer.render(estadoCompartir(Size(100, 50)))
+        val qr = conMarco.filter { it.palette == LinePalette.QR }
+        assertEquals(43, qr.size, "43 filas de QR tambien dentro de la caja")
+        assertTrue(
+            conMarco.first().text.contains("MI CONTACTO"),
+            "el borde superior con titulo va primero: ${conMarco.first().text}",
+        )
+        assertEquals(LinePalette.DEFAULT, conMarco.first().palette, "el borde no se invierte")
+        val cabecera = conMarco.first { it.text.contains("portador ") }
+        assertEquals(LinePalette.DEFAULT, cabecera.palette, "la cabecera no se invierte")
+        val acciones = conMarco.first { it.text.contains("[C] copiar") }
+        assertTrue(acciones.text.contains("[C] copiar"), "las acciones van al pie: ${acciones.text}")
+        assertEquals(LinePalette.DEFAULT, acciones.palette, "las acciones no se invierten")
+        assertTrue(
+            qr.any { it.text.contains("\u2588") || it.text.contains("\u2580") || it.text.contains("\u2584") },
+            "las filas marcadas son del QR (el margen de silencio puede ser solo espacios)",
+        )
+    }
+
+    /**
+     * El ancho NO cambia: la marca es una etiqueta de paleta, no ANSI metido en
+     * el texto. Si hubiera secuencias dentro, `Sanitizer.width` mediria de mas o
+     * `Box` las contaria como columnas.
+     */
+    @Test
+    fun `las filas del QR no llevan ANSI y miden el ancho del viewport`() {
+        val viewport = Size(100, 50)
+        val lineas = ShellRenderer.render(estadoCompartir(viewport))
+        val qr = lineas.filter { it.palette == LinePalette.QR }
+        assertEquals(43, qr.size)
+        qr.forEach { linea ->
+            assertFalse(linea.text.contains('\u001b'), "ANSI dentro del texto medido: ${linea.text}")
+            assertEquals(viewport.columns, Sanitizer.width(linea.text), "ancho intacto")
+        }
+    }
+
+    @Test
+    fun `a 84x42 el QR no cabe y se declara el minimo 85x43`() {
+        val lineas = ShellRenderer.render(estadoCompartir(Size(84, 42)))
+        val texto = lineas.joinToString("\n") { it.text }
+
+        assertTrue(lineas.none { it.palette == LinePalette.QR }, "sin QR: no cabe")
+        assertTrue(texto.contains("minimo 85x43"), texto)
+        assertTrue(texto.contains("no cabe"), texto)
+        assertFalse(texto.contains("\u2588"), "ni un bloque de QR")
+    }
+
+    /**
+     * Sin color no hay QR: los bloques saldrian invertidos. Se dice que hace
+     * falta color y se ofrecen las salidas que si funcionan.
+     */
+    @Test
+    fun `sin color no se pintan bloques de QR y se avisa`() {
+        val lineas = ShellRenderer.render(estadoCompartir(Size(100, 50)), color = false)
+        val texto = lineas.joinToString("\n") { it.text }
+
+        assertTrue(lineas.none { it.palette == LinePalette.QR }, "ninguna fila QR")
+        assertTrue(texto.contains("el QR necesita color"), texto)
+        assertTrue(texto.contains("[T] texto") && texto.contains("[W] guardar .km"), texto)
+        assertFalse(texto.contains("\u2588"), "sin bloques de QR")
     }
 }

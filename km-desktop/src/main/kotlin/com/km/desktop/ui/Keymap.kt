@@ -18,6 +18,8 @@ sealed interface Intent {
     data object PrevField : Intent
     data object MoveUp : Intent
     data object MoveDown : Intent
+    data object PageUp : Intent
+    data object PageDown : Intent
     data object PageStart : Intent
     data object PageEnd : Intent
     data object Activate : Intent
@@ -51,6 +53,15 @@ sealed interface Intent {
     data object SourceText : Intent
     data object SourceFile : Intent
     data object SourceOwnQr : Intent
+
+    /**
+     * Cambiar de pestaña raiz.
+     *
+     * Es un `Intent` y no un `ShellAction` por la misma razon que el resto: una
+     * tecla no fabrica eventos del motor. La pestaña viaja en el dato para que
+     * el reducer no tenga que adivinar de que tecla vino.
+     */
+    data class TabTo(val tab: RootTab) : Intent
 }
 
 /** Una fila del keymap, con su etiqueta y su descripcion para `?`. */
@@ -93,6 +104,10 @@ object Keymap {
         Binding(KeyStroke.char('k'), "k", Intent.MoveUp, "subir"),
         Binding(KeyStroke(Key.Down), "Abajo", Intent.MoveDown, "bajar"),
         Binding(KeyStroke.char('j'), "j", Intent.MoveDown, "bajar"),
+        // PgUp/PgDn ya llegaban decodificados de `5~`/`6~` y no tenian binding:
+        // una tecla que el terminal manda y la TUI ignora.
+        Binding(KeyStroke(Key.PageUp), "RePág", Intent.PageUp, "pagina arriba"),
+        Binding(KeyStroke(Key.PageDown), "AvPág", Intent.PageDown, "pagina abajo"),
         Binding(KeyStroke(Key.Home), "Inicio", Intent.PageStart, "al principio"),
         Binding(KeyStroke.char('g'), "g", Intent.PageStart, "al principio"),
         Binding(KeyStroke(Key.End), "Fin", Intent.PageEnd, "al final"),
@@ -105,6 +120,11 @@ object Keymap {
         Binding(KeyStroke.ctrl('l'), "Ctrl-L", Intent.Redraw, "redibujar"),
         Binding(KeyStroke.ctrl('v'), "Ctrl-V", Intent.Paste, "pegar"),
         Binding(KeyStroke.ctrl('c'), "Ctrl-C", Intent.Cancel, "cancelar (dos veces salir)"),
+        // Las tres raices, con la MISMA tecla en toda la app. `Alt-N` no es un
+        // atajo de pantalla: es navegacion, y por eso vive en la tabla global.
+        Binding(KeyStroke.alt('1'), "Alt-1", Intent.TabTo(RootTab.INICIO), "pestana INICIO"),
+        Binding(KeyStroke.alt('2'), "Alt-2", Intent.TabTo(RootTab.FRASE), "pestana FRASE"),
+        Binding(KeyStroke.alt('3'), "Alt-3", Intent.TabTo(RootTab.DIAGNOSTICO), "pestana DIAGNOSTICO"),
     )
 
     private val perScreen: Map<Screen, List<Binding>> = mapOf(

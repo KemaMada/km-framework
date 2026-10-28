@@ -1,0 +1,24 @@
+KEYMESSAGE ┃ NUEVO CONTACTO                                     P2P[o] conectado
+▌INICIO    FRASE    DIAGNOSTICO                                                 
+1 texto  2 fichero .km  3 ver mi QR                                             
+▌ origen: TEXTO (pega una linea o un bloque) ───────────────────────────────────
+portador:                                                                       
+> KM1.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa                                  
+(44 caracteres)                                                                 
+[ENTER] importar   [ESC] volver                                                 
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+yo ffffffff… · P2P[o] conectado · par[?] · S1 K2 · VOLÁTIL                      
+· [1] texto  [2] fichero .km  [3] mi QR  [?] ayuda                              

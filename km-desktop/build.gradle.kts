@@ -199,6 +199,15 @@ application {
 
 tasks.test {
     useJUnitPlatform()
+    // Los goldens de `ui/` se regeneran con `-Dkm.golden.update=true` y se
+    // pueden leer de otro directorio con `-Dkm.golden.dir=<ruta>`. Gradle NO
+    // reenvia al JVM de tests las `-D` de la linea de comandos: sin este puente,
+    // el flag se ignoraba en silencio y el test decia "falta el golden" con el
+    // comando correcto escrito en el mensaje.
+    mapOf("km.golden.update" to "km.golden.update", "km.golden.dir" to "km.golden.dir")
+        .forEach { (clave, propiedad) ->
+            System.getProperty(clave)?.let { systemProperty(propiedad, it) }
+        }
 }
 
 tasks.shadowJar {

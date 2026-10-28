@@ -14,10 +14,14 @@ import com.km.desktop.platform.ConfigPaths
 import com.km.desktop.platform.OwnerPermissions
 import com.km.desktop.shell.LineModeShell
 import com.km.desktop.shell.JLineShell
+import com.km.desktop.shell.IdentityProvisioner
+import com.km.desktop.shell.MouseSupport
 import com.km.desktop.shell.ScreenWriter
 import com.km.desktop.shell.ShellMode
 import com.km.desktop.shell.UnlockGate
+import com.km.desktop.ui.MouseMode
 import com.km.desktop.ui.Size
+import com.km.desktop.ui.theme.ColorCapability
 import com.km.model.Ack
 import com.km.model.IdentityId
 import com.km.model.Message
@@ -536,7 +540,17 @@ fun main(args: Array<String>) {
         kotlin.system.exitProcess(2)
     }
     if (options.help) {
-        println(DesktopOptions.usage())
+        // `auto` no se puede resolver sin medir la terminal, pero `--help` no
+        // la abre: se declara el valor que se usaria AHORA con la consola y el
+        // `TERM` actuales, y se dice que es efectivo.
+        val hayConsola = System.console() != null
+        val soporte = MouseSupport.hasMouseSupport(System.getenv("TERM"), console = hayConsola, typeDumb = false)
+        val ratonAhora = when (options.mouse) {
+            MouseMode.OFF -> false
+            MouseMode.ON -> options.mode == ShellMode.TUI && soporte
+            MouseMode.AUTO -> options.mode == ShellMode.TUI && soporte
+        }
+        println(DesktopOptions.usage(mouse = ratonAhora))
         return
     }
 
@@ -607,8 +621,50 @@ fun main(args: Array<String>) {
         out.flush()
     }
 
+    // ## EL RATON SE RESUELVE UNA VEZ
+    //
+    // `auto` = TUI viable + terminal con soporte. `off` nunca activa. `on` sin
+    // soporte o sin TUI es un error de USO (exit 2), no un downgrade silencioso:
+    // el operador pidio raton y no lo tendria.
+    val ratonSoportado = MouseSupport.hasMouseSupport(
+        term = System.getenv("TERM"),
+        console = System.console() != null,
+        typeDumb = terminal.type == Terminal.TYPE_DUMB || terminal.type == Terminal.TYPE_DUMB_COLOR,
+    )
+    val ratonEfectivo = when (options.mouse) {
+        MouseMode.OFF -> false
+        MouseMode.ON -> {
+            if (!tuiViable || !ratonSoportado) {
+                System.err.println(
+                    "--mouse=on no es utilizable aqui (" +
+                        (tamanoInicial?.let { "${it.columns}x${it.rows}" } ?: terminal.type) +
+                        ", TERM=" + (System.getenv("TERM") ?: "sin TERM") +
+                        "): usa --mouse=auto u --mouse=off",
+                )
+                runCatching { terminal.close() }
+                kotlin.system.exitProcess(2)
+            }
+            true
+        }
+        MouseMode.AUTO -> tuiViable && ratonSoportado
+    }
+
     if (tuiViable) {
-        val writer = ScreenWriter(terminal, attributes = Ansi.enabled && !options.ascii)
+        val capability = if (options.themeMono) {
+            // `--theme mono` manda sobre el entorno: la capacidad minima no
+            // emite ni un SGR y el QR se degrada a texto/.km, como `--ascii`.
+            ColorCapability.MONO
+        } else {
+            ColorCapability.detect(
+                attributes = Ansi.enabled && !options.ascii,
+                env = System.getenv(),
+            )
+        }
+        val writer = ScreenWriter(
+            terminal,
+            attributes = Ansi.enabled && !options.ascii,
+            capability = capability,
+        )
         val gate = UnlockGate(
             terminal = terminal,
             writer = writer,
@@ -638,7 +694,7 @@ fun main(args: Array<String>) {
             return
         }
         try {
-            JLineShell(terminal, writer, sesion, options.ascii).run()
+            JLineShell(terminal, writer, sesion, options.ascii, ratonEfectivo, options.wheelRows).run()
         } finally {
             sesion.close()
             runCatching { terminal.close() }
@@ -651,7 +707,13 @@ fun main(args: Array<String>) {
         kotlin.system.exitProcess(1)
     }
 
-    val fuente = jlinePassphraseSource(reader, out)
+    val fuente = lineModePassphrase(reader, out, keystorePath)
+    if (fuente == null) {
+        // Ctrl-C/EOF o un camino de identidad que no se pudo completar: no hay
+        // sesion que abrir. El terminal se cierra igual que en el resto de salidas.
+        terminal.close()
+        kotlin.system.exitProcess(1)
+    }
     val sesion = try {
         composeSession(options, keystorePath, peersPath, fuente)
     } catch (e: KeystoreException) {
@@ -783,6 +845,111 @@ private fun composeSession(
 
 
 /**
+ * Fuente de frase de paso para `--no-tui` / `--accessible`.
+ *
+ * ## QUE CONSERVA Y QUE AÑADE
+ *
+ * Con almacen existente, o con `KM_KEYSTORE_PASSPHRASE` puesta, se mantiene el
+ * comportamiento de G1 (entorno primero, prompt enmascarado despues). SIN
+ * almacen se ofrece la MISMA eleccion que la TUI: crear o recuperar.
+ *
+ * La restauracion SOBRESCRIBIENDO un almacen existente NO se ofrece en modo
+ * lineas: este modo es append-only y para scripts, y una escritura destructiva
+ * detras de un prompt sin pantalla se explica peor. Queda declarado en el
+ * README; en la TUI `[R]` si esta disponible con almacen.
+ */
+private fun lineModePassphrase(
+    reader: LineReader,
+    out: PrintWriter,
+    keystorePath: Path,
+): PassphraseSource? {
+    val hayEntorno = System.getenv(PassphraseSource.ENV_VAR)?.isNotEmpty() == true
+    if (hayEntorno || IdentityKeystore.exists(keystorePath)) return jlinePassphraseSource(reader, out)
+
+    out.println("No hay identidad en este equipo. Elige un camino:")
+    out.println("  [C] crear una identidad nueva en este equipo")
+    out.println("  [R] recuperar desde la frase de recuperacion (24 palabras)")
+    out.println("La frase de paso cifra el almacen; la de recuperacion deriva la IDENTIDAD.")
+    out.flush()
+    val eleccion = runCatching { reader.readLine("opcion [C/R]: ") }.getOrNull()?.trim()?.lowercase()
+        ?: return null
+    if (eleccion == "c" || eleccion == "crear") {
+        // Crear conserva el prompt de G1: frase nueva, dos veces.
+        return jlinePassphraseSource(reader, out)
+    }
+    if (eleccion != "r" && eleccion != "recuperar") {
+        out.println(Ansi.red("CHOICE_REQUIRED: escribe C o R"))
+        out.flush()
+        return null
+    }
+
+    var validada: String? = null
+    var intentos = 0
+    while (validada == null) {
+        val frase = runCatching {
+            reader.readLine("frase de recuperacion (24 palabras, no se muestra): ", '*', null)
+        }.getOrNull() ?: return null
+        val codigo = IdentityProvisioner.validate(frase)
+        if (codigo == null) {
+            validada = frase
+        } else {
+            // Se queda en el campo: se vuelve a preguntar, sin escribir nada.
+            out.println(Ansi.red(codigo))
+            out.flush()
+            if (++intentos >= MAX_LINE_RECOVERY_ATTEMPTS) return null
+        }
+    }
+    val fraseValida = validada ?: return null
+
+    val nueva = runCatching { reader.readLine("nueva frase de paso: ", '*', null) }.getOrNull()
+        ?: return null
+    if (nueva.isEmpty()) {
+        out.println(Ansi.red("PASSPHRASE_EMPTY"))
+        out.flush()
+        return null
+    }
+    val repetida = runCatching { reader.readLine("repita la frase de paso: ", '*', null) }.getOrNull()
+        ?: return null
+    if (repetida != nueva) {
+        out.println(Ansi.red("PASSPHRASE_MISMATCH"))
+        out.flush()
+        return null
+    }
+
+    return when (
+        val resultado = IdentityProvisioner.restore(
+            path = keystorePath,
+            phrase = fraseValida,
+            newPassphrase = nueva.toCharArray(),
+            confirmation = "",
+            // Solo se llega aqui sin almacen: no hay nada que sobrescribir.
+            overwriting = false,
+        )
+    ) {
+        is IdentityProvisioner.Outcome.Restored -> {
+            out.println("identidad restaurada: " + resultado.identityId.take(16) + "\u2026")
+            out.println(
+                "solo identidad: contactos y mensajes NO se recuperan; " +
+                    "las claves de dispositivo son nuevas (el peer vera un device nuevo)",
+            )
+            out.flush()
+            object : PassphraseSource {
+                override fun passphrase(creation: Boolean): String = nueva
+            }
+        }
+
+        is IdentityProvisioner.Outcome.Rejected -> {
+            out.println(Ansi.red("no se pudo restaurar: " + resultado.code))
+            out.flush()
+            null
+        }
+    }
+}
+
+/** Intentos de frase de recuperacion en modo lineas antes de abandonar. */
+private const val MAX_LINE_RECOVERY_ATTEMPTS: Int = 3
+
+/**
  * Fuente de frase de paso: variable de entorno primero, prompt enmascarado si no.
  *
  * Se anuncia el uso de la variable cuando esta puesta: es comodo, y tambien es
@@ -844,11 +1011,34 @@ class DesktopOptions(
     val mode: ShellMode = ShellMode.TUI,
     /** `--ascii`: sin glifos Unicode ni secuencias de color. */
     val ascii: Boolean = false,
+    /**
+     * `--theme mono`: fuerza [com.km.desktop.ui.theme.ColorCapability.MONO].
+     *
+     * No es "un tema configurable" (fuera de alcance): es la capacidad de color
+     * llevada al minimo de forma explicita, para terminales que dicen tener color
+     * y lo pintan mal, o para comprobar la jerarquia sin color. `--theme color`
+     * (o `auto`, el defecto) deja decidir a `NO_COLOR`/`TERM`/`COLORTERM`.
+     */
+    val themeMono: Boolean = false,
+    /**
+     * `--mouse auto|on|off`. `auto` (defecto) activa el tracking solo si la TUI
+     * es viable y el terminal tiene soporte; `--accessible`/`--no-tui` lo
+     * apagan siempre y `on` con ellos es un error de uso.
+     */
+    val mouse: MouseMode = MouseMode.AUTO,
+    /** `--wheel-rows 1..10`: filas por muesca de rueda (defecto 3). */
+    val wheelRows: Int = DEFAULT_WHEEL_ROWS,
 ) {
     companion object {
         const val RELAY_ENV: String = "KM_RELAY_URL"
         const val RELAY_IDENTITY_ENV: String = "KM_RELAY_IDENTITY"
         const val PEERS_FILE_NAME: String = "peers.json"
+
+        /** Defecto de `--wheel-rows`: tres filas, como una muesca de X11. */
+        const val DEFAULT_WHEEL_ROWS: Int = 3
+
+        /** Tope de `--wheel-rows`: mas de diez saltaria la pantalla entera. */
+        const val MAX_WHEEL_ROWS: Int = 10
 
         fun parse(args: Array<String>): DesktopOptions {
             // Los bootstraps se resuelven con UNA sola fuente de verdad
@@ -866,6 +1056,9 @@ class DesktopOptions(
             var verbose = false
             var help = false
             var ascii = false
+            var themeMono = false
+            var mouse = MouseMode.AUTO
+            var wheelRows = DEFAULT_WHEEL_ROWS
             var mode: ShellMode? = null
             var i = 0
 
@@ -881,6 +1074,18 @@ class DesktopOptions(
                 }
                 mode = candidate
             }
+
+            fun filasDeRueda(raw: String): Int {
+                val filas = raw.toIntOrNull()
+                    ?: throw IllegalArgumentException("--wheel-rows no es un numero: '$raw'")
+                require(filas in 1..MAX_WHEEL_ROWS) {
+                    "--wheel-rows fuera de rango: se esperan 1..$MAX_WHEEL_ROWS, hay $filas"
+                }
+                return filas
+            }
+
+            fun modoRaton(raw: String): MouseMode = MouseMode.parse(raw)
+                ?: throw IllegalArgumentException("--mouse desconocido: se espera auto, on u off")
 
             while (i < args.size) {
                 when (args[i]) {
@@ -909,10 +1114,45 @@ class DesktopOptions(
                     "--accessible" -> elegirModo(ShellMode.ACCESSIBLE, "--accessible")
                     "--no-tui" -> elegirModo(ShellMode.LINE, "--no-tui")
                     "--ascii" -> ascii = true
+                    // `--theme mono` fuerza la capacidad minima; no es un tema
+                    // configurable, es apagar el color aunque el terminal lo
+                    // anuncie. `color`/`auto` dejan decidir al entorno.
+                    "--theme" -> themeMono = when (
+                        (args.getOrNull(++i) ?: throw IllegalArgumentException("--theme sin valor")).lowercase()
+                    ) {
+                        "mono" -> true
+                        "color", "auto" -> false
+                        else -> throw IllegalArgumentException("--theme desconocido: se espera color o mono")
+                    }
+                    // `--mouse` no es un booleano: `auto` se resuelve al
+                    // arrancar contra la viabilidad de la TUI y el terminal.
+                    "--mouse" -> mouse = modoRaton(
+                        args.getOrNull(++i) ?: throw IllegalArgumentException("--mouse sin valor"),
+                    )
+                    "--wheel-rows" -> wheelRows = filasDeRueda(
+                        args.getOrNull(++i) ?: throw IllegalArgumentException("--wheel-rows sin valor"),
+                    )
                     "--help", "-h" -> help = true
-                    else -> throw IllegalArgumentException("opcion desconocida: ${args[i]}")
+                    else -> {
+                        // La forma `--flag=valor` es la que documenta el README
+                        // para `--mouse=off`; aceptarla evita que una opcion
+                        // documentada sea "desconocida".
+                        val arg = args[i]
+                        when {
+                            arg.startsWith("--mouse=") -> mouse = modoRaton(arg.substringAfter('='))
+                            arg.startsWith("--wheel-rows=") -> wheelRows = filasDeRueda(arg.substringAfter('='))
+                            else -> throw IllegalArgumentException("opcion desconocida: $arg")
+                        }
+                    }
                 }
                 i++
+            }
+            val elegido = mode ?: ShellMode.TUI
+            // `--mouse=on` con un modo sin direccionamiento de cursor es un
+            // error de USO (exit 2), no un "se ignora": el operador cree que
+            // tiene raton y no lo tendria.
+            require(!(mouse == MouseMode.ON && elegido != ShellMode.TUI)) {
+                "--mouse=on exige la TUI: es incompatible con --accessible/--no-tui"
             }
             val bootstraps = BootstrapConfig.resolve(cli = bootstrapsDeLinea)
             val ordered = if (relayDeLinea != null) listOf(relayDeLinea) + bootstraps else bootstraps
@@ -925,8 +1165,11 @@ class DesktopOptions(
                 reset = reset,
                 verbose = verbose,
                 help = help,
-                mode = mode ?: ShellMode.TUI,
+                mode = elegido,
                 ascii = ascii,
+                themeMono = themeMono,
+                mouse = mouse,
+                wheelRows = wheelRows,
             )
         }
 
@@ -943,7 +1186,8 @@ class DesktopOptions(
             return IdentityId(hex)
         }
 
-        fun usage(): String = """
+        fun usage(mouse: Boolean? = null): String {
+            val base = """
             km-desktop — cliente TUI de KeyMessage
 
               --relay <endpoint>    rele (por defecto ${JvmRelayTransport.DEFAULT_ENDPOINT};
@@ -971,11 +1215,40 @@ class DesktopOptions(
               --accessible          salida lineal, sin direccionamiento de cursor
               --no-tui              REPL de lineas de G1 (scripts y emergencia)
               --ascii               sin glifos Unicode ni color
+              --theme <color|mono>  color (defecto, segun NO_COLOR/TERM) o mono
+                                     (sin SGR; el QR se degrada a texto/.km)
+              --mouse <auto|on|off> raton: clic izquierdo y rueda. Defecto auto:
+                                     ON solo con TUI viable y terminal con soporte;
+                                     OFF con --accessible/--no-tui. `on` con esos
+                                     modos (o sin soporte) es error de uso (exit 2).
+                                     El tracking captura el arrastre: la seleccion
+                                     nativa se recupera con --mouse=off (Shift+arrastre
+                                     es bypass del terminal, no de la app).
+              --wheel-rows <1..10>  filas por muesca de rueda (defecto $DEFAULT_WHEEL_ROWS)
               -h, --help            esta ayuda
 
             Comandos dentro de la sesion: connect, identity, status, send, peer, help, quit.
             Camino de contacto y mensajeria: import, export, announce, session,
             contacts, history, resend, discard (los mismos de `help`).
-        """.trimIndent()
+
+            FRASE DE PASO y FRASE DE RECUPERACION son distintas:
+              - la frase de paso cifra el almacen de ESTE equipo; no deriva la identidad;
+              - la frase de recuperacion son 24 palabras BIP39 que derivan la IDENTIDAD
+                (la misma que muestra Android). Restaurarla NO recupera contactos ni
+                mensajes y REGENERA las claves de dispositivo: el peer vera un device nuevo.
+            TUI: sin almacen se elige [C] crear o [R] recuperar antes de pedir nada.
+            Con almacen, [R] restaura y sobrescribe: exige escribir SOBRESOBRESCRIBIR.
+            Modo lineas (--no-tui/--accessible): ofrece C/R cuando NO hay almacen;
+            sobrescribir con R solo esta en la TUI.
+            """.trimIndent()
+            // El valor EFECTIVO no se puede prometer antes de medir la
+            // terminal: cuando el llamador lo conoce (--help con consola), se
+            // declara; si no, se omite en vez de inventarlo.
+            return if (mouse == null) {
+                base
+            } else {
+                base + "\n\nRaton (valor efectivo ahora): " + (if (mouse) "ON" else "OFF")
+            }
+        }
     }
 }

@@ -1,0 +1,20 @@
+ KEYMESSAGE ┃ FRASE DE RECUPERACION        P2P[o] conectado 
+   INICIO  ▌FRASE    DIAGNOSTICO                            
+ ALCANCE: restaura la IDENTIDAD solamente.                  
+ NO restaura contactos, sesiones ni mensajes.               
+ ▌ Los contactos se vuelven a intercambiar (QR/.km). ────── 
+ 01 palabra1      07 palabra7      13 palabra13     19 pala 
+ 02 palabra2      08 palabra8      14 palabra14     20 pala 
+ 03 palabra3      09 palabra9      15 palabra15     21 pala 
+ 04 palabra4      10 palabra10     16 palabra16     22 pala 
+ 05 palabra5      11 palabra11     17 palabra17     23 pala 
+ 06 palabra6      12 palabra12     18 palabra18     24 pala 
+ ▌ la frase NO va a logs, historial ni .km ──────────────── 
+ [V] ver (confirmar)  [C] copiar (aviso)  [O] ocultar  [R]  
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+ yo ffffffff… · P2P[o] conectado · par[?] · S1 K2 · VOLÁTIL 
+ · [V] ver  [C] copiar  [O] ocultar  [R] restaurar  [?] ay… 

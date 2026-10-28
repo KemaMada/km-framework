@@ -384,6 +384,7 @@ para que stdout siga siendo de la interfaz.
 ./km --help                                  # ayuda completa, exit 0
 ./km --relay ws://127.0.0.1:8080/km          # relé propio
 ./km --no-tui                                # REPL de líneas (scripts)
+./km --mouse=off                             # sin tracking: selección nativa del terminal
 KM_REBUILD=1 ./km --ascii                    # fuerza el build y arranca sin glifos
 ```
 
@@ -393,6 +394,9 @@ KM_REBUILD=1 ./km --ascii                    # fuerza el build y arranca sin gli
 | `--accessible` | Salida lineal append-only, sin repintado ni direccionamiento de cursor. |
 | `--no-tui` | REPL de líneas de G1, con los comandos de la tabla de `help`. |
 | `--ascii` | Sin glifos Unicode ni color. |
+| `--theme <color\|mono>` | `color` (defecto) respeta `NO_COLOR`/`TERM`; `mono` apaga todo SGR (el QR se degrada a texto/`.km`). |
+| `--mouse <auto\|on\|off>` | Ratón en la TUI: clic izquierdo y rueda. `auto` (defecto) lo activa solo con TUI viable y terminal con soporte; `off` lo apaga y devuelve la selección nativa; `on` con `--accessible`/`--no-tui` o sin soporte es error de uso (exit 2). |
+| `--wheel-rows <1..10>` | Filas por muesca de rueda (defecto 3). |
 | `--relay`, `--bootstrap`, `--relay-identity`, `--keystore`, `--peers`, `--reset`, `--verbose` | Igual que en el jar: ver `./km --help`. |
 | `-h`, `--help` | Ayuda, sin abrir la red. |
 
@@ -401,6 +405,49 @@ KM_REBUILD=1 ./km --ascii                    # fuerza el build y arranca sin gli
 | `KM_REBUILD=1` | Fuerza el paso de build aunque el jar exista (Gradle decide qué recompilar). |
 | `KM_JAVA=<ruta>` | JVM que ejecuta el jar. Por defecto, `java` del `PATH`. |
 | `KM_GRADLE_JAVA_HOME=<ruta>` | JDK que ejecuta Gradle. Si no se define, se usa `JAVA_HOME`. |
+
+**La TUI en una pantalla.** Tres pestañas raíz (`Alt-1..3`: INICIO, FRASE,
+DIAGNOSTICO) con su propia pila de navegación, barra de estado (identidad corta,
+relé, presencia del par, contadores `S`/`K`, aviso VOLÁTIL) y pie con las teclas
+de la pantalla. INICIO, CONVERSACION y DIAGNOSTICO usan **todo el ancho**, como
+WhatsApp de escritorio: una fila por contacto (presencia, alias, último mensaje,
+hora y `S`/`K`) con separador fino y, en el hilo, burbujas alineadas por autor
+(`[ ... ]` propias a la derecha, `{ ... }` del par a la izquierda). `Tab`/`Shift-Tab`
+recorren los campos enfocables (pestañas, lista, filtro, compositor) y `?` abre la
+ayuda, ventaneada. Las listas se desplazan con `↑`/`↓`/`j`/`k`, `PgUp`/`PgDn`,
+`Home`/`End`, con indicador textual `[n/m]` que solo aparece si la lista no cabe;
+en la conversación el hilo sigue el final y, si subes, los mensajes nuevos se
+anuncian como `[N nuevos ↓]` en vez de moverte la vista. `--theme mono` (o
+`NO_COLOR`/`--ascii`) deja la jerarquía en manos de `▌`, `>`, `┃`, etiquetas y
+mayúsculas: **sin color no se pinta el QR**, porque saldría invertido, y la
+pantalla ofrece texto y `.km`. Con color, el QR se pinta **centrado** y su fondo
+blanco cubre solo sus celdas, no una banda hasta el borde del terminal.
+
+**Ratón.** Con `--mouse=auto` (defecto) o `--mouse=on`, la TUI acepta **clic
+izquierdo** y **rueda** (SGR 1006). Un clic press+release en la misma zona abre
+el chat de una fila, cambia de pestaña, pulsa un botón del diálogo, ejecuta la
+acción del pie (copiar, `.km`, texto, exportar…) o da el foco al compositor/filtro.
+La rueda desplaza **±`--wheel-rows`** (3 por defecto) sobre la lista bajo el
+cursor, con el foco siempre visible y `followEnd` intacto; fuera de una lista o
+con el foco en un campo de texto no mueve. **Ninguna acción es solo-ratón**: todas
+tienen su tecla y `?` las repite. Hover, doble clic, arrastre, redimensionar
+arrastrando, menús contextuales y toque **no** están implementados. Un evento
+SGR de movimiento (bit 32) se descarta en el decodificador: si un multiplexor
+lo reenvía, no puede convertirse en clic.
+
+El tracking **captura el arrastre**: mientras está activo, la selección nativa
+del terminal no funciona (no hay copiar-y-pegar con el ratón). Para recuperarla,
+`--mouse=off`; el bypass del **terminal** (no de la app) es `Shift`+arrastre en
+la mayoría de terminales. En tmux hay que activar su propio ratón
+(`set -g mouse on`); en la consola de Windows (conhost) el SGR 1006 puede no
+llegar y se degrada a teclado (declarado, `--mouse=off`).
+
+Límites conocidos: no hay **hover, doble clic ni arrastre de ratón**, no hay
+temas configurables más allá de `color`/`mono`, los contactos y mensajes son
+**volátiles**, en MONO el backdrop de los diálogos no se pinta y el chrome del QR
+baja con el tamaño —85x43..88x46 sin marco, 89x47 con marco compacto sin
+pestañas, 100x50 con bandas completas— para no recortarlo nunca. El detalle está
+en [`km-desktop/README.md`](km-desktop/README.md#teclas-pestañas-y-scroll).
 
 `km.cmd` no se ha ejecutado en un runner Windows en este repositorio: su
 equivalencia con `km` está revisada leyendo el script, no medida. Se declara.
@@ -420,10 +467,18 @@ el portátil de validación:
 Los dos scripts arrancan el mismo `main`, así que `--relay` y el resto de opciones
 valen igual en ambos casos.
 
-Al arrancar por primera vez la TUI no encuentra identidad: **crea una** y pide una
-frase de paso nueva, dos veces. En los arranques siguientes pide la que la abre.
-La copia de la identidad es la que los contactos necesitan para poder escribirte,
-así que ese paso no es opcional en la práctica.
+Al arrancar por primera vez la TUI no encuentra identidad: ofrece **crear una**
+(frase de paso nueva, dos veces) o **recuperar la identidad** desde la frase de
+recuperación de 24 palabras que muestra Android. En los arranques siguientes pide
+la frase de paso que abre el almacén, con `[R]` disponible para restaurar y
+sobrescribir. La copia de la identidad es la que los contactos necesitan para
+poder escribirte, así que ese paso no es opcional en la práctica.
+
+**Frase de paso** y **frase de recuperación** no son lo mismo: la primera cifra el
+almacén de *este* equipo; la segunda deriva la *identidad* (la misma que Android).
+Restaurar recupera la identidad, **no** contactos ni mensajes, y **regenera** las
+claves de dispositivo: el peer verá un dispositivo nuevo. Los detalles están en
+[`km-desktop/README.md`](km-desktop/README.md#frase-de-paso-y-frase-de-recuperación).
 
 ### Tests
 

@@ -1,0 +1,20 @@
+ KEYMESSAGE ┃ CONVERSACION · ana           P2P[o] conectado 
+ ▌INICIO    FRASE    DIAGNOSTICO                            
+ · relay-presente (NO es disponibilidad) · S sesion         
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+ { hola, ¿que tal? }  22:08 [IN]                            
+                         [ nos vemos a las 8 ]  22:10 [OUT] 
+                     [ vale ]  22:11 [EXPIRADO ACK_TIMEOUT] 
+ ────────────────────────────────────────────────────────── 
+ │ > hola                                                 │ 
+ [R] reintentar (mismo id)   [D] descartar (confirma)   [EN 
+ yo ffffffff… · P2P[o] conectado · par[·] · S1 K2 · VOLÁTIL 
+ · [ENTER] enviar  [R] reintentar  [D] descartar  [?] ayuda 

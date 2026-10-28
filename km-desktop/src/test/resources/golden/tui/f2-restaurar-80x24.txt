@@ -1,0 +1,24 @@
+          KEYMESSAGE ┃ RESTAURAR IDENTIDAD            P2P[o] conectado          
+            INICIO  ▌FRASE    DIAGNOSTICO                                       
+          restaura SOLO la identidad; las sesiones y contactos se pier          
+          ▌ pega la frase (24 palabras): ─────────────────────────────          
+          > palabra1 palabra2 palabra3█                                         
+          valida: 24/24 · checksum OK                                           
+          identidad actual: afffffffffffffff…                                   
+          ▌ escribe SOBRESCRIBIR para confirmar: ─────────────────────          
+          > SOBRESCRIBIR█                                                       
+          [ENTER] restaurar   [ESC] cancelar                                    
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+          yo ffffffff… · P2P[o] conectado · par[?] · S1 K2 · VOLÁTIL            
+          · [?] ayuda                                                           

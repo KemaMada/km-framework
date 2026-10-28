@@ -19,6 +19,12 @@
 #   KM_REBUILD=1            fuerza el paso de build aunque el jar exista
 #                           (Gradle decide que recompilar).
 #   KM_JAVA=<ruta>          JVM que ejecuta el jar (por defecto `java` del PATH).
+#
+# El lanzador NO se fia de que el jar exista: si cualquier fuente Kotlin de
+# km-desktop/km-core/km-transport, o un fichero de build, es MAS NUEVO que el
+# jar, reconstruye. Sin esta comprobacion un `./km` tras editar seguia
+# ejecutando el binario viejo y el sintoma arreglado en el codigo continuaba
+# apareciendo.
 #   KM_GRADLE_JAVA_HOME=<ruta>
 #                           JDK que ejecuta Gradle. Si no se define, se usa
 #                           JAVA_HOME. El build exige JDK 27; el jar corre en
@@ -41,22 +47,65 @@ if [ "${KM_REBUILD:-0}" = "1" ]; then
     necesita_build=1
 fi
 
+# Un jar existente puede ser VIEJO. `java -jar` no mira las fuentes: si el
+# usuario edita un .kt y vuelve a lanzar, sin esta comprobacion seguiria viendo
+# el comportamiento anterior y creeria que el arreglo no funciona. Se compara el
+# jar con lo que puede cambiar su contenido: fuentes de los tres modulos y los
+# ficheros que definen el build.
+if [ "$necesita_build" -eq 0 ]; then
+    if [ -n "$(find \
+        "$ORIGEN/km-desktop/src" \
+        "$ORIGEN/km-core/src" \
+        "$ORIGEN/km-transport/src" \
+        -name '*.kt' -newer "$JAR" -print -quit 2>/dev/null)" ]; then
+        necesita_build=1
+        echo "km: hay fuentes Kotlin mas nuevas que el jar; se reconstruye..." >&2
+    else
+        for f in \
+            "$ORIGEN/build.gradle.kts" \
+            "$ORIGEN/settings.gradle.kts" \
+            "$ORIGEN/gradle.properties" \
+            "$ORIGEN/gradle/libs.versions.toml" \
+            "$ORIGEN/km-desktop/build.gradle.kts" \
+            "$ORIGEN/km-core/build.gradle.kts" \
+            "$ORIGEN/km-transport/build.gradle.kts"; do
+            if [ -f "$f" ] && [ "$f" -nt "$JAR" ]; then
+                necesita_build=1
+                echo "km: $f es mas nuevo que el jar; se reconstruye..." >&2
+                break
+            fi
+        done
+    fi
+fi
+
 # Función, no `set --`: los argumentos del usuario viven en "$@" y no se tocan.
-construir() {
+gradle_tareas() {
     if [ -n "$GRADLE_JAVA_HOME" ]; then
         "$ORIGEN/gradlew" \
             "-Dorg.gradle.java.home=$GRADLE_JAVA_HOME" \
             --quiet \
-            :km-core:publishToMavenLocal \
-            :km-transport:publishToMavenLocal \
-            :km-desktop:shadowJar
+            "$@"
     else
         "$ORIGEN/gradlew" \
             --quiet \
-            :km-core:publishToMavenLocal \
-            :km-transport:publishToMavenLocal \
-            :km-desktop:shadowJar
+            "$@"
     fi
+}
+
+# DOS invocaciones, y en este orden: primero publicar, después compilar.
+#
+# `publishToMavenLocal` NO es dependencia de `:km-desktop:compileKotlin`, así
+# que al pedir las tres tareas en la MISMA invocación Gradle puede compilar
+# km-desktop mientras reescribe `~/.m2/.../km-core` y `.../km-transport`. El
+# compilador Kotlin mapea esos jars en memoria y muere con un error interno
+# del compilador (`newPosition > limit`) al leer un jar a medio escribir.
+# Con dos invocaciones, el segundo proceso sólo arranca cuando el primero
+# (y por tanto la publicación) ya terminó.
+construir() {
+    gradle_tareas \
+        :km-core:publishToMavenLocal \
+        :km-transport:publishToMavenLocal || return 1
+    gradle_tareas :km-desktop:shadowJar
 }
 
 if [ "$necesita_build" -eq 1 ]; then

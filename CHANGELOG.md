@@ -12,6 +12,138 @@ artefacto publicado.
 
 ## [No publicado]
 
+### Añadido — `km-desktop`: ratón (clic izquierdo y rueda) en la TUI
+
+Change B (`desktop-tui-mouse`). Solo toca `km-desktop` y documentación: el wire,
+`SecureFrame` v1, el ratchet, X3DH, HMAC, `km-core`, `km-transport`, `app/` y los
+lanzadores no cambian. El ratón **no pinta nada nuevo**: los 21 goldens `f2-*`
+siguen idénticos byte a byte, que es el gate de la fase.
+
+- **`--mouse auto|on|off`** (defecto `auto`) y **`--wheel-rows 1..10`** (defecto
+  3). `auto` activa el tracking solo con TUI viable y terminal con soporte; `off`
+  lo apaga y devuelve la **selección nativa**; `on` con `--accessible`/`--no-tui`
+  o sin soporte es **error de uso** (exit 2). `--help` y `?` declaran el valor
+  efectivo (`ON`/`OFF`).
+- **Hit-map por frame.** El renderer devuelve `RenderedFrame(lines, hitMap)`; el
+  compositor emite `HitRegion(Rect, MouseIntent)` en el MISMO bucle que pinta y
+  `at()` gana por orden de pintado. El overlay tapa el fondo (`Dismiss` a pantalla
+  completa más los botones); el reducer nunca ve coordenadas.
+- **Clic** press+release en la **misma** región: ficha de INICIO abre chat,
+  pestaña cambia de raíz, burbuja/log mueven el foco, botón de diálogo elige, pie
+  ejecuta su acción (copiar, `.km`, texto, exportar…). Arrastre y botón
+  derecho/medio no actúan.
+- **Rueda** = `ScrollBy(±wheelRows)` sobre la lista bajo el cursor, con
+  `ensureVisible`/`followEnd`; fuera de lista, con overlay o con el foco en un
+  campo de texto no mueve.
+- **Motion descartado** (cierre de W1): `MouseCodec` devuelve `null` para todo
+  evento con el bit 32 (hover/arrastre) y para un release sin botón. `?1000` no
+  los pide, pero un multiplexor que los reenvíe no puede convertirlos en clic.
+  Press+release en la misma región sigue siendo un clic.
+- **Tracking** `?1000h`/`?1006h` al entrar y `?1000l`/`?1006l` **antes** de
+  `?25h?1049l` en toda salida (normal, EOF, SIGINT, excepción); idempotente.
+  `UnlockGate` no cambia.
+- **Pruebas**: `MouseCodec` (press/release/rueda/4 dígitos/truncado/basura,
+  motion y release sin botón, y regresión de flechas/Alt), `ClickTracker`,
+  `MouseRouter` (clic, arrastre con motion y release suelto), hit-map de frames
+  reales de las 7 pantallas, exhaustividad región→tecla, reducer de `Pointer` y
+  bytes/orden del tracking. Suite fresca JDK27: **694 tests, 0 fallos**.
+  Controles negativos compilados y restaurados por MD5: `at()` con `firstOrNull`,
+  rueda sin `ScrollBy` y `exit()` sin OFF.
+
+**Fuera de alcance (declarado)**: hover, doble clic, arrastre, redimensionar por
+arrastre, menús contextuales, toque, selección propia y verificación en pty
+real/Windows/tmux (manual: tmux `set -g mouse on`; conhost puede no entregar SGR).
+
+### Corregido — `km-desktop`: QR centrado sin banda blanca y listas de ancho completo
+
+Correcciones visuales reportadas por el usuario en una terminal real, sin tocar
+protocolo, wire, crypto ni `km-core`/`km-transport`/`app/`.
+
+- **El QR ya no se pega a la izquierda ni pinta una barra blanca.** Medido antes
+  del arreglo en frames reales: a 100x50 el código empezaba en la columna 0 y las
+  43 filas del QR ocupaban **100 celdas** (85 de código + 15 de relleno blanco);
+  a 120x50 y 160x50 eran 120 y 160. La causa era doble: la rejilla rellenaba el
+  resto de la fila con el estilo del QR y `ScreenWriter` emitía el `ESC[K` de fin
+  de línea **dentro** de ese estilo. Ahora el código va centrado (x=7 a 100x50,
+  x=17 a 120x50, x=37 a 160x50), el blanco cubre exactamente sus 85 celdas —con
+  margen de silencio— y ningún `ESC[K` se emite con el fondo blanco activo. Las
+  43 filas siguen enteras y las tres bandas (85x43 sin marco, 89x47 con marco,
+  100x50 con bandas) se conservan.
+- **INICIO, CONVERSACION y DIAGNOSTICO son de ancho completo.** El `maxWidth` de
+  88/75/60 centrado dejaba la pantalla flotando en el medio (16 columnas de aire
+  a cada lado a 120). Ahora el contenido ocupa 118 columnas con una celda de
+  padding; el centrado queda solo para los formularios (FRASE, RESTAURAR) y los
+  diálogos. INICIO es una lista de chats: buscador, cabecera `CONTACTOS n` con
+  regla, y una ficha por contacto (presencia, alias, último mensaje truncado,
+  hora, `S`/`K`) seguida de un separador fino de ancho completo; el vacío,
+  cargando y error se pintan dentro del área. CONVERSACION alinea las burbujas
+  por autor (`[...]` a la derecha, `{...}` a la izquierda) con hora y etiqueta
+  (`OUT`/`ENTREGADO`/`EXPIRADO`) fuera del marco, y el compositor va enmarcado y
+  a todo el ancho. La marca de la cabecera pasa a `KEYMESSAGE` y el pie muestra
+  las teclas de la pantalla, como la barra inferior de la app.
+- **Pruebas:** suite de `:km-desktop` en **610** tests (baseline 605 + 5 nuevos:
+  centrado del QR, celdas fuera del QR en estilo por defecto, ningún `ESC[K` con
+  el estilo del QR activo, lista de INICIO de ancho completo y alineación de la
+  conversación). Los 21 goldens F2 se regeneraron porque el aspecto cambia a
+  propósito.
+
+### Cambiado — `km-desktop`: rediseño de la TUI (bandas, pestañas, scroll y diff por filas)
+
+La TUI de pantallas se reescribe **por dentro** sin tocar el protocolo. No cambian
+`km-core`, `km-transport`, `app/`, el wire, `SecureFrame` v1 (44 B), el ratchet,
+X3DH ni el HMAC: cambia cómo se decide la pintura y cuántos bytes se escriben.
+
+**Añadido** (`km-desktop/src/main/kotlin/com/km/desktop/ui/`):
+
+- `layout/` — `Rect`, `Frame` y `Layout`: bandas cabecera (2) / cuerpo / estado /
+  pie, ancho completo en las listas (INICIO, CONVERSACION, DIAGNOSTICO) y
+  `maxWidth` 60 centrado solo en los formularios, padding 1, `Chrome.NONE` para
+  el QR a pantalla completa. `Scroll` puro (`ensure`, `window`, indicador
+  `[n/m]`), sin guardar geometría en el estado.
+- `render/` — `Grid` de celdas con ancho exacto (el saneo de `Sanitizer` es la
+  única puerta de texto), `FrameComposer`, `OverlayWindow` para la ayuda
+  ventaneada.
+- `theme/` — roles semánticos, paletas por capacidad (truecolor / 256 / 16 / MONO)
+  y alfabeto ASCII. `shell/Sgr` es la única capa que traduce rol a SGR; MONO no
+  emite ninguno.
+- `screen/` — las siete pantallas sobre el kernel. El QR conserva su contraste
+  fijo `30;47` y su geometría 85x43 / 89x47.
+- **Pestañas raíz** INICIO / FRASE / DIAGNOSTICO (`Alt-1..3`, `Tab` hasta la barra,
+  `Enter`); cambiar de pestaña **no borra** borradores. **Scroll** por lista
+  (`PgUp`/`PgDn`/`Home`/`End`) con `[n/m]` textual y `[N nuevos ↓]` cuando llega
+  un mensaje con el hilo subido.
+- **Barra de estado** (identidad corta, relé, presencia del par, contadores S/K,
+  aviso VOLÁTIL), **toasts** con caducidad inyectada por `Tick` y spinner solo
+  con efectos en vuelo. Nunca se pinta «ONLINE» del par ni una entrega que no
+  tenga ACK verificado.
+- **Diálogos modales** con foco atrapado y backdrop en color; las acciones
+  destructivas arrancan en «No», de modo que un `Enter` reflejo no borra nada.
+- `--theme mono`: capacidad de color mínima explícita, sin SGR. `--ascii` y
+  `NO_COLOR` siguen apagando el color.
+- **Diff por filas** en `ScreenWriter`: un frame idéntico escribe **0 bytes**; un
+  cambio escribe solo las filas afectadas (`ESC[<n>;1H` + fila + `ESC[K`),
+  comparando texto, estilo, foco y paleta. Resize, cambio de alto, tema o
+  capacidad, `--ascii` y entrar o salir de la pantalla alternativa fuerzan frame
+  completo. El single-writer y la restauración del terminal no cambian.
+
+**Retirado**: `ShellRendererLegacy`, `TruncationPolicy.LEGACY`/`fit()` y su test
+de paridad. El recorte central conservaba cabeza y cola y escondía justo la fila
+enfocada; lo sustituye la ventana de scroll.
+
+**Pruebas**: la suite de `:km-desktop` queda en 21 goldens F2 (7 pantallas × 3
+tamaños), propiedades de `ensureVisible`, reducer puro, tests de bytes del diff
+(idéntico 0 B, una fila posicionada, resize completo, estilo solo) y un test de
+coste con 500 mensajes que cuenta filas leídas y bytes escritos (no
+milisegundos). Los goldens son la baseline del aspecto nuevo, no un oráculo de
+paridad F1: esa paridad se demostró en M2 con los md5 del `apply-progress`.
+
+**Límites declarados de ese change**: **no había ratón** todavía (lo añade
+`desktop-tui-mouse`, arriba), **no
+hay temas configurables** más allá de `color`/`mono`, **no hay persistencia** de
+contactos ni mensajes, en MONO el backdrop de los diálogos no se pinta y el QR
+baja de chrome con el tamaño (85x43..88x46 sin marco, 89x47 con marco compacto,
+100x50 con bandas completas) antes que recortarlo.
+
 ### Añadido — `km-desktop`: TUI de pantallas, lanzadores `./km` y `km.cmd`
 
 `km-desktop` deja de ser solo un REPL de líneas. El modo por defecto es una TUI
@@ -24,7 +156,7 @@ protocolo.
 
 - `ui/` — modelo inmutable (`ShellState`, `ShellAction`, `ShellEffect`), pila de
   navegación pura (`ScreenStack`), keymap, `ShellReducer` sin IO, `ShellRenderer`
-  con cajas rectas y ancho exacto, `Sanitizer` (ESC/C0/C1/CSI/OSC/bidi),
+  con rejilla de celdas de ancho exacto, `Sanitizer` (ESC/C0/C1/CSI/OSC/bidi),
   `QrRenderer` (zxing-core, ISO-8859-1, margen 4, corrección L) y `Osc52`.
 - `shell/` — `JLineShell` y `ScreenWriter` como **único escritor** del terminal;
   pantalla alternativa, `SIGWINCH`, restauración en salida normal, EOF, SIGINT y

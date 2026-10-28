@@ -1,6 +1,11 @@
 package com.km.desktop.ui
 
 import com.km.desktop.client.ClientEvent
+import com.km.desktop.ui.layout.Layout
+import com.km.desktop.ui.layout.ListId
+import com.km.desktop.ui.layout.Scroll
+import com.km.desktop.ui.layout.ScrollState
+import com.km.desktop.ui.render.OverlayWindow
 import com.km.model.IdentityId
 import com.km.model.MessageId
 import com.km.model.MessageState
@@ -50,6 +55,12 @@ object ShellReducer {
     /** Cuantas lineas de log se conservan en pantalla. */
     const val MAX_LOGS: Int = 200
 
+    /** Duracion de un aviso informativo o de exito. */
+    const val INFO_TOAST_MS: Long = 4_000
+
+    /** Un error se queda el doble: hay que poder leerlo. */
+    const val ERROR_TOAST_MS: Long = 8_000
+
     /** El canal `[X]` al principio de una linea de `DiagLog`, si lo hay. */
     private val CHANNEL = Regex("^\\[([A-Z]+)\\]")
 
@@ -59,8 +70,39 @@ object ShellReducer {
     fun reduce(state: ShellState, action: ShellAction): Reduced = when (action) {
         is ShellAction.Key -> onKey(state, action.stroke)
         is ShellAction.Event -> onEvent(state, action.event)
-        is ShellAction.Resize -> Reduced(state.copy(viewport = action.viewport))
+        is ShellAction.Resize -> Reduced(ensureVisible(state.copy(viewport = action.viewport)))
         is ShellAction.EffectDone -> onEffectDone(state, action.result)
+        is ShellAction.ScrollBy -> scrollBy(state, action.delta)
+        is ShellAction.Tick -> tick(state, action.nowMs)
+        is ShellAction.Pointer -> onPointer(state, action.intent)
+    }
+
+    /**
+     * El reloj entra como DATO.
+     *
+     * Se guarda el instante y se caduca el toast. No hay `System.currentTimeMillis`
+     * aqui: dos ejecuciones con los mismos ticks producen el mismo estado, que
+     * es lo que permite probar la expiracion sin esperar cuatro segundos.
+     */
+    private fun tick(state: ShellState, nowMs: Long): Reduced {
+        val toast = state.toast
+        val limpio = if (toast != null && nowMs >= toast.expiresAtMs) null else toast
+        return Reduced(state.copy(nowMs = nowMs, toast = limpio))
+    }
+
+    /** Un toast nuevo, con la duracion que fija el tipo (error dura el doble). */
+    private fun toast(
+        state: ShellState,
+        variant: ToastVariant,
+        title: String,
+        message: String? = null,
+    ): Reduced {
+        val duracion = if (variant == ToastVariant.ERROR) ERROR_TOAST_MS else INFO_TOAST_MS
+        return Reduced(
+            state.copy(
+                toast = Toast(variant, title, message, expiresAtMs = state.nowMs + duracion),
+            ),
+        )
     }
 
     // ------------------------------------------------------------------
@@ -72,6 +114,99 @@ object ShellReducer {
         return applyIntent(state, intent)
     }
 
+    // ------------------------------------------------------------------
+    // Raton (change B)
+    // ------------------------------------------------------------------
+
+    /**
+     * Un clic o la rueda, ya resuelto por el hit-map.
+     *
+     * ## LA CAPA SUPERIOR MANDA
+     *
+     * Con un modal abierto, el fondo no responde: un `Dialog` marca y activa su
+     * opcion (equivale a Tab+Enter), y `Dismiss` cierra igual que `Esc`. Sin
+     * overlay, cada intencion reusa la tecla que ya existia: fila -> abrir chat,
+     * pestana -> `TabTo`, pie -> `Act(Intent)`, foco -> campo.
+     *
+     * `Dismiss` sin capa modal NO sale de la app: el clic en una zona inerte no
+     * puede tener un efecto destructivo que ninguna tecla tenga.
+     */
+    private fun onPointer(state: ShellState, pointer: MouseIntent): Reduced {
+        val base = if (state.quitArmed) state.copy(quitArmed = false) else state
+        (base.overlay as? Overlay.Confirm)?.let { overlay ->
+            return when (pointer) {
+                is MouseIntent.Dialog -> {
+                    val marcado = base.copy(overlay = overlay.copy(selection = pointer.choice))
+                    if (pointer.choice == DialogChoice.PRIMARY) {
+                        confirmOverlay(marcado, marcado.overlay as Overlay.Confirm)
+                    } else {
+                        Reduced(marcado.copy(overlay = null))
+                    }
+                }
+
+                MouseIntent.Dismiss -> Reduced(base.copy(overlay = null))
+                else -> Reduced(base)
+            }
+        }
+        if (base.overlay is Overlay.Offline) {
+            return if (pointer == MouseIntent.Dismiss) Reduced(base.copy(overlay = null)) else Reduced(base)
+        }
+        if (base.helpVisible) {
+            return if (pointer == MouseIntent.Dismiss || pointer == MouseIntent.Act(Intent.Back)) {
+                Reduced(base.copy(helpVisible = false, helpOffset = 0))
+            } else {
+                Reduced(base)
+            }
+        }
+        return when (pointer) {
+            is MouseIntent.SelectContact -> pointerContact(base, pointer.index)
+            is MouseIntent.SelectMessage -> pointerMessage(base, pointer.index)
+            is MouseIntent.SelectLog -> pointerLog(base, pointer.index)
+            MouseIntent.FocusComposer -> if (base.screen == Screen.CONVERSACION) {
+                Reduced(base.copy(focus = Focus(FocusField.COMPOSER, 0)))
+            } else {
+                Reduced(base)
+            }
+
+            MouseIntent.FocusFilter -> if (base.screen == Screen.INICIO) {
+                Reduced(ensureVisible(base.copy(focus = Focus(FocusField.FIELD, 0))))
+            } else {
+                Reduced(base)
+            }
+
+            is MouseIntent.Act -> applyIntent(base, pointer.intent)
+            is MouseIntent.Dialog -> Reduced(base)
+            MouseIntent.Dismiss -> Reduced(base)
+        }
+    }
+
+    /** Clic en una ficha de INICIO: abre su chat, igual que flechas+Enter. */
+    private fun pointerContact(state: ShellState, index: Int): Reduced {
+        if (state.screen != Screen.INICIO) return Reduced(state)
+        val filas = state.filteredContacts()
+        val fila = filas.getOrNull(index) ?: return Reduced(state)
+        val conFoco = ensureVisible(state.copy(focus = Focus(FocusField.LIST, index)))
+        return openConversation(conFoco, fila.identityId)
+    }
+
+    /** Clic en una burbuja: mueve el foco, NO envia ni abre nada. */
+    private fun pointerMessage(state: ShellState, index: Int): Reduced {
+        if (state.screen != Screen.CONVERSACION) return Reduced(state)
+        val mensajes = state.conversation?.messages ?: return Reduced(state)
+        if (mensajes.isEmpty()) return Reduced(state)
+        val destino = index.coerceIn(0, mensajes.lastIndex)
+        return Reduced(afterMove(state.copy(focus = Focus(FocusField.LIST, destino))))
+    }
+
+    /** Clic en una linea de DIAGNOSTICO: mueve el foco de la lista de logs. */
+    private fun pointerLog(state: ShellState, index: Int): Reduced {
+        if (state.screen != Screen.DIAGNOSTICO) return Reduced(state)
+        val logs = state.visibleLogs()
+        if (logs.isEmpty()) return Reduced(state)
+        val destino = index.coerceIn(0, logs.lastIndex)
+        return Reduced(ensureVisible(state.copy(focus = Focus(FocusField.LIST, destino))))
+    }
+
     private fun applyIntent(state: ShellState, intent: Intent): Reduced {
         // Cualquier tecla que no sea el segundo Ctrl-C desarma la salida: el
         // "dos veces" tiene que ser deliberado, no un residuo de hace un minuto.
@@ -80,6 +215,13 @@ object ShellReducer {
         } else {
             state
         }
+        // FOCO ATRAPADO: con un Confirm abierto nada del fondo responde. Tab y
+        // las flechas mueven el boton marcado; Enter acepta lo marcado; Esc
+        // cancela. Es lo que hace que un Enter reflejo no borre nada.
+        (base.overlay as? Overlay.Confirm)?.let { return modal(base, it, intent) }
+        // La ayuda se VENTANEA con las mismas teclas de la lista, sin tocar el
+        // foco de la pantalla de debajo.
+        if (base.helpVisible) helpScroll(base, intent)?.let { return it }
         return when (intent) {
             Intent.None -> Reduced(base)
             is Intent.Insert -> insert(base, intent.text)
@@ -88,11 +230,14 @@ object ShellReducer {
             Intent.PrevField -> cycleField(base, forward = false)
             Intent.MoveUp -> move(base, -1)
             Intent.MoveDown -> move(base, +1)
+            Intent.PageUp -> page(base, -1)
+            Intent.PageDown -> page(base, +1)
             Intent.PageStart -> jump(base, start = true)
             Intent.PageEnd -> jump(base, start = false)
             Intent.Activate -> activate(base)
             Intent.Back -> back(base)
-            Intent.Help -> Reduced(base.copy(helpVisible = !base.helpVisible))
+            is Intent.TabTo -> tabTo(base, intent.tab)
+            Intent.Help -> Reduced(base.copy(helpVisible = !base.helpVisible, helpOffset = 0))
             Intent.Redraw -> Reduced(base, listOf(ShellEffect.Redraw))
             Intent.Cancel -> cancel(base)
             Intent.Quit -> quit(base)
@@ -124,7 +269,7 @@ object ShellReducer {
             Intent.ShowText -> Reduced(
                 base.copy(share = base.share?.copy(showText = !(base.share?.showText ?: false))),
             )
-            Intent.CycleFilter -> Reduced(base.copy(logFilter = nextFilter(base.logFilter)))
+            Intent.CycleFilter -> Reduced(ensureVisible(base.copy(logFilter = nextFilter(base.logFilter))))
             Intent.ExportLogs -> Reduced(base, listOf(ShellEffect.ExportLogs(base.logFilter)))
             Intent.Paste -> Reduced(base, listOf(ShellEffect.Paste))
             Intent.SourceText -> setSource(base, ImportSource.TEXT)
@@ -134,7 +279,57 @@ object ShellReducer {
     }
 
     /**
-     * Inserta [text] en el campo con foco.
+     * Las teclas de un modal CONFIRM.
+     *
+     * No es una tabla nueva: reusa los intents que ya existen. Lo que cambia es
+     * que SOLO estos responden y que la seleccion por defecto de una accion
+     * destructiva es la NO destructiva.
+     */
+    private fun modal(
+        state: ShellState,
+        overlay: Overlay.Confirm,
+        intent: Intent,
+    ): Reduced = when (intent) {
+        Intent.NextField, Intent.PrevField, Intent.MoveUp, Intent.MoveDown ->
+            Reduced(state.copy(overlay = overlay.copy(selection = other(overlay.selection))))
+
+        Intent.Activate ->
+            if (overlay.selection == DialogChoice.PRIMARY) {
+                confirmOverlay(state, overlay)
+            } else {
+                Reduced(state.copy(overlay = null))
+            }
+
+        Intent.Back, Intent.Cancel -> Reduced(state.copy(overlay = null))
+        else -> Reduced(state)
+    }
+
+    private fun other(choice: DialogChoice): DialogChoice =
+        if (choice == DialogChoice.PRIMARY) DialogChoice.SECONDARY else DialogChoice.PRIMARY
+
+    /**
+     * Desplaza la ayuda con las teclas de navegacion.
+     *
+     * Devuelve `null` si el intent no es de navegacion: `?` y `Esc` siguen
+     * cerrando la ayuda por la ruta de siempre.
+     */
+    private fun helpScroll(state: ShellState, intent: Intent): Reduced? {
+        val total = Keymap.help(state.screen).size + 2
+        val max = OverlayWindow.maxOffset(state.viewport.rows, total)
+        val paso = OverlayWindow.visibleRows(state.viewport.rows, total).coerceAtLeast(1)
+        val destino = when (intent) {
+            Intent.MoveUp -> state.helpOffset - 1
+            Intent.MoveDown -> state.helpOffset + 1
+            Intent.PageUp -> state.helpOffset - paso
+            Intent.PageDown -> state.helpOffset + paso
+            Intent.PageStart -> 0
+            Intent.PageEnd -> max
+            else -> return null
+        }
+        return Reduced(state.copy(helpOffset = destino.coerceIn(0, max)))
+    }
+
+    /**
      *
      * El texto puede ser una tecla o un pegado entero: la misma ruta, para que
      * pegar no tenga reglas distintas de teclear.
@@ -142,7 +337,13 @@ object ShellReducer {
     private fun insert(state: ShellState, text: String): Reduced {
         return when (state.screen) {
         Screen.INICIO ->
-            Reduced(state.copy(filter = state.filter + text, focus = Focus(FocusField.FIELD, 0)))
+            // Al filtrar la lista se acorta: el offset viejo puede apuntar al
+            // final de una lista que ya no existe. Se vuelve arriba.
+            Reduced(
+                ensureVisible(
+                    state.copy(filter = state.filter + text, focus = Focus(FocusField.FIELD, 0)),
+                ),
+            )
 
         Screen.IMPORTAR -> {
             val draft = state.importDraft ?: ImportDraft()
@@ -187,7 +388,8 @@ object ShellReducer {
 
     private fun deleteBack(state: ShellState): Reduced {
         return when (state.screen) {
-        Screen.INICIO -> Reduced(state.copy(filter = state.filter.dropLast(1)))
+        Screen.INICIO ->
+            Reduced(ensureVisible(state.copy(filter = state.filter.dropLast(1))))
 
         Screen.IMPORTAR -> {
             val draft = state.importDraft ?: return Reduced(state)
@@ -228,13 +430,19 @@ object ShellReducer {
      * En CONVERSACION el compositor va PRIMERO a proposito: al abrir un chat se
      * escribe, no se navega. `Tab` lleva a la lista, que es donde `R`/`D` tienen
      * sentido.
+     *
+     * [FocusField.TABS] va AL FINAL: la barra de pestañas tiene que ser
+     * alcanzable sin teclas de funcion, pero meterla delante cambiaria el orden
+     * que el usuario ya conoce (compositor -> lista) y el primer `Tab` de un
+     * chat dejaria de llevar al hilo.
      */
     private fun fieldsFor(screen: Screen): List<FocusField> = when (screen) {
-        Screen.INICIO -> listOf(FocusField.LIST, FocusField.FIELD)
-        Screen.IMPORTAR -> listOf(FocusField.FIELD, FocusField.LIST)
-        Screen.CONVERSACION -> listOf(FocusField.COMPOSER, FocusField.LIST)
-        Screen.RESTAURAR -> listOf(FocusField.FIELD, FocusField.CONFIRM)
-        Screen.COMPARTIR, Screen.FRASE, Screen.DIAGNOSTICO -> listOf(FocusField.LIST)
+        Screen.INICIO -> listOf(FocusField.LIST, FocusField.FIELD, FocusField.TABS)
+        Screen.IMPORTAR -> listOf(FocusField.FIELD, FocusField.LIST, FocusField.TABS)
+        Screen.CONVERSACION -> listOf(FocusField.COMPOSER, FocusField.LIST, FocusField.TABS)
+        Screen.RESTAURAR -> listOf(FocusField.FIELD, FocusField.CONFIRM, FocusField.TABS)
+        Screen.COMPARTIR, Screen.FRASE, Screen.DIAGNOSTICO ->
+            listOf(FocusField.LIST, FocusField.TABS)
     }
 
     private fun cycleField(state: ShellState, forward: Boolean): Reduced {
@@ -246,7 +454,11 @@ object ShellReducer {
         } else {
             (actual - 1 + fields.size).mod(fields.size)
         }
-        return Reduced(state.copy(focus = Focus(fields[siguiente], 0)))
+        val campo = fields[siguiente]
+        // En la barra el indice es la pestaña, no una posicion de lista: al
+        // entrar con Tab el cursor cae en la pestaña activa.
+        val indice = if (campo == FocusField.TABS) state.tabs.active.ordinal else 0
+        return Reduced(state.copy(focus = Focus(campo, indice)))
     }
 
     private fun listSize(state: ShellState): Int = when (state.screen) {
@@ -258,21 +470,144 @@ object ShellReducer {
             } else {
                 0
             }
-        Screen.DIAGNOSTICO -> state.logs.size
+        Screen.DIAGNOSTICO -> state.visibleLogs().size
         Screen.IMPORTAR, Screen.COMPARTIR, Screen.FRASE, Screen.RESTAURAR -> 0
     }
 
+    /**
+     * Cuantos elementos tiene la lista VISIBLE, mire donde mire el foco.
+     *
+     * No es [listSize]: mientras se escribe en el filtro o en el compositor el
+     * cursor de movimiento no aplica, pero la lista se sigue pintando y su
+     * ventana tiene que seguir cuadrando. Mezclar las dos cosas hacia que el
+     * hilo saltara al principio en cuanto se tabulaba al compositor.
+     */
+    private fun listTotal(state: ShellState): Int = when (state.screen) {
+        Screen.INICIO -> state.filteredContacts().size
+        Screen.CONVERSACION -> state.conversation?.messages?.size ?: 0
+        Screen.DIAGNOSTICO -> state.visibleLogs().size
+        Screen.IMPORTAR, Screen.COMPARTIR, Screen.FRASE, Screen.RESTAURAR -> 0
+    }
+
+    /** La lista que se desplaza en [screen], o `null` si no hay lista. */
+    private fun listId(screen: Screen): ListId? = when (screen) {
+        Screen.INICIO -> ListId.CONTACTS
+        Screen.CONVERSACION -> ListId.MESSAGES
+        Screen.DIAGNOSTICO -> ListId.LOGS
+        Screen.IMPORTAR, Screen.COMPARTIR, Screen.FRASE, Screen.RESTAURAR -> null
+    }
+
+    private fun withScroll(
+        state: ShellState,
+        id: ListId,
+        offset: Int,
+        followEnd: Boolean,
+    ): ShellState {
+        val nuevo = ScrollState(offset.coerceAtLeast(0), followEnd)
+        return if (state.scrollOf(id) == nuevo) state else state.copy(scroll = state.scroll + (id to nuevo))
+    }
+
+    /**
+     * Deja la fila enfocada dentro de la ventana.
+     *
+     * El alto sale de [Layout.listRows], que es puro: el estado NO guarda
+     * geometria. Con `followEnd` en la conversacion el ancla es el ultimo
+     * mensaje, de modo que un dato nuevo no se queda debajo del borde.
+     */
+    private fun ensureVisible(state: ShellState): ShellState {
+        val id = listId(state.screen) ?: return state
+        val total = listTotal(state)
+        val rows = Layout.listRows(state.screen, state.viewport)
+        val actual = state.scrollOf(id)
+        val ancla = if (id == ListId.MESSAGES && actual.followEnd && total > 0) {
+            total - 1
+        } else {
+            state.focus.index
+        }
+        val offset = Scroll.ensure(ancla, actual.offset, rows, total)
+        return withScroll(state, id, offset, actual.followEnd)
+    }
+
+    /**
+     * Ajusta scroll y `followEnd` despues de mover el cursor.
+     *
+     * Tocar el final del hilo vuelve a engancharse al final y limpia el
+     * contador; subir lo desengancha. En las demas listas solo se garantiza
+     * que el foco se vea, sin inventar un "seguir el final" que no aplica.
+     */
+    private fun afterMove(state: ShellState): ShellState {
+        if (state.screen != Screen.CONVERSACION) return ensureVisible(state)
+        val total = listTotal(state)
+        val alFinal = total > 0 && state.focus.index >= total - 1
+        val conv = state.conversation
+        val sinPendientes = if (alFinal && conv != null && conv.unread != 0) {
+            state.copy(conversation = conv.copy(unread = 0))
+        } else {
+            state
+        }
+        val enganchado = withScroll(sinPendientes, ListId.MESSAGES, sinPendientes.scrollOf(ListId.MESSAGES).offset, alFinal)
+        return ensureVisible(enganchado)
+    }
+
+    /**
+     * Ajusta la ventana del hilo cuando cambia su coleccion.
+     *
+     * Tres casos, y la diferencia es la razon de existir del metodo:
+     *  - `followEnd` activo: se sigue el final aunque el hilo tenga 500 filas.
+     *  - mensaje ENTRANTE y el usuario esta leyendo mas arriba: NO se salta y
+     *    se cuenta (`[N nuevos ↓]`). Moverle la vista mientras lee seria
+     *    perderle el sitio.
+     *  - cualquier otro cambio (historial cargado, mensaje propio, descarte):
+     *    solo se garantiza que el foco siga visible.
+     */
+    private fun afterMessageArrival(state: ShellState, peer: IdentityId, incoming: Boolean): ShellState {
+        val conv = state.conversation ?: return state
+        if (conv.peer != peer) return state
+        val id = ListId.MESSAGES
+        val actual = state.scrollOf(id)
+        val enPantalla = state.screen == Screen.CONVERSACION
+        return when {
+            actual.followEnd -> ensureVisible(state)
+            incoming && enPantalla -> state.copy(conversation = conv.copy(unread = conv.unread + 1))
+            else -> ensureVisible(state)
+        }
+    }
+
     private fun move(state: ShellState, delta: Int): Reduced {
+        if (state.focus.field == FocusField.TABS) {
+            val destino = (state.focus.index + delta).coerceIn(0, RootTab.entries.size - 1)
+            return Reduced(state.copy(focus = state.focus.copy(index = destino)))
+        }
         val size = listSize(state)
         if (size <= 0) return Reduced(state)
         val siguiente = (state.focus.index + delta).coerceIn(0, size - 1)
-        return Reduced(state.copy(focus = state.focus.copy(index = siguiente)))
+        val movido = state.copy(focus = state.focus.copy(index = siguiente))
+        return Reduced(afterMove(movido))
     }
 
+    /** PgUp/PgDn: una pantalla de lista de golpe, con el mismo `ensure` que las flechas. */
+    private fun page(state: ShellState, direction: Int): Reduced {
+        if (state.focus.field == FocusField.TABS) return move(state, direction)
+        val rows = Layout.listRows(state.screen, state.viewport)
+        return move(state, direction * rows)
+    }
+
+    /** Rueda (change B): mueve la seleccion para no romper "el foco siempre visible". */
+    private fun scrollBy(state: ShellState, delta: Int): Reduced =
+        if (delta == 0) Reduced(ensureVisible(state)) else move(state, delta)
+
     private fun jump(state: ShellState, start: Boolean): Reduced {
+        if (state.focus.field == FocusField.TABS) {
+            return Reduced(
+                state.copy(
+                    focus = state.focus.copy(index = if (start) 0 else RootTab.entries.size - 1),
+                ),
+            )
+        }
         val size = listSize(state)
         if (size <= 0) return Reduced(state)
-        return Reduced(state.copy(focus = state.focus.copy(index = if (start) 0 else size - 1)))
+        val movido = state.copy(focus = state.focus.copy(index = if (start) 0 else size - 1))
+        return Reduced(afterMove(movido))
     }
 
     // ------------------------------------------------------------------
@@ -285,15 +620,16 @@ object ShellReducer {
             Screen.IMPORTAR, Screen.RESTAURAR -> Focus(FocusField.FIELD, 0)
             else -> Focus(FocusField.LIST, 0)
         }
-        return Reduced(
+        val abierta = ensureVisible(
             state.copy(
-                screens = state.screens.push(screen),
+                tabs = state.tabs.push(screen),
                 focus = focus,
                 overlay = null,
                 banner = null,
                 helpVisible = false,
             ),
         )
+        return Reduced(abierta)
     }
 
     private fun openImport(state: ShellState): Reduced {
@@ -340,6 +676,10 @@ object ShellReducer {
                 is Overlay.Offline -> Reduced(state.copy(overlay = null))
             }
         }
+        if (state.focus.field == FocusField.TABS) {
+            val tab = RootTab.at(state.focus.index) ?: return Reduced(state)
+            return tabTo(state, tab)
+        }
         return when (state.screen) {
             Screen.INICIO -> {
                 val contacto = state.filteredContacts().getOrNull(state.focus.index)
@@ -362,8 +702,11 @@ object ShellReducer {
             hasSession = row.hasSession,
         )
         val abierta = openScreen(state, Screen.CONVERSACION)
+        // Un hilo se abre ENGANCHADO al final: lo ultimo es lo que se quiere
+        // leer. El offset de la conversacion anterior no se hereda.
+        val limpia = withScroll(abierta.state, ListId.MESSAGES, 0, followEnd = true)
         return Reduced(
-            abierta.state.copy(conversation = vista),
+            ensureVisible(limpia.copy(conversation = vista)),
             listOf(ShellEffect.LoadHistory(peer)),
         )
     }
@@ -437,6 +780,7 @@ object ShellReducer {
                     ConfirmKind.RESTORE_IDENTITY,
                     "restaurar identidad",
                     "se pierde la identidad actual, sus sesiones y sus contactos en memoria",
+                    selection = DialogChoice.SECONDARY,
                 ),
             ),
         )
@@ -464,6 +808,7 @@ object ShellReducer {
                     "descartar mensaje",
                     "se borra la fila; no se puede deshacer",
                     messageId = row.messageId,
+                    selection = DialogChoice.SECONDARY,
                 ),
             ),
         )
@@ -477,6 +822,10 @@ object ShellReducer {
                     ConfirmKind.REVEAL_PHRASE,
                     "revelar la frase",
                     "restaura SOLO la identidad: ni contactos, ni sesiones, ni mensajes",
+                    // Arranca en NO: un Enter reflejo mostraria las 24 palabras, que
+                    // son el secreto mas valioso del cliente. Misma regla que salir,
+                    // descartar y sobrescribir identidad.
+                    selection = DialogChoice.SECONDARY,
                 ),
             ),
         )
@@ -560,11 +909,11 @@ object ShellReducer {
     // ------------------------------------------------------------------
 
     private fun back(state: ShellState): Reduced {
-        if (state.helpVisible) return Reduced(state.copy(helpVisible = false))
+        if (state.helpVisible) return Reduced(state.copy(helpVisible = false, helpOffset = 0))
         state.overlay?.let { return Reduced(state.copy(overlay = null)) }
         if (state.screen == Screen.INICIO) {
             if (state.focus.field == FocusField.FIELD) {
-                return Reduced(state.copy(focus = Focus(FocusField.LIST, 0), filter = ""))
+                return Reduced(ensureVisible(state.copy(focus = Focus(FocusField.LIST, 0), filter = "")))
             }
             return Reduced(
                 state.copy(
@@ -572,25 +921,55 @@ object ShellReducer {
                         ConfirmKind.EXIT,
                         "salir de KeyMessage",
                         "la cola es local y vive mientras el proceso siga abierto; el relay no guarda",
+                        selection = DialogChoice.SECONDARY,
                     ),
                 ),
             )
         }
-        val popped = state.screens.pop() ?: return Reduced(state)
+        // `pop` retrocede dentro de la pestaña y, en su raiz, vuelve a la
+        // pestaña desde la que se entro. El estado que NO es de la pila
+        // (borradores del tab INICIO) se conserva.
+        val popped = state.tabs.pop() ?: return Reduced(state)
         return Reduced(
-            state.copy(
-                screens = popped,
-                focus = Focus(FocusField.LIST, 0),
-                overlay = null,
-                banner = null,
-                conversation = if (popped.current == Screen.CONVERSACION) state.conversation else null,
-                importDraft = if (popped.current == Screen.IMPORTAR) state.importDraft else null,
-                share = if (popped.current == Screen.COMPARTIR) state.share else null,
-                // Al salir de FRASE/RESTAURAR la frase se BORRA: un buffer que
-                // sobrevive a su pantalla es una frase esperando un volcado.
-                phrase = PhraseView(identityNow = state.status.localFingerprint),
+            ensureVisible(
+                state.copy(
+                    tabs = popped,
+                    focus = Focus(FocusField.LIST, 0),
+                    overlay = null,
+                    banner = null,
+                    conversation = if (popped.screen == Screen.CONVERSACION) state.conversation else null,
+                    importDraft = if (popped.screen == Screen.IMPORTAR) state.importDraft else null,
+                    share = if (popped.screen == Screen.COMPARTIR) state.share else null,
+                    // Al salir de FRASE/RESTAURAR la frase se BORRA: un buffer que
+                    // sobrevive a su pantalla es una frase esperando un volcado.
+                    phrase = PhraseView(identityNow = state.status.localFingerprint),
+                ),
             ),
         )
+    }
+
+    /**
+     * Cambia de pestaña SIN tocar borradores.
+     *
+     * Es la unica ruta de cambio de raiz. No limpia `filter`, `conversation`,
+     * `importDraft`, `share` ni `phrase`: si lo hiciera, ir a DIAGNOSTICO y
+     * volver perderia lo escrito, que es exactamente lo que R16 prohibe. Solo
+     * se cierra la ayuda, porque la ayuda es de la pantalla que se deja.
+     */
+    private fun tabTo(state: ShellState, tab: RootTab): Reduced {
+        val tabs = state.tabs.activate(tab)
+        val focus = if (state.focus.field == FocusField.TABS) {
+            Focus(FocusField.TABS, tab.ordinal)
+        } else {
+            state.focus
+        }
+        val cambiado = state.copy(
+            tabs = tabs,
+            focus = focus,
+            helpVisible = false,
+            helpOffset = 0,
+        )
+        return Reduced(ensureVisible(cambiado))
     }
 
     private fun quit(state: ShellState): Reduced = Reduced(
@@ -599,6 +978,7 @@ object ShellReducer {
                 ConfirmKind.EXIT,
                 "salir de KeyMessage",
                 "la cola es local y vive mientras el proceso siga abierto; el relay no guarda",
+                selection = DialogChoice.SECONDARY,
             ),
         ),
     )
@@ -737,7 +1117,13 @@ object ShellReducer {
             val conv = state.conversation?.let {
                 if (it.peer == peer) it.copy(messages = upsertMessage(it.messages, fila)) else it
             }
-            Reduced(state.copy(contacts = contacts, conversation = conv))
+            Reduced(
+                afterMessageArrival(
+                    state.copy(contacts = contacts, conversation = conv),
+                    peer,
+                    incoming = !mio,
+                ),
+            )
         }
 
         // Los ACK verificados llegan tambien como `MessageStateChanged`. Aqui no
@@ -797,46 +1183,58 @@ object ShellReducer {
 
         is EffectResult.HistoryLoaded -> {
             val conv = state.conversation?.let {
-                if (it.peer == result.peer) it.copy(messages = result.messages) else it
+                if (it.peer == result.peer) {
+                    it.copy(messages = result.messages, unread = 0)
+                } else {
+                    it
+                }
             }
-            Reduced(state.copy(conversation = conv))
+            // Cargar el historial de un hilo enganchado al final tiene que
+            // dejar el final a la vista (R8: 500 mensajes y se ve el ultimo).
+            Reduced(afterMessageArrival(state.copy(conversation = conv), result.peer, incoming = false))
         }
 
         is EffectResult.Imported -> {
             val contacts = upsert(state.contacts, result.contact)
             // SUSTITUIR, no apilar: el Esc desde el chat vuelve a INICIO en un
             // paso (R4). El portador se limpia con el borrador.
-            Reduced(
-                state.copy(
-                    screens = state.screens.substitute(Screen.CONVERSACION),
-                    contacts = contacts,
-                    contactsLoaded = true,
-                    contactsError = null,
-                    importDraft = null,
-                    conversation = ConversationView(
-                        peer = result.contact.identityId,
-                        title = result.contact.label,
-                        peerPresence = result.contact.presence,
-                        hasSession = result.contact.hasSession,
-                    ),
-                    focus = Focus(FocusField.COMPOSER, 0),
-                    overlay = null,
-                    // La cabecera del chat ya muestra el identityId verificado
-                    // (la huella del contacto). El aviso lo dice con la palabra
-                    // VERIFICADO para que el exito no se confunda con "se pego
-                    // algo y no hubo error".
-                    banner = Banner(LogLevel.INFO, "VERIFICADO " + result.contact.fingerprint),
+            val abierto = state.copy(
+                tabs = state.tabs.substitute(Screen.CONVERSACION),
+                contacts = contacts,
+                contactsLoaded = true,
+                contactsError = null,
+                importDraft = null,
+                conversation = ConversationView(
+                    peer = result.contact.identityId,
+                    title = result.contact.label,
+                    peerPresence = result.contact.presence,
+                    hasSession = result.contact.hasSession,
                 ),
+                focus = Focus(FocusField.COMPOSER, 0),
+                overlay = null,
+                // La cabecera del chat ya muestra el identityId verificado
+                // (la huella del contacto). El aviso lo dice con la palabra
+                // VERIFICADO para que el exito no se confunda con "se pego
+                // algo y no hubo error".
+                banner = Banner(LogLevel.INFO, "VERIFICADO " + result.contact.fingerprint),
+            )
+            Reduced(
+                ensureVisible(withScroll(abierto, ListId.MESSAGES, 0, followEnd = true)),
                 listOf(ShellEffect.LoadHistory(result.contact.identityId)),
             )
         }
 
         is EffectResult.ImportRejected -> {
             val draft = state.importDraft?.copy(rejection = result.code)
-            note(
-                state.copy(importDraft = draft),
-                LogLevel.ERROR,
-                "portador rechazado codigo=${result.code}",
+            toast(
+                note(
+                    state.copy(importDraft = draft),
+                    LogLevel.ERROR,
+                    "portador rechazado codigo=${result.code}",
+                ).state,
+                ToastVariant.ERROR,
+                "portador rechazado",
+                result.code,
             )
         }
 
@@ -850,9 +1248,16 @@ object ShellReducer {
             ),
         )
 
-        is EffectResult.Saved -> note(state, LogLevel.INFO, "guardado en ${result.path}")
+        is EffectResult.Saved ->
+            toast(note(state, LogLevel.INFO, "guardado en ${result.path}").state, ToastVariant.SUCCESS, "guardado", result.path)
 
-        is EffectResult.Copied -> note(state, LogLevel.INFO, "copiado ${result.what}")
+        is EffectResult.Copied ->
+            toast(
+                note(state, LogLevel.INFO, "copiado ${result.what}").state,
+                ToastVariant.SUCCESS,
+                "copiado " + result.what,
+                "OSC 52 no confirmable",
+            )
 
         is EffectResult.Sent -> {
             val conv = state.conversation ?: return note(state, LogLevel.INFO, "mensaje ${short(result.messageId)}")
@@ -866,23 +1271,34 @@ object ShellReducer {
             // El compositor se limpia solo si sigue teniendo el texto enviado:
             // si el usuario empezo a escribir otro mientras tanto, no se pisa.
             val composer = if (conv.composer == result.text) "" else conv.composer
-            Reduced(
-                state.copy(
-                    conversation = conv.copy(
-                        messages = upsertMessage(conv.messages, fila),
-                        composer = composer,
-                        sending = false,
-                    ),
+            val conFila = state.copy(
+                conversation = conv.copy(
+                    messages = upsertMessage(conv.messages, fila),
+                    composer = composer,
+                    sending = false,
                 ),
+            )
+            // Un mensaje PROPIO no cuenta como "nuevo": si el usuario esta
+            // leyendo mas arriba, no se le salta el hilo ni se le anuncia.
+            toast(
+                afterMessageArrival(conFila, conv.peer, incoming = false),
+                ToastVariant.INFO,
+                "OUT \u00b7 en cola local",
+                "sin ACK: no es entrega",
             )
         }
 
         is EffectResult.SendRejected -> {
             val conv = state.conversation?.copy(sending = false)
-            note(
-                state.copy(conversation = conv),
-                LogLevel.ERROR,
-                "envio rechazado codigo=${result.code}",
+            toast(
+                note(
+                    state.copy(conversation = conv),
+                    LogLevel.ERROR,
+                    "envio rechazado codigo=${result.code}",
+                ).state,
+                ToastVariant.ERROR,
+                "envio rechazado",
+                result.code,
             )
         }
 
@@ -906,7 +1322,7 @@ object ShellReducer {
                 vista.copy(messages = vista.messages.filterNot { it.messageId == result.messageId })
             }
             note(
-                state.copy(conversation = conv),
+                ensureVisible(state.copy(conversation = conv)),
                 LogLevel.INFO,
                 "descartado ${short(result.messageId)}",
             )
@@ -929,9 +1345,9 @@ object ShellReducer {
             ),
         )
 
-        is EffectResult.Restored -> Reduced(
+        is EffectResult.Restored -> toast(
             state.copy(
-                screens = ScreenStack.initial(),
+                tabs = TabStacks.initial(),
                 focus = Focus(FocusField.LIST, 0),
                 contacts = emptyList(),
                 contactsLoaded = false,
@@ -944,29 +1360,50 @@ object ShellReducer {
                 importDraft = null,
                 logs = emptyList(),
                 helpVisible = false,
+                helpOffset = 0,
+                scroll = emptyMap(),
                 status = state.status.copy(
                     localFingerprint = abreviar(result.identityId),
                     localIdentityId = result.identityId,
                 ),
                 banner = Banner(LogLevel.INFO, "identidad restaurada; contactos y sesiones se pierden"),
             ),
-            listOf(ShellEffect.LoadContacts("restaurada")),
-        )
+            ToastVariant.INFO,
+            "identidad restaurada",
+            "reinicia para usar la nueva",
+        ).copy(effects = listOf(ShellEffect.LoadContacts("restaurada")))
 
         is EffectResult.RestoreRejected ->
             note(state, LogLevel.ERROR, "restauracion rechazada codigo=${result.code}")
 
         is EffectResult.Pasted -> insert(state, result.text)
 
-        is EffectResult.LogsExported -> note(state, LogLevel.INFO, "log exportado en ${result.path}")
+        is EffectResult.LogsExported ->
+            toast(
+                note(state, LogLevel.INFO, "log exportado en ${result.path}").state,
+                ToastVariant.SUCCESS,
+                "log exportado",
+                result.path,
+            )
 
         // El buffer de `DiagLog` reemplaza lo que la UI hubiera ido anotando: es
         // la fuente real, ya redactada y con hora. No se fusiona con las notas
         // del reducer, que son un resumen de lo mismo.
-        is EffectResult.LogsLoaded -> Reduced(state.copy(logs = result.rows.takeLast(MAX_LOGS)))
+        is EffectResult.LogsLoaded -> Reduced(
+            ensureVisible(state.copy(logs = result.rows.takeLast(MAX_LOGS))),
+        )
 
         is EffectResult.Failed ->
-            note(state, LogLevel.ERROR, "fallo ${result.code}" + (result.detail?.let { ": $it" } ?: ""))
+            toast(
+                note(
+                    state,
+                    LogLevel.ERROR,
+                    "fallo ${result.code}" + (result.detail?.let { ": $it" } ?: ""),
+                ).state,
+                ToastVariant.ERROR,
+                "fallo " + result.code,
+                result.detail,
+            )
     }
 
     // ------------------------------------------------------------------

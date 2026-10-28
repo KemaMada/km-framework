@@ -1,0 +1,24 @@
+ KEYMESSAGE ┃ DIAGNOSTICO                                      P2P[o] conectado 
+   INICIO    FRASE  ▌DIAGNOSTICO                                                
+ transporte P2P[o] conectado  endpoint wss://relay.example/km                   
+ relay 9999999999999999  intento 0  sesiones 1  claves 2                        
+ cola: local en memoria (sin consulta desde la UI); el relay NO guarda          
+ ▌ ALCANCE: P2P es el enlace AL RELAY; NO es presencia del par. ─────────────── 
+ ▌ LOGS  filtro: TODOS   [5/200] ────────────────────────────────────────────── 
+ ▌   [AUTH] identidad cargada desde el almacen                                  
+     [CONTACT] directorio de peers leido: 2                                     
+     [SESSION] instalada peer=aaaa                                              
+   ! [SEND] EXPIRADO msg=abc                                                    
+   ! [RELAY] RELAY_NOT_AUTHORIZED                                               
+ ▌ sin payload, sin claves, sin frase ───────────────────────────────────────── 
+ [F] filtrar  [C] copiar  [X] exportar  [ESC] volver                            
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+ yo ffffffff… · P2P[o] conectado · par[?] · S1 K2 · VOLÁTIL                     
+ · [F] filtrar  [C] copiar  [X] exportar  [?] ayuda                             

@@ -140,10 +140,45 @@ El `km-daemon` **no enruta por ruta**: acepta el handshake WebSocket en
 cualquier path, así que `/km` y `/ws` funcionan igual. Y `--relay` acepta
 cualquier esquema que Ktor resuelva, `ws://` incluido.
 
-Al arrancar por primera vez la TUI no encuentra identidad: **crea una** y pide
-una frase de paso nueva, dos veces, para confirmar. En los arranques siguientes
-pide la que la abre. La identidad es lo que los contactos necesitan para poder
-escribirte, así que ese paso no es opcional en la práctica.
+Al arrancar por primera vez la TUI no encuentra identidad: ofrece **crear una**
+(frase de paso nueva, dos veces, para confirmar) o **recuperar la identidad**
+desde la frase de recuperación de 24 palabras. En los arranques siguientes pide
+la frase de paso que abre el almacén. La identidad es lo que los contactos
+necesitan para poder escribirte, así que ese paso no es opcional en la práctica.
+
+### Frase de paso y frase de recuperación
+
+No son lo mismo, y confundirlas es fácil:
+
+- **Frase de paso**: cifra el almacén de **este** equipo (Argon2id + AES-GCM).
+  Si se pierde, el almacén local no se puede abrir, pero la identidad no depende
+  de ella para existir.
+- **Frase de recuperación**: 24 palabras BIP39 que **derivan la identidad**; es
+  la misma frase que muestra Android. Restaurarla reproduce la misma clave
+  pública y el mismo `identityId`, pero **no** recupera contactos, sesiones ni
+  mensajes, y **regenera las claves de dispositivo**: el peer verá un
+  dispositivo nuevo y las sesiones se vuelven a establecer.
+
+Sin almacén, la TUI elige primero el camino, antes de pedir nada:
+
+```
+[C] crear una identidad nueva en este equipo
+[R] recuperar desde la frase de recuperación (24 palabras)
+```
+
+`Esc` vuelve a la elección mientras no se haya enviado nada. Al recuperar se pide
+la frase de 24 palabras (solo se pinta el contador `n/24`, nunca las palabras),
+una frase de paso **nueva** dos veces y, si ya había almacén, la confirmación
+literal `SOBRESOBRESCRIBIR`. Con almacén existente, `R` (con el campo de frase de
+paso vacío) abre la restauración y sobrescribe. Tras validar, la identidad se
+escribe y la sesión se abre **en el acto** con esa frase de paso, sin reiniciar.
+
+En modo líneas (`--no-tui`/`--accessible`) también se ofrece `[C]`/`[R]` cuando
+**no** hay almacén. Restaurar **sobrescribiendo** un almacén existente solo está
+en la TUI: el modo líneas es append-only y para scripts, y no se pone una
+escritura destructiva detrás de un prompt sin pantalla. Si
+`KM_KEYSTORE_PASSPHRASE` está puesta, se conserva el comportamiento de G1 (crear
+sin preguntar), pensado para scripts y contenedores.
 
 El directorio de claves de peers (`peers.json`) **tampoco existe al principio**,
 y la TUI avisa por `stderr`:
@@ -238,8 +273,10 @@ en **stderr** y el cliente conserva stdout. Variables del lanzador:
 | `KM_JAVA=<ruta>` | JVM que ejecuta el jar; por defecto `java` del `PATH`. |
 | `KM_GRADLE_JAVA_HOME=<ruta>` | JDK que ejecuta Gradle; por defecto `JAVA_HOME`. El build exige JDK 27. |
 
-Al arrancar, si no hay identidad, la crea y pide una frase de paso nueva
-(dos veces, para confirmar). Si ya existe, pide la que la abre.
+Al arrancar, si no hay identidad, la TUI ofrece crearla (frase de paso nueva,
+dos veces) o recuperarla desde la frase de 24 palabras. Si ya existe, pide la
+frase de paso que la abre; `R` con el campo vacío abre la restauración. Ver
+[Frase de paso y frase de recuperación](#frase-de-paso-y-frase-de-recuperación).
 
 Por defecto se abre la **TUI de pantallas**. Exige una terminal real de al menos
 **60x20** con direccionamiento de cursor; si no la hay, se avisa y se usa el modo
@@ -269,6 +306,9 @@ sesión.
 | `--accessible` | Salida lineal, sin direccionamiento de cursor. |
 | `--no-tui` | REPL de líneas de G1. |
 | `--ascii` | Sin glifos Unicode ni color. |
+| `--theme <color\|mono>` | `color` (defecto) deja decidir a `NO_COLOR`/`TERM`/`COLORTERM`; `mono` fuerza la capacidad mínima: ni un SGR, y el QR se degrada a texto/`.km`. |
+| `--mouse <auto\|on\|off>` | Ratón: clic izquierdo y rueda. `auto` (defecto) = ON solo con TUI viable y terminal con soporte; `off` lo apaga (selección nativa); `on` con `--accessible`/`--no-tui` o sin soporte es **error de uso** (exit 2). |
+| `--wheel-rows <1..10>` | Filas que desplaza una muesca de rueda. Defecto 3. |
 | `--verbose` | Traza del transporte por **stderr**. |
 | `-h`, `--help` | Ayuda, sin arrancar ni abrir la red. |
 
@@ -278,6 +318,120 @@ error de uso, no «gana el último».
 Un `identityId` mal escrito falla **al parsear**, con un mensaje de línea de
 comandos, no veinte segundos después con un `AUTH_FAIL`. Un argumento
 desconocido también: sale con código `2`.
+
+### Teclas, pestañas y scroll
+
+La TUI es **teclado primero**: toda acción tiene tecla y la barra inferior
+recuerda las globales. Desde el change B también acepta **clic izquierdo y rueda**
+opcionales (`--mouse auto|on|off`), que son un atajo de las mismas acciones, no
+una capacidad aparte. `?` abre la ayuda de la pantalla en la que estés y declara
+el valor **efectivo** del ratón (`ON`/`OFF`).
+
+| Tecla | Qué hace |
+|---|---|
+| `Alt-1`, `Alt-2`, `Alt-3` | Cambian de **pestaña raíz**: INICIO, FRASE, DIAGNOSTICO. Cambiar de pestaña **no borra** el borrador de importación, el compositor, el portador compartido ni la frase. |
+| `Tab` / `Shift-Tab` | Recorren los campos enfocables: barra de pestañas, lista, filtro, compositor. La pestaña activa se marca con `▌`/`>` además de color. |
+| `Enter` | Activa la pestaña apuntada, abre el contacto seleccionado o envía el mensaje del compositor. |
+| `Esc` | Retrocede dentro de la pestaña (CONVERSACION → INICIO, RESTAURAR → FRASE). En la raíz de INICIO pide confirmación de salida. Nunca borra un borrador. |
+| `↑`/`↓` o `j`/`k` | Mueven el foco de la lista; el scroll lo sigue (`ensureVisible`). |
+| `PgUp` / `PgDn` | Desplazan la lista una página. |
+| `Home` / `End` | Primera / última fila. En CONVERSACION, `End` vuelve a seguir el final del hilo. |
+| `?` | Abre la ayuda del keymap, ventaneada; `PgUp`/`PgDn` la recorren y `?`/`Esc` la cierran. |
+| `Ctrl-C` | La primera pulsación **arma** la salida; la segunda sale. |
+
+**Scroll.** El desplazamiento es por lista (contactos, mensajes, logs) y tiene
+indicador **textual** `[n/m]` —«estás viendo hasta la fila n de m»—, que solo
+aparece cuando la lista **no cabe entera**. En CONVERSACION se sigue el final por
+defecto; si subes, el hilo deja de saltar y los mensajes que llegan se anuncian
+como `[N nuevos ↓]`. `End` restaura el seguimiento. Nada de esto depende del
+color: se lee igual en MONO y con `--ascii`.
+
+**Color y jerarquía.** Los colores son **roles** (marca, acento, error, aviso,
+borde, selección…) resueltos según la capacidad del terminal: truecolor, 256,
+16 o **MONO**. En MONO no se emite ni un SGR: la jerarquía la hacen `▌`, `>`,
+`┃`, `─`, las mayúsculas de sección, la sangría y las etiquetas (`!`,
+`[EXPIRADO]`, `P2P[x]`). Un error nunca se distingue solo por el tono. `NO_COLOR`,
+`TERM=dumb`, una salida que no sea terminal, `--ascii` y `--theme mono` llevan a
+MONO. **El QR exige color**: sin él se ofrecen `[T]` texto y `[W]` `.km` en vez de
+pintar bloques que saldrían invertidos.
+
+### Ratón (change B)
+
+`--mouse auto|on|off` (defecto `auto`) activa el tracking **SGR 1006** (`?1000h`
+press/release + `?1006h`) al entrar en la TUI y lo apaga (`?1000l?1006l`) **antes**
+de salir de la pantalla alternativa y de devolver el cursor. Se apaga igual en
+salida normal, EOF, `Ctrl-C`/SIGINT y excepción (el `shutdown hook` llama al mismo
+`exit()`, que es idempotente).
+
+| Zona | Clic izquierdo | Rueda |
+|---|---|---|
+| Ficha de INICIO (y su regla) | abre la conversación (como `↓`+`Enter`) | desplaza ±`--wheel-rows` |
+| Pestaña (`INICIO`/`FRASE`/`DIAGNOSTICO`) | cambia de raíz (`TabTo`) | — |
+| Burbuja de CONVERSACION | mueve el foco al mensaje | desplaza el hilo |
+| Log de DIAGNOSTICO | mueve el foco a la línea | desplaza los logs |
+| Compositor / filtro | da el foco al campo | no mueve |
+| Botón `[ Sí ]` / `[ No ]` del diálogo | marca y activa esa opción | — |
+| Pie (`[C] compartir`, `[W] .km`, `[X] exportar`…) | ejecuta esa acción | — |
+| Fuera de la caja modal | cierra la capa superior (`Dismiss`) | — |
+
+Un clic es **press y release en la misma región**: press en una fila y release en
+otra no hace nada (arrastre descartado). El botón derecho y el medio no actúan.
+La rueda **no cambia de campo** y respeta `ensureVisible` y `followEnd` (`[N
+nuevos ↓]`); `End` reactiva el seguimiento.
+
+**Selección nativa.** Mientras el tracking está activo, el terminal entrega el
+arrastre a la app y **no** selecciona texto. `--mouse=off` la restaura; en la
+mayoría de terminales `Shift`+arrastre es un bypass **del terminal** (no de la
+app). La app no implementa selección propia.
+
+**Compatibilidad.** Terminales sin SGR 1006 (`TERM=dumb`, consola Linux, sin TTY)
+degradan a **OFF** sin bloquear el arranque; `--mouse=on` allí es error de uso
+(exit 2). Windows Terminal está soportado; en **tmux** hace falta activar su
+ratón (`set -g mouse on`), y en **conhost** el SGR puede no llegar: se declara y
+se usa el teclado. Esta comprobación manual **no** está automatizada (no hay pty
+real ni Windows en la suite).
+
+**Fuera de alcance (declarado):** hover, doble clic, arrastre de filas,
+redimensionar ventanas arrastrando, menús contextuales, toque/touch y selección
+propia. No se activan `?1002`/`?1003`; ningún control depende de pasar el ratón
+por encima. Además, un evento SGR de **movimiento** (bit 32) se descarta en el
+decodificador: si un multiplexor lo reenvía, no se convierte en clic ni en
+rueda. Un arrastre dentro de una MISMA región tampoco es distinguible con
+`?1000` (se comporta como un clic, limitación del protocolo elegido).
+
+### Límites conocidos de la TUI
+
+- **Ratón sin hover, doble clic ni arrastre.** Hay clic izquierdo y rueda
+  (`--mouse auto|on|off`); pasar el ratón no produce nada, el doble clic son dos
+  clics (el primero ya abre el chat) y el arrastre no actúa. Tampoco hay menús
+  contextuales, redimensionado por arrastre ni toque. Todo lo demás tiene tecla.
+- **El tracking impide la selección nativa.** Es el precio de `?1000`; con
+  `--mouse=off` vuelve, y `Shift`+arrastre es bypass del terminal. No hay
+  selección propia: derecho y medio no actúan.
+- **Sin temas configurables.** Hay una paleta por capacidad de color y `--theme
+  mono`; no hay fichero de tema ni colores por pantalla.
+- **El QR manda sobre las bandas.** De 85x43 a 88x46 el QR se pinta **completo y
+  sin marco** (las 43 filas intactas). A 89x47 vuelve el **marco compacto**
+  (borde, portador y acciones) aunque sin pestañas ni barra de estado; desde
+  100x50 caben también las bandas completas. Por debajo de 85x43 se declara el
+  mínimo y se ofrece texto/`.km`. En ningún caso se recorta el código ni se
+  sustituyen filas. El código se pinta **centrado** y su fondo blanco cubre solo
+  sus celdas (con el margen de silencio): no hay banda blanca hasta el borde.
+- **Las listas son de ancho completo.** INICIO, CONVERSACION y DIAGNOSTICO usan
+  todo el ancho de la terminal, como WhatsApp de escritorio: una fila por
+  contacto (presencia, alias, último mensaje, hora y S/K) y burbujas alineadas
+  por autor (`[ ... ]` a la derecha, `{ ... }` a la izquierda) con hora y estado
+  fuera del marco. El `maxWidth` de 88/75/60 queda solo para los formularios
+  (FRASE, RESTAURAR) y para los diálogos.
+- **El backdrop de los diálogos no existe en MONO.** En color el modal oscurece
+  el fondo; en MONO no se altera ni un atributo y la modalidad la dicen el marco,
+  el título `CONFIRMAR` y los botones. Es una limitación del modo, no un fallo.
+- **Los contactos y los mensajes son volátiles.** Viven en memoria: se pierden al
+  reiniciar y el relé no guarda. La barra de estado lo avisa de forma permanente
+  (`VOLÁTIL`) y la lista vacía lo repite en INICIO.
+- **La conversación no pagina el hilo entero.** Se formatea solo la ventana
+  visible (unos cientos de mensajes no cuestan más que quince); lo que queda
+  fuera se alcanza desplazando, no se resume ni se corta por el centro.
 
 ### Variables de entorno
 
@@ -522,15 +676,38 @@ Lo que **no** está hecho, y conviene no dar por hecho:
   probado en un `pty` real, ni en un terminal Windows, ni con revisión externa.
   El arranque interactivo, el resize real y la restauración por señal quedan
   como prueba manual.
+- **La TUI repinta por filas, no el frame entero.** `ScreenWriter` guarda el
+  último frame y escribe solo las filas que cambiaron (`ESC[<n>;1H` + texto +
+  `ESC[K`); un frame idéntico no emite **ni un byte**. La comparación incluye
+  texto, estilo, foco y paleta, de modo que un cambio solo de color repinta. Los
+  casos que invalidan el diff —primer frame, resize, cambio de alto, tema o
+  capacidad, `--ascii`, entrar o salir de la pantalla alternativa— fuerzan frame
+  completo. Lo mide `ScreenWriterDiffTest`; el coste con 500 mensajes, un test
+  que cuenta filas leídas y bytes escritos, no milisegundos.
 - **Windows no se ha ejecutado.** `km.cmd`, las rutas de `ConfigPaths` y las ACL
   de `OwnerPermissions` están implementadas y declaradas, pero no hay runner
   Windows en este repositorio: se revisan por lectura, no por ejecución.
 - **El QR se muestra, no se escanea.** El escritorio no tiene cámara por diseño.
   A 80x24 un portador de ~469 B no cabe (necesita 85x43): si el terminal es más
-  pequeño, la pantalla lo declara y ofrece texto y `.km`. Con el viewport justo a
-  85x43 el QR se pinta **sin el marco de caja** (ocupa la pantalla entero), porque
-  el marco se come 4 columnas y 4 filas y lo dejaría ilegible; a partir de 89x47
-  vuelve el marco con título y barra de acciones.
+  pequeño, la pantalla lo declara y ofrece texto y `.km`. Entre 85x43 y 88x46 el
+  QR se pinta **sin el marco de caja** (ocupa la pantalla entero), porque el
+  marco se come 4 columnas y 4 filas y lo dejaría ilegible. A 89x47 vuelve el
+  **marco compacto** (borde, portador y acciones; sin pestañas ni barra de
+  estado), y desde 100x50 se suman las bandas completas. El código se pinta
+  siempre entero: lo que se sacrifica es el chrome, nunca el QR.
+- **El QR se pinta negro sobre blanco, no con el tema del terminal.** Los glifos
+  `█ ▀ ▄` representan módulos **oscuros**: si el escritor los pintara con el
+  primer plano claro y el fondo oscuro habituales, el QR saldría **invertido** y
+  ninguna cámara lo detectaría. Por eso las filas del QR llevan una marca de
+  paleta y sus celdas se pintan con `ESC[30;47m` (negro sobre blanco). El código
+  va **centrado** en el ancho disponible y el `ESC[K` de fin de línea se emite con
+  los atributos **ya reseteados**, de modo que el blanco cubre solo las celdas del
+  QR —margen de silencio incluido— y no una banda hasta el borde de la terminal.
+  Esto exige un **terminal con color**: con `--ascii`, `NO_COLOR`, `TERM=dumb` o
+  una salida que no sea tty no se pintan bloques de QR (volvería a salir
+  invertido) y la pantalla lo dice, ofreciendo `[T]` texto o `[W]` guardar `.km`.
+  La geometría no cambia: 85x43..88x46 sin marco, 89x47 con marco compacto y
+  100x50 con bandas completas.
 - **No hay verificación de `serverSignature`.** El transcript de 120 B necesita el
   `serverNonce`, y la tabla de campos de `AUTH_OK` (§9.6) no lo lista, así que la
   firma llega sin material verificable. Es la divergencia P6 del propio
@@ -712,7 +889,7 @@ Qué hay hoy de todo esto:
 | Fábrica del bundle propio (`SelfBundleFactory`, 0 OPK para QR) | **IMPLEMENTADO** en `km-core` (G1) |
 | Fichero `.km`, importación y exportación desde el escritorio | **IMPLEMENTADO** (G1): comandos `import`/`export` y pantallas IMPORTAR/COMPARTIR |
 | `announce`/`session`: SIGNAL `contact_exchange` y PREKEY solo tras `Delivered` | **IMPLEMENTADO** en `km-transport` (G1), cableado en el escritorio |
-| QR de contacto en el escritorio | **IMPLEMENTADO como SALIDA** con zxing-core; el escaneo no aplica (no hay cámara). Con viewport ≥ 85x43 el QR se pinta completo (sin marco a 85x43, con marco desde 89x47); por debajo se declara el mínimo y se ofrece texto/`.km` |
+| QR de contacto en el escritorio | **IMPLEMENTADO como SALIDA** con zxing-core; el escaneo no aplica (no hay cámara). Se pinta **negro sobre blanco** (contraste fijo, no el tema del terminal) y necesita color: con `--ascii`/`NO_COLOR` se degrada a texto/`.km`. Con viewport ≥ 85x43 el QR se pinta completo (sin marco a 85x43, con marco desde 89x47); por debajo se declara el mínimo y se ofrece texto/`.km` |
 | Nombre visible por contacto | **NO EMPEZADO.** La lista muestra la huella del `identityId`, no un alias |
 | Persistencia de contactos | **NO EMPEZADO.** `InMemoryContactBook`; `persist-contact-book` está especificado y no aplicado |
 | QR de identidad en Android | **IMPLEMENTADO**, en el repositorio del cliente |

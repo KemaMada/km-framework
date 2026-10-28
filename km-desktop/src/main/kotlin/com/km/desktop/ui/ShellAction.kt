@@ -91,6 +91,33 @@ sealed interface ShellAction {
     /** SIGWINCH o medida inicial. */
     data class Resize(val viewport: Size) : ShellAction
 
+    /**
+     * Desplazar la lista activa [delta] filas.
+     *
+     * M3 lo expone para que el change de raton (B) tenga donde enganchar la
+     * rueda sin tocar el reducer: mueve la seleccion con la misma rama que las
+     * flechas, de modo que el invariante "la fila enfocada se ve" se mantiene
+     * sin una segunda definicion de scroll.
+     */
+    data class ScrollBy(val delta: Int) : ShellAction
+
+    /**
+     * El instante del frame, inyectado por el bucle.
+     *
+     * El reducer lo usa para fijar `expiresAtMs` y para caducar el toast; el
+     * renderer solo compara. Ni uno ni otro llaman a `System.currentTimeMillis`.
+     */
+    data class Tick(val nowMs: Long) : ShellAction
+
     /** Un efecto termino: exito o codigo estable. */
     data class EffectDone(val result: EffectResult) : ShellAction
+
+    /**
+     * Un clic o la rueda, YA resueltos contra el hit-map.
+     *
+     * El reducer nunca ve coordenadas: el shell traduce `(columna, fila)` a una
+     * [MouseIntent] y la reduce como cualquier otra accion. Asi el modelo sigue
+     * siendo una funcion de estado y accion, sin geometria.
+     */
+    data class Pointer(val intent: MouseIntent) : ShellAction
 }

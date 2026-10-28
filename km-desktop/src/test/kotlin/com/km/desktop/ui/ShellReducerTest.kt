@@ -27,6 +27,7 @@ import org.junit.jupiter.api.Test
  * - Importar con exito SUSTITUYE (el `Esc` vuelve a INICIO en un paso).
  * - `SENT` se pinta `OUT`; `DELIVERED` solo cuando el estado lo dice.
  * - `D` no borra sin confirmacion; `R` conserva el `messageId`.
+ * - El reveal de la frase arranca en `No`: un Enter reflejo no muestra el secreto.
  * - La frase no se pide sin confirmar el reveal y se borra al salir.
  * - La presencia del par NUNCA se llama ONLINE.
  */
@@ -88,17 +89,23 @@ class ShellReducerTest {
     }
 
     @Test
-    fun `Esc en INICIO pide confirmacion y Enter sale`() {
+    fun `Esc en INICIO pide confirmacion y arranca en No`() {
         val pide = base().press(KeyStroke(Key.Escape)).state
         val overlay = pide.overlay as Overlay.Confirm
 
         assertEquals(ConfirmKind.EXIT, overlay.kind)
         assertEquals(Screen.INICIO, pide.screen)
+        assertEquals(DialogChoice.SECONDARY, overlay.selection, "salir arranca en No")
 
         val dismiss = pide.press(KeyStroke(Key.Escape)).state
         assertNull(dismiss.overlay, "Esc cierra la confirmacion")
 
-        val sale = pide.press(KeyStroke(Key.Enter))
+        // Un Enter reflejo acepta lo marcado: No. Para salir hay que moverse.
+        val reflejo = pide.press(KeyStroke(Key.Enter))
+        assertFalse(reflejo.state.quitting, "Enter en No no sale")
+        assertTrue(reflejo.effects.isEmpty())
+
+        val sale = pide.press(KeyStroke(Key.Tab)).state.press(KeyStroke(Key.Enter))
         assertTrue(sale.state.quitting)
         assertEquals(listOf(ShellEffect.Quit), sale.effects)
     }
@@ -357,8 +364,21 @@ class ShellReducerTest {
         assertEquals(ConfirmKind.DISCARD_MESSAGE, overlay.kind)
         assertEquals(id, overlay.messageId)
         assertTrue(pide.effects.isEmpty(), "D no borra: solo pregunta")
+        assertEquals(DialogChoice.SECONDARY, overlay.selection, "por defecto NO se destruye")
 
-        val confirma = pide.state.press(KeyStroke(Key.Enter))
+        // Enter reflejo: cae en `No`. El mensaje sigue ahi y no hay efecto.
+        val reflejo = pide.state.press(KeyStroke(Key.Enter))
+        assertTrue(reflejo.effects.isEmpty(), "Enter en No no descarta")
+        assertNull(reflejo.state.overlay)
+        assertTrue(reflejo.state.conversation!!.messages.isNotEmpty())
+
+        // Tab mueve el foco a `Si` y entonces Enter descarta.
+        val segunda = reflejo.state.press('d').state.press(KeyStroke(Key.Tab)).state
+        assertEquals(
+            DialogChoice.PRIMARY,
+            (segunda.overlay as Overlay.Confirm).selection,
+        )
+        val confirma = segunda.press(KeyStroke(Key.Enter))
         assertEquals(listOf<ShellEffect>(ShellEffect.Discard(id)), confirma.effects)
 
         val borrado = confirma.state.done(EffectResult.Discarded(id)).state
@@ -448,9 +468,25 @@ class ShellReducerTest {
         assertEquals(LogLevel.WARN, bloqueado.state.banner!!.level)
 
         val pide = s.press('v')
-        assertEquals(ConfirmKind.REVEAL_PHRASE, (pide.state.overlay as Overlay.Confirm).kind)
+        val overlay = pide.state.overlay as Overlay.Confirm
+        assertEquals(ConfirmKind.REVEAL_PHRASE, overlay.kind)
+        assertEquals(
+            DialogChoice.SECONDARY,
+            overlay.selection,
+            "revelar arranca en No: un Enter reflejo no puede mostrar el secreto",
+        )
 
-        val carga = pide.state.press(KeyStroke(Key.Enter))
+        // Enter sin mover la seleccion cae en No: cierra el overlay sin revelar
+        // ni pedir la frase.
+        val reflejo = pide.state.press(KeyStroke(Key.Enter))
+        assertTrue(reflejo.effects.isEmpty(), "Enter en No no revela ni carga nada")
+        assertNull(reflejo.state.overlay)
+        assertFalse(reflejo.state.phrase.revealed)
+
+        // Para revelar hay que moverse a Si (Tab o flechas) y confirmar.
+        val enSi = pide.state.press(KeyStroke(Key.Tab)).state
+        assertEquals(DialogChoice.PRIMARY, (enSi.overlay as Overlay.Confirm).selection)
+        val carga = enSi.press(KeyStroke(Key.Enter))
         assertEquals(listOf<ShellEffect>(ShellEffect.LoadPhrase), carga.effects)
 
         val visible = carga.state.done(EffectResult.PhraseLoaded(listOf("abandon", "ability"))).state
@@ -508,9 +544,16 @@ class ShellReducerTest {
         assertEquals("SOBRESCRIBIR", valida.phrase.confirmation)
 
         val pide = valida.press(KeyStroke(Key.Enter))
-        assertEquals(ConfirmKind.RESTORE_IDENTITY, (pide.state.overlay as Overlay.Confirm).kind)
+        val modal = pide.state.overlay as Overlay.Confirm
+        assertEquals(ConfirmKind.RESTORE_IDENTITY, modal.kind)
+        assertEquals(DialogChoice.SECONDARY, modal.selection, "sobrescribir arranca en No")
 
-        val confirma = pide.state.press(KeyStroke(Key.Enter))
+        val reflejo = pide.state.press(KeyStroke(Key.Enter))
+        assertTrue(reflejo.effects.isEmpty(), "Enter en No no sobrescribe")
+        assertNull(reflejo.state.overlay)
+
+        val segunda = reflejo.state.press(KeyStroke(Key.Enter)).state
+        val confirma = segunda.press(KeyStroke(Key.Tab)).state.press(KeyStroke(Key.Enter))
         val efecto = confirma.effects.single() as ShellEffect.RestoreIdentity
         assertEquals("SOBRESCRIBIR", efecto.confirmation)
     }

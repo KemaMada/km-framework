@@ -1,5 +1,7 @@
 package com.km.desktop.ui
 
+import com.km.desktop.ui.layout.ListId
+import com.km.desktop.ui.layout.ScrollState
 import com.km.model.IdentityId
 import com.km.model.MessageId
 import com.km.model.MessageState
@@ -81,6 +83,16 @@ enum class FocusField {
 
     /** Campo de confirmacion escrita (restaurar identidad). */
     CONFIRM,
+
+    /**
+     * La barra de pestañas raiz.
+     *
+     * Es un campo focusable y no un atajo escondido: `Tab` tiene que poder
+     * llegar a la barra para quien no usa `Alt-1..3`, y `Enter` activa la
+     * pestaña apuntada por [Focus.index]. El indice es el ordinal de
+     * [RootTab], no un indice de lista.
+     */
+    TABS,
 }
 
 /**
@@ -226,6 +238,14 @@ data class ConversationView(
      * forma de no duplicar es no volver a pedir mientras el anterior no vuelve.
      */
     val sending: Boolean = false,
+    /**
+     * Mensajes que llegaron con el hilo desplazado hacia arriba.
+     *
+     * Se cuentan para decirlo (`[N nuevos ↓]`) y se ponen a cero al volver al
+     * final. NO se usa para "marcar leido" ni para nada que prometa entrega: es
+     * solo lo que el usuario se ha perdido de vista.
+     */
+    val unread: Int = 0,
 )
 
 /** Resultado de validar la frase en el servicio (nunca en el reducer). */
@@ -281,6 +301,13 @@ sealed interface Overlay {
         val title: String,
         val detail: String? = null,
         val messageId: MessageId? = null,
+        /**
+         * Boton marcado. Las acciones destructivas —y las que exponen un secreto,
+         * como revelar la frase— arrancan en [DialogChoice.SECONDARY]: un Enter
+         * reflejo no borra nada ni muestra la frase (R17). La seguridad vive en el
+         * reducer, no en la vista.
+         */
+        val selection: DialogChoice = DialogChoice.PRIMARY,
     ) : Overlay
 
     /** Sin conexion. Declara que el relay NO guarda y que la cola es local. */
@@ -373,6 +400,26 @@ data class Banner(
     val text: String,
 )
 
+/** Tono de un toast. Nunca es la unica señal: el glifo va delante. */
+enum class ToastVariant { INFO, SUCCESS, WARNING, ERROR }
+
+/**
+ * Un aviso EFIMERO, con su caducidad ya calculada por el reducer.
+ *
+ * [expiresAtMs] es una marca absoluta: el renderer solo compara su `nowMs` con
+ * ella y no lee el reloj. El bucle inyecta el instante con [ShellAction.Tick].
+ */
+data class Toast(
+    val variant: ToastVariant,
+    val title: String,
+    val message: String? = null,
+    val expiresAtMs: Long,
+)
+
+/** Cual de los dos botones de un modal esta marcado. */
+enum class DialogChoice { PRIMARY, SECONDARY }
+
+
 /**
  * El estado completo de la TUI.
  *
@@ -383,7 +430,15 @@ data class Banner(
  * texto que ya no se ve.
  */
 data class ShellState(
-    val screens: ScreenStack = ScreenStack.initial(),
+    /**
+     * Las pilas de las pestañas raiz, con la activa dentro.
+     *
+     * [screens] sigue siendo la pila que se navega; el cambio es que ahora hay
+     * una por pestaña. `Esc` retrocede dentro de la pestaña activa y, en su
+     * raiz, vuelve a la pestaña desde la que se entro; INICIO es la raiz del
+     * programa y alli `Esc` pide confirmacion de salida.
+     */
+    val tabs: TabStacks = TabStacks.initial(),
     val focus: Focus = Focus(),
     val contacts: List<ContactRow> = emptyList(),
     /** Se pidio la lista y ya volvio (aunque este vacia). */
@@ -405,7 +460,39 @@ data class ShellState(
     /** Se pulso Ctrl-C una vez: la segunda sale. */
     val quitArmed: Boolean = false,
     val quitting: Boolean = false,
+    /**
+     * El desplazamiento de cada lista.
+     *
+     * Se indexa por [ListId] y no por pantalla: el offset de los mensajes no se
+     * pierde al irse a DIAGNOSTICO, y el de contactos no se mezcla con el de
+     * logs. Un id ausente significa "arriba del todo", salvo MESSAGES, que
+     * arranca con `followEnd` al abrir un hilo.
+     */
+    val scroll: Map<ListId, ScrollState> = emptyMap(),
+    /**
+     * Instante del ultimo [ShellAction.Tick].
+     *
+     * El reducer no lee el reloj: el bucle se lo inyecta. Es la base con la que
+     * se calcula `expiresAtMs`, de modo que dos ejecuciones con los mismos
+     * ticks producen exactamente el mismo estado.
+     */
+    val nowMs: Long = 0L,
+    /** Aviso efimero; el renderer lo esconde al pasar `nowMs >= expiresAtMs`. */
+    val toast: Toast? = null,
+    /** Desplazamiento del overlay de ayuda (M5: ventana, no recorte). */
+    val helpOffset: Int = 0,
+    /**
+     * Valor EFECTIVO del tracking del raton en este frame (change B).
+     *
+     * No es el flag de la linea de comandos: `auto` ya se resolvio contra la
+     * viabilidad de la TUI y el soporte del terminal. `?` lo muestra tal cual, y
+     * el renderer NO pinta nada distinto por el (el raton no anade pixeles).
+     */
+    val mouse: Boolean = false,
 ) {
+
+    /** La pila de la pestaña activa. La navegacion sigue siendo una [ScreenStack]. */
+    val screens: ScreenStack get() = tabs.current
 
     /** La pantalla que se pinta. */
     val screen: Screen get() = screens.current
@@ -430,6 +517,22 @@ data class ShellState(
             Screen.COMPARTIR, Screen.FRASE, Screen.DIAGNOSTICO -> false
         }
 
+    /**
+     * Hace falta otro `Tick` para que la pantalla siga siendo verdad.
+     *
+     * Solo hay temporizador si hay un toast vivo (o pendiente de limpiar), un
+     * envio en vuelo o una conexion intentandose. Sin eso la TUI sigue dirigida
+     * por eventos: ni un repintado de mas.
+     */
+    val needsTick: Boolean
+        get() = toast != null ||
+            conversation?.sending == true ||
+            status.link == LinkState.CONNECTING ||
+            status.link == LinkState.RECONNECTING
+
+    /** El toast que aun no ha caducado segun [nowMs]. */
+    fun visibleToast(nowMs: Long): Toast? = toast?.takeIf { nowMs < it.expiresAtMs }
+
     /** La lista de INICIO ya filtrada por [filter], sin tocar el estado. */
     fun filteredContacts(): List<ContactRow> {
         val needle = filter.trim()
@@ -443,6 +546,21 @@ data class ShellState(
     /** El contacto con [peer], o `null`. */
     fun contact(peer: IdentityId): ContactRow? =
         contacts.firstOrNull { it.identityId == peer }
+
+    /** El scroll de [id]; el de por defecto es "arriba del todo". */
+    fun scrollOf(id: ListId): ScrollState = scroll[id] ?: ScrollState()
+
+    /**
+     * Las lineas de log que pasan el filtro de canal.
+     *
+     * La lista, el foco y el scroll tienen que mirar la MISMA coleccion o el
+     * cursor apuntaria a una fila que no se pinta. Por eso el filtro vive aqui y
+     * no en la vista.
+     */
+    fun visibleLogs(): List<LogRow> {
+        val filtro = logFilter ?: return logs
+        return logs.filter { it.channel == filtro }
+    }
 
     /** El mensaje seleccionado en la conversacion, si el foco esta en la lista. */
     fun selectedMessage(): MessageRow? {

@@ -54,6 +54,9 @@ object KeyCodec {
      */
     fun decodeSequence(sequence: String): KeyStroke? {
         if (sequence.isEmpty()) return null
+        // Defensa: el SGR del raton empieza por `ESC[<` y NUNCA es una tecla.
+        // El bucle ya lo desvia a `MouseCodec`; esto cubre una llamada directa.
+        if (sequence.startsWith("\u001b[<")) return null
         if (sequence == "\u001b") return KeyStroke(Key.Escape)
         if (sequence == "\u001b\r" || sequence == "\u001b\n") {
             return KeyStroke(Key.Enter, setOf(KeyModifier.ALT))

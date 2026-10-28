@@ -58,8 +58,28 @@ class DesktopOptionsModesTest {
     @Test
     fun `usage menciona los modos y ascii`() {
         val usage = DesktopOptions.usage()
-        listOf("--tui", "--accessible", "--no-tui", "--ascii").forEach { flag ->
+        listOf("--tui", "--accessible", "--no-tui", "--ascii", "--theme").forEach { flag ->
             assertTrue(usage.contains(flag), "usage() debe mencionar '$flag'")
+        }
+    }
+
+    /**
+     * `--theme mono` es la capacidad de color minima, no un tema configurable.
+     *
+     * MONO no emite SGR: la jerarquia la hacen los glifos. `color` y `auto` son
+     * el defecto (decide `NO_COLOR`/`TERM`/`COLORTERM`).
+     */
+    @Test
+    fun `theme mono apaga el color y los valores desconocidos fallan`() {
+        assertTrue(DesktopOptions.parse(arrayOf("--theme", "mono")).themeMono, "mono")
+        assertFalse(DesktopOptions.parse(arrayOf("--theme", "color")).themeMono, "color")
+        assertFalse(DesktopOptions.parse(arrayOf("--theme", "auto")).themeMono, "auto")
+        assertFalse(DesktopOptions.parse(emptyArray()).themeMono, "defecto")
+        assertThrows(IllegalArgumentException::class.java) {
+            DesktopOptions.parse(arrayOf("--theme", "neon"))
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            DesktopOptions.parse(arrayOf("--theme"))
         }
     }
 
