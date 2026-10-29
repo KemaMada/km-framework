@@ -1,9 +1,12 @@
 package com.km.transport
 
 import com.km.model.IdentityId
+import com.km.node.ChainedLinks
+import com.km.node.ChainedTransport
 import com.km.node.PeerContext
 import com.km.node.PeerTransportManager
 import com.km.node.TransportBackend
+import com.km.node.TransportChain
 
 /**
  * Motor + manager + drivers + compositor, en una sola instancia.
@@ -123,6 +126,88 @@ class RelayClientStack private constructor(
 
     companion object {
         /**
+         * Compone una pila cuyo `Transport` es [ChainedTransport].
+         *
+         * ## Invariante que se exige aqui
+         *
+         * El ULTIMO eslabon de la cadena tiene que ser ESTE motor. El relay es
+         * el suelo: si la cadena terminara en otro backend, un fallo de todos
+         * los medios no encontraria el socket autenticado y la sesion se
+         * quedaria sin medio sin que nada lo dijera. Se comprueba por IDENTIDAD
+         * (`===`), no por nombre.
+         *
+         * ## Una cadena POR PAR
+         *
+         * [chainFor] es el accessor que usa el adaptador. Una cadena compartida
+         * por varios pares haria que el establecimiento del segundo robara la
+         * autoridad del primero ([TransportChain.selected] es un unico slot).
+         * Aqui se acepta una [chain] de referencia para el caso de un solo par y
+         * se permite sustituir el accessor; el llamante que compone varios pares
+         * DEBE pasarlo.
+         */
+        fun composeChained(
+            transport: JvmRelayTransport,
+            manager: PeerTransportManager,
+            chain: TransportChain,
+            chainFor: (IdentityId) -> TransportChain? = { chain },
+            links: ChainedLinks = ChainedLinks.NONE,
+        ): ChainedRelayStack {
+            require(chain.last === transport) {
+                "el ultimo eslabon de la cadena debe ser el motor del relay; era ${chain.last.name}"
+            }
+            val relay = compose(transport, manager)
+            val chained = ChainedTransport(
+                relay = transport,
+                chainFor = chainFor,
+                links = links,
+            )
+            return ChainedRelayStack(relay = relay, chain = chain, transport = chained)
+        }
+
+        /**
+         * Compone la pila cuando el manager ENRUTA datos por una cadena.
+         *
+         * ## Por que existe esta entrada y no se relaja [compose]
+         *
+         * En el tier P2P el manager del nucleo tiene que enviar los bytes de
+         * sesion por el medio activo del par. Para eso su backend es un
+         * `PeerRouteBackend`, no el motor del relay. Relajar [compose] haria
+         * que el modo `off` pudiera componerse con un backend cualquiera, y esa
+         * comprobacion es justo la que impide dos motores en la misma pila.
+         *
+         * Aqui el invariante se enuncia sobre el ROUTER: su suelo tiene que ser
+         * ESTE motor y el manager tiene que gobernar el router. Las dos cosas
+         * por identidad (`===`). Los drivers siguen hablando con el motor, que
+         * es el unico dueno del socket.
+         *
+         * @throws IllegalArgumentException si el router no envuelve este motor
+         *   o si el manager no gobierna el router.
+         */
+        fun composeRouted(
+            transport: JvmRelayTransport,
+            manager: PeerTransportManager,
+            route: com.km.transport.p2p.PeerRouteBackend,
+        ): RelayClientStack {
+            require(route.relay === transport) {
+                "el router debe envolver ESTE motor del relay; envolvia ${route.relay.name}"
+            }
+            require(manager.backend() === route) {
+                "el manager debe gobernar el router; governaba ${manager.backend().name}"
+            }
+            return RelayClientStack(
+                transport = transport,
+                manager = manager,
+                conductorFactory = { ctx ->
+                    RelayPeerChannelDriver(
+                        manager = manager,
+                        engine = transport,
+                        localIdentity = transport.relayIdentityId(),
+                    ).forPeer(ctx)
+                },
+            )
+        }
+
+        /**
          * Compone la pila sobre un motor YA CONSTRUIDO.
          *
          * @throws IllegalArgumentException si [manager] no tiene este motor por
@@ -153,3 +238,18 @@ class RelayClientStack private constructor(
         }
     }
 }
+/**
+ * Las tres piezas de una pila encadenada.
+ *
+ * Es un tipo y no un `Triple` para que el orden de los componentes no se pueda
+ * confundir en el sitio de uso: `relay` es la pila de control, `chain` la
+ * cadena de un par y `transport` la unica instancia que el cliente inyecta.
+ */
+class ChainedRelayStack(
+    /** Pila de relay: motor, manager y drivers. */
+    val relay: RelayClientStack,
+    /** Cadena configurada para el par de referencia. */
+    val chain: TransportChain,
+    /** `Transport` de 11 metodos que ve el cliente. */
+    val transport: ChainedTransport,
+)

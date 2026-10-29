@@ -1,5 +1,6 @@
 package com.km.webrtc
 
+import com.km.config.IceConfig
 import com.km.model.IdentityId
 import com.km.node.TransportBackend
 import com.km.node.TransportEventCallbacks
@@ -17,6 +18,7 @@ import dev.onvoid.webrtc.RTCDataChannelObserver
 import dev.onvoid.webrtc.RTCDataChannelState
 import dev.onvoid.webrtc.RTCIceCandidate
 import dev.onvoid.webrtc.RTCIceConnectionState
+import dev.onvoid.webrtc.RTCIceServer
 import dev.onvoid.webrtc.RTCIceGatheringState
 import dev.onvoid.webrtc.RTCOfferOptions
 import dev.onvoid.webrtc.RTCPeerConnection
@@ -61,8 +63,41 @@ import java.util.concurrent.ConcurrentHashMap
  * </pre>
  */
 class RealWebRtcTransport(
-    private val iceServers: List<String> = emptyList(),
+    /**
+     * Servidores ICE a usar.
+     *
+     * El default es HOST-ONLY: sin STUN ni TURN, libwebrtc solo genera
+     * candidatos locales. Es el comportamiento historico del modulo y el que
+     * conserva `KM_DESKTOP_P2P=off`, que ni siquiera construye este objeto.
+     *
+     * El valor llega de `km-core` ([IceConfig]) y no de una lista literal: la
+     * credencial de TURN no puede estar en el codigo ni en un recurso.
+     */
+    private val iceConfig: IceConfig = IceConfig.hostOnly(),
 ) : TransportBackend {
+
+    /** Si el medio es host-only (sin STUN/TURN configurado). */
+    val hostOnly: Boolean get() = iceConfig.isHostOnly
+
+    /**
+     * Los `RTCIceServer` que se aplicarian a una PeerConnection nueva.
+     *
+     * Existe para que el binding y el test usen la MISMA traduccion; si el test
+     * construyera su propia lista, probaria al test.
+     */
+    fun iceServersSnapshot(): List<RTCIceServer> = rtcIceServersFor(iceConfig)
+
+    /**
+     * Servidores que se aplicaron a la ULTIMA PeerConnection creada.
+     *
+     * La `RTCConfiguration` no se puede leer de vuelta desde webrtc-java; sin
+     * este registro, un test no podria distinguir "el binding usa la config"
+     * de "el binding usa `emptyList()` y el snapshot es decorativo".
+     */
+    private val appliedIce = java.util.concurrent.atomic.AtomicReference<List<RTCIceServer>>(emptyList())
+
+    /** @see appliedIce */
+    fun appliedIceServers(): List<RTCIceServer> = appliedIce.get()
 
     override var eventCallbacks: TransportEventCallbacks = TransportEventCallbacks()
 
@@ -212,11 +247,11 @@ class RealWebRtcTransport(
         }
         return try {
             val config = RTCConfiguration().apply {
-                this.iceServers = emptyList() // host-only: sin STUN/TURN en 3N.1
-                if (iceServers.isNotEmpty()) {
-                    // 3N.3: aqui se configurarian RTCIceServer para STUN/TURN.
-                }
+                // STUN/TURN REALES desde la configuracion. Lista vacia = la
+                // PeerConnection queda host-only; no se inventa ningun servidor.
+                this.iceServers = iceServersSnapshot()
             }
+            appliedIce.set(config.iceServers.toList())
             // Epoch递增 ANTES de crear el observer, para que los callbacks
             // capturen la generation vigente desde su primer evento.
             val generation = nextGeneration(key)
@@ -225,8 +260,11 @@ class RealWebRtcTransport(
             peers[key] = PeerResources(pc, generation)
             TransportResult.Success(Unit)
         } catch (e: Throwable) {
+            // Un fallo al crear la PeerConnection es del MEDIO: puede ser el
+            // pool nativo, el codec o la configuracion ICE. STATE detendria la
+            // cadena y el relay nunca se intentaria.
             TransportResult.Failure(
-                TransportError.INVALID_STATE_TRANSITION,
+                TransportError.BACKEND_ERROR,
                 "createPeerConnection fallo: ${e.message}"
             )
         }
@@ -670,9 +708,18 @@ class RealWebRtcTransport(
         pendingLocalIce.remove(key)
     }
 
+    /**
+     * "No listo" es un fallo del MEDIO, no del estado local.
+     *
+     * `BACKEND_NOT_READY` es de categoria TRANSPORT y por tanto autoriza
+     * fallback: un P2P sin `initialize()` debe dejar la sesion en el relay, no
+     * detener la cadena con `INVALID_STATE_TRANSITION` (categoria STATE), que
+     * la cadena interpreta como "no sigas buscando" y deja al cliente sin
+     * medio.
+     */
     private fun notInitialized(): TransportResult<Unit> =
         TransportResult.Failure(
-            TransportError.INVALID_STATE_TRANSITION,
+            TransportError.BACKEND_NOT_READY,
             "RealWebRtcTransport no inicializado (llamar a initialize())"
         )
 
@@ -716,4 +763,36 @@ class RealWebRtcTransport(
      * Permite a tests simular una plataforma distinta. No usar en produccion.
      */
     internal var platformOverride: WebRtcPlatform? = null
+}
+
+/**
+ * Traduce la configuracion de `km-core` a los servidores de webrtc-java.
+ *
+ * ## Por que UNA sola funcion
+ *
+ * El binding y el test tienen que ver la MISMA lista. Una traduccion duplicada
+ * en el test demostraria que el test sabe construir servidores, no que el medio
+ * los usa.
+ *
+ * ## Agrupacion
+ *
+ * Un `RTCIceServer` por grupo con la misma credencial: STUN sin usuario y TURN
+ * con usuario/password. Mezclar todos los URLs en un solo servidor obligaria a
+ * mandar la credencial de TURN tambien a STUN.
+ */
+internal fun rtcIceServersFor(config: IceConfig): List<RTCIceServer> {
+    val servers = mutableListOf<RTCIceServer>()
+    if (config.stunUrls.isNotEmpty()) {
+        servers += RTCIceServer().apply {
+            urls = config.stunUrls
+        }
+    }
+    if (config.turnUrls.isNotEmpty()) {
+        servers += RTCIceServer().apply {
+            urls = config.turnUrls
+            config.turnUsername?.let { username = it }
+            config.turnCredential?.let { password = it }
+        }
+    }
+    return servers
 }

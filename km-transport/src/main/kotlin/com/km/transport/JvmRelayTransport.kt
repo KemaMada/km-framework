@@ -508,6 +508,22 @@ private fun sendFrame(data: ByteArray, to: IdentityId? = null, ack: Boolean): Re
     fun onSignal(handler: (DecodedSignal) -> Unit) { signalHandlers.add(handler) }
 
     /**
+     * Da de baja un consumidor de senales.
+     *
+     * ## Por que existe
+     *
+     * El motor es UNO por proceso y `signalHandlers` no tenia baja: cada
+     * establecimiento P2P (uno por intento, con reintento cada 60 s) dejaba su
+     * handler vivo para siempre. Ademas de crecer sin limite, un handler viejo
+     * seguia procesando senales de un par ya cerrado. La baja la usa
+     * `RelaySignalPort.onSignal`, que devuelve la funcion de cancelacion.
+     *
+     * Quitar un handler ya ausente es un no-op (`CopyOnWriteArrayList`), de
+     * modo que cancelar dos veces —`abort()` es idempotente— no falla.
+     */
+    fun removeSignalHandler(handler: (DecodedSignal) -> Unit) { signalHandlers.remove(handler) }
+
+    /**
      * Envia una `SIGNAL` a [to].
      *
      * ## EL `from` ES SIEMPRE LA IDENTIDAD LOCAL
@@ -526,7 +542,22 @@ private fun sendFrame(data: ByteArray, to: IdentityId? = null, ack: Boolean): Re
      * cable: un envio que no puede llegar a nadie no debe gastar un intento de
      * la politica de reintentos.
      */
-    fun sendSignal(to: IdentityId, kind: String, contactBundle: ByteArray? = null): Result<Unit> {
+    fun sendSignal(
+        to: IdentityId,
+        kind: String,
+        contactBundle: ByteArray? = null,
+        /**
+         * SDP de `sdp_offer`/`sdp_answer`.
+         *
+         * Va DESPUES de [contactBundle] a proposito: las llamadas existentes
+         * pasan el portador como tercer argumento posicional, y mover ese
+         * parametro romperia a todos los consumidores sin ganar nada. Los
+         * llamantes nuevos usan argumentos con nombre.
+         */
+        sdp: String? = null,
+        /** Candidato ICE de `ice_candidate`. */
+        candidate: String? = null,
+    ): Result<Unit> {
         if (stateRef.get() != ConnectionState.ONLINE) {
             return Result.failure(IllegalStateException("transporte no conectado"))
         }
@@ -534,7 +565,7 @@ private fun sendFrame(data: ByteArray, to: IdentityId? = null, ack: Boolean): Re
             log("SIGNAL descartado: no se envia a la propia identidad (SIGNAL_TO_SELF)")
             return Result.failure(IllegalStateException("una SIGNAL no se envia a la identidad local"))
         }
-        val frame = runCatching { codec.encodeSignal(identity, to, kind, contactBundle) }
+        val frame = runCatching { codec.encodeSignal(identity, to, kind, contactBundle, sdp, candidate) }
             .getOrElse { return Result.failure(it) }
         val runner = active
             ?: return Result.failure(IllegalStateException("no hay sesion WebSocket activa"))
@@ -555,7 +586,7 @@ private fun sendFrame(data: ByteArray, to: IdentityId? = null, ack: Boolean): Re
             is DecodedSignal.Invalid -> log("SIGNAL descartado codigo=${decoded.code}")
             is DecodedSignal.UnknownKind -> {
                 // R1: se ignora CON RAZON y la conexion sigue viva.
-                log("SIGNAL ignorado codigo=SIGNAL_UNKNOWN_KIND kind=${decoded.kind}")
+                log("SIGNAL ignorado codigo=${RelayDataCodec.CODE_SIGNAL_UNKNOWN_KIND} kind=${decoded.kind}")
             }
             is DecodedSignal.Known -> {
                 if (decoded.to != identity) {

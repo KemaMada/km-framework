@@ -1163,6 +1163,21 @@ object ShellReducer {
             }
             Reduced(state.copy(contacts = contacts, conversation = conv))
         }
+
+        // El medio de DATOS cambia SIN tocar el enlace al relay. Se guarda el
+        // motivo estable tal cual: traducirlo en el reducer haria que dos
+        // pantallas dijeran cosas distintas del mismo intento.
+        is ClientEvent.MediumChanged -> {
+            val status = state.status.copy(
+                medium = event.medium,
+                mediumReason = event.reason,
+            )
+            note(
+                state.copy(status = status),
+                LogLevel.INFO,
+                "medio ${event.medium} con ${short(event.peer)} motivo=${event.reason}",
+            )
+        }
     }
 
     // ------------------------------------------------------------------

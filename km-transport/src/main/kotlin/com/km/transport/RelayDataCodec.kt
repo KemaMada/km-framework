@@ -68,6 +68,14 @@ class RelayDataCodec(
     private val now: () -> Long = System::currentTimeMillis,
     private val kmEncoder: JsonEncoder = JsonEncoder(),
     private val kmDecoder: JsonDecoder = JsonDecoder(),
+    /**
+     * Los `kind` que ESTA instancia entiende.
+     *
+     * Se inyecta para poder probar el contrato de un cliente ANTIGUO —uno que
+     * solo conoce `contact_exchange`— sin copiar el decodificador en el test.
+     * En produccion vale [KNOWN_SIGNAL_KINDS] y nadie lo cambia.
+     */
+    private val knownSignalKinds: Set<String> = KNOWN_SIGNAL_KINDS,
 ) {
 
     /** `MESSAGE` entrante, con la carga YA en bytes. */
@@ -202,8 +210,23 @@ class RelayDataCodec(
         to: IdentityId,
         kind: String,
         contactBundle: ByteArray? = null,
-    ): String =
-        buildJsonObject {
+        /**
+         * SDP de una oferta o respuesta.
+         *
+         * Limite duro de [MAX_SDP_BYTES]: un SDP real ronda 1-4 KiB; 16 KiB deja
+         * margen para codecs y extensiones sin abrir la puerta a un frame que
+         * el relay tenga que memorizar entero.
+         */
+        sdp: String? = null,
+        /** Candidato ICE ya codificado. Limite [MAX_CANDIDATE_BYTES]. */
+        candidate: String? = null,
+    ): String {
+        // Se valida ANTES de construir el frame: rechazar al emitir significa
+        // que el byte nunca sale; validar solo al leer dejaria el frame enorme
+        // viajando hasta el par.
+        requireSdpFits(sdp, kind)
+        requireCandidateFits(candidate, kind)
+        return buildJsonObject {
             put("type", TYPE_SIGNAL)
             put("messageId", newUuid().toString())
             put("timestamp", now())
@@ -211,7 +234,32 @@ class RelayDataCodec(
             put("to", to.value)
             put("kind", kind)
             if (contactBundle != null) put("contactBundle", encoder.encodeToString(contactBundle))
+            if (sdp != null) put("sdp", sdp)
+            if (candidate != null) put("candidate", candidate)
         }.toString()
+    }
+
+    private fun requireSdpFits(sdp: String?, kind: String) {
+        if (kind == KIND_SDP_OFFER || kind == KIND_SDP_ANSWER) {
+            requireNotNull(sdp) { "$CODE_SIGNAL_SDP_MISSING: $kind necesita sdp" }
+        }
+        if (sdp == null) return
+        val bytes = sdp.toByteArray(Charsets.UTF_8).size
+        require(bytes <= MAX_SDP_BYTES) {
+            "$CODE_SIGNAL_SDP_TOO_LARGE: $bytes bytes > $MAX_SDP_BYTES"
+        }
+    }
+
+    private fun requireCandidateFits(candidate: String?, kind: String) {
+        if (kind == KIND_ICE_CANDIDATE) {
+            requireNotNull(candidate) { "$CODE_SIGNAL_CANDIDATE_MISSING: $kind necesita candidate" }
+        }
+        if (candidate == null) return
+        val bytes = candidate.toByteArray(Charsets.UTF_8).size
+        require(bytes <= MAX_CANDIDATE_BYTES) {
+            "$CODE_SIGNAL_CANDIDATE_TOO_LARGE: $bytes bytes > $MAX_CANDIDATE_BYTES"
+        }
+    }
 
     // ------------------------------------------------------------------
     // Entrada
@@ -286,7 +334,7 @@ class RelayDataCodec(
         val kind = frame.string("kind")
             ?: return DecodedSignal.Invalid(CODE_SIGNAL_ENVELOPE_INVALID)
 
-        if (kind !in KNOWN_SIGNAL_KINDS) {
+        if (kind !in knownSignalKinds) {
             return DecodedSignal.UnknownKind(from, to, kind)
         }
 
@@ -298,9 +346,20 @@ class RelayDataCodec(
                     ?: return DecodedSignal.Invalid(CODE_SIGNAL_BASE64_INVALID)
                 DecodedSignal.Known(from, to, kind, contactBundle = bytes)
             }
-            KIND_SDP_OFFER, KIND_SDP_ANSWER, KIND_ICE_CANDIDATE -> {
-                val text = frame.string("sdp") ?: frame.string("candidate")
-                    ?: return DecodedSignal.Invalid(CODE_SIGNAL_ENVELOPE_INVALID)
+            KIND_SDP_OFFER, KIND_SDP_ANSWER -> {
+                val text = frame.string("sdp")
+                    ?: return DecodedSignal.Invalid(CODE_SIGNAL_SDP_MISSING)
+                if (text.toByteArray(Charsets.UTF_8).size > MAX_SDP_BYTES) {
+                    return DecodedSignal.Invalid(CODE_SIGNAL_SDP_TOO_LARGE)
+                }
+                DecodedSignal.Known(from, to, kind, text = text)
+            }
+            KIND_ICE_CANDIDATE -> {
+                val text = frame.string("candidate")
+                    ?: return DecodedSignal.Invalid(CODE_SIGNAL_CANDIDATE_MISSING)
+                if (text.toByteArray(Charsets.UTF_8).size > MAX_CANDIDATE_BYTES) {
+                    return DecodedSignal.Invalid(CODE_SIGNAL_CANDIDATE_TOO_LARGE)
+                }
                 DecodedSignal.Known(from, to, kind, text = text)
             }
             else -> DecodedSignal.UnknownKind(from, to, kind)
@@ -412,6 +471,27 @@ class RelayDataCodec(
 
         /** La carga no es Base64 estandar. */
         const val CODE_SIGNAL_BASE64_INVALID: String = "SIGNAL_BASE64_INVALID"
+
+        /** El `kind` no pertenece a este dialecto: se ignora y la conexion sigue. */
+        const val CODE_SIGNAL_UNKNOWN_KIND: String = "SIGNAL_UNKNOWN_KIND"
+
+        /** Un `kind` de descripcion llego sin `sdp`. */
+        const val CODE_SIGNAL_SDP_MISSING: String = "SIGNAL_SDP_MISSING"
+
+        /** Un candidato llego sin `candidate`. */
+        const val CODE_SIGNAL_CANDIDATE_MISSING: String = "SIGNAL_CANDIDATE_MISSING"
+
+        /** SDP por encima del limite: no se emite y, si llega, se descarta. */
+        const val CODE_SIGNAL_SDP_TOO_LARGE: String = "SIGNAL_SDP_TOO_LARGE"
+
+        /** Candidato ICE por encima del limite. */
+        const val CODE_SIGNAL_CANDIDATE_TOO_LARGE: String = "SIGNAL_CANDIDATE_TOO_LARGE"
+
+        /** Limite de SDP: 16 KiB en UTF-8. */
+        const val MAX_SDP_BYTES: Int = 16 * 1024
+
+        /** Limite de candidato ICE: 1 KiB en UTF-8. */
+        const val MAX_CANDIDATE_BYTES: Int = 1024
 
         /** Longitud de un `identityId`: 32 bytes en hex. */
         const val IDENTITY_ID_HEX: Int = 64

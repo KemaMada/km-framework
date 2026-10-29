@@ -55,6 +55,20 @@ dependencies {
     //
     implementation("com.km:km-transport:0.1.0-SNAPSHOT")
 
+    // Tier P2P de escritorio (WebRTC sobre webrtc-java).
+    //
+    // SOLO este modulo lo declara: km-core sigue sin WebRTC, km-transport lo
+    // compone por PUERTO (`P2pProvider`) y la app Android no se toca. El
+    // artefacto trae `api(km-core)`, por el mismo `group:artifact:version` que
+    // ya entra por km-transport, sin duplicar clases.
+    //
+    // Publicar antes de un build aislado:
+    //
+    //     ./gradlew :km-core:publishToMavenLocal :km-webrtc:publishToMavenLocal \
+    //               :km-transport:publishToMavenLocal
+    //
+    implementation("com.km:km-webrtc:0.1.0-SNAPSHOT")
+
     // Jackson 2.15.2, la MISMA version que declara km-core.
     //
     // km-core la declara como `implementation`, y eso NO se filtra al

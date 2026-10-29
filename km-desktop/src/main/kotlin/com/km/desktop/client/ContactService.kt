@@ -1,5 +1,6 @@
 package com.km.desktop.client
 
+import com.km.desktop.ContactStore
 import com.km.desktop.DesktopIdentity
 import com.km.desktop.PeerKeyDirectory
 import com.km.desktop.session.SessionCoordinator
@@ -73,6 +74,14 @@ class ContactService(
      * identidad que no los emitio.
      */
     private val peerKeys: () -> PeerKeyDirectory? = { null },
+    /**
+     * Persistencia de los contactos aceptados (`contacts.json`).
+     *
+     * Funcion y no valor por la misma razon que [peerKeys]: un import ocurrido
+     * despues del arranque tiene que escribir en el almacen vivo. `null`
+     * significa "este cliente no persiste contactos" y no es un error.
+     */
+    private val contactStore: () -> ContactStore? = { null },
     private val sessions: SessionCoordinator = SessionCoordinator(),
     /**
      * Se invoca con el `keyId` del OPK que el framework dice haber consumido.
@@ -114,6 +123,7 @@ class ContactService(
         // Solo despues de Accepted: un rechazo no escribe NADA, ni contacto ni
         // clave de firma. El contacto queda listo para autenticar sus ACK.
         registrarClaveDeFirma(accepted.contact)
+        persistirContacto(accepted.contact)
         events.emit(ClientEvent.ContactImported(accepted.contact, accepted.isNew))
         return accepted.contact
     }
@@ -294,6 +304,7 @@ class ContactService(
         // El bundle lo autentico `ContactIntake` (root == from): recien ahora la
         // clave de firma entra al directorio del que sale el resolver de ACK.
         registrarClaveDeFirma(accepted.contact)
+        persistirContacto(accepted.contact)
         events.emit(ClientEvent.ContactImported(accepted.contact, accepted.isNew))
         if (accepted.isNew) {
             coordenador.onContactoRegistrado(from) { emisor, frame -> acceptPrekey(emisor, frame) }
@@ -384,7 +395,34 @@ class ContactService(
         }
         if (raiz == null || raiz.value != contacto.identityRoot.value) {
             events.emit(ClientEvent.Warn("clave de firma NO registrada: raiz incoherente"))
+            return
         }
+        // F2 — la clave de ACK se PERSISTE. Antes solo la guardaba en memoria el
+        // modo linea (`PeerKeyDirectory.save()` era exclusivo de `peer`), asi
+        // que un reinicio del escritorio dejaba todos los ACK sin autenticar
+        // hasta que el usuario re-importara. `save()` reescribe `peers.json`
+        // entero, que es atomico por construccion del propio directorio.
+        if (directorio.persistent() && !directorio.save()) {
+            events.emit(ClientEvent.Warn("clave de firma NO persistida codigo=$CODE_PEERS_SAVE_FAILED"))
+        }
+    }
+
+    /**
+     * Escribe el contacto aceptado en `contacts.json`.
+     *
+     * Un fallo de disco NO deshace el import: el contacto ya verificado sigue
+     * en memoria y puede hablar en esta sesion. Lo que se pierde es su
+     * supervivencia al reinicio, y eso se DICE con un codigo estable.
+     */
+    private fun persistirContacto(contacto: VerifiedContact) {
+        val store = contactStore() ?: return
+        if (store.save(contacto)) return
+        if (store.writesBlocked()) return
+        events.emit(
+            ClientEvent.Warn(
+                "contacto NO persistido codigo=" + (store.lastError ?: ContactStore.CODE_WRITE_FAILED),
+            ),
+        )
     }
 
     private fun loggerDeEventos(): ContactLogger = ContactLogger { level, message ->
@@ -410,5 +448,8 @@ class ContactService(
          * (sesion sin `DH4`) y `oneTimePrekeyIdAt(null)` no se invoca.
          */
         const val OPK_INDICE: Int = 0
+
+        /** La clave de firma no se pudo escribir en `peers.json`. */
+        const val CODE_PEERS_SAVE_FAILED: String = "PEERS_SAVE_FAILED"
     }
 }

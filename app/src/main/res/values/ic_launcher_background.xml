@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Fondo del icono adaptativo: blanco solido. La calavera del dibujo es
+         blanca opaca sobre un circulo negro; con fondo blanco el circulo se lee
+         igual sobre cualquier launcher y no hay bleed del color del sistema. -->
+    <color name="ic_launcher_background">#FFFFFFFF</color>
+</resources>

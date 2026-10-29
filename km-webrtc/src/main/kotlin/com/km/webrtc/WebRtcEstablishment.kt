@@ -77,6 +77,17 @@ class WebRtcEstablishment(
         localIdentity: IdentityId,
         remotePeerId: IdentityId,
     ): TransportResult<Unit> {
+        // D9: el binding lo crea el COORDINADOR una vez por par. Si ya existe
+        // —porque otra ronda lo abrio, o porque el manager lo creo antes—,
+        // `createBinding` del manager devolveria BINDING_ALREADY_EXISTS
+        // (categoria STATE), que detiene la cadena y mataria el fallback a
+        // relay. Aqui se reutiliza y se vuelve a cablear.
+        val existing = peer.manager.getBinding(localIdentity, remotePeerId)
+        if (existing != null && existing.isActive) {
+            peer.attach()
+            state = EstablishmentState.CREATED
+            return TransportResult.Success(Unit)
+        }
         val r = peer.open().let {
             when (it) {
                 is TransportResult.Success -> TransportResult.Success(Unit)

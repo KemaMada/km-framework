@@ -82,6 +82,15 @@ data class ChainAttempt(
 class TransportChain(
     /** Transportes en orden de preferencia. No vacio. */
     val transports: List<TransportBackend>,
+    /**
+     * Reloj del PRESUPUESTO de establecimiento.
+     *
+     * Es inyectable para que el deadline sea verificable sin dormir. Las fases
+     * de un intento (negociar + esperar el canal) comparten este unico reloj:
+     * sin el, cada fase podria consumir su propio timeout y la ronda duraria
+     * el doble de lo declarado.
+     */
+    private val now: () -> Long = System::currentTimeMillis,
 ) : TransportBackend {
 
     init {
@@ -94,6 +103,15 @@ class TransportChain(
 
     /** El primer transporte configurado, que es el que establece. */
     val primary: TransportBackend get() = transports.first()
+
+    /**
+     * El ULTIMO transporte configurado: el suelo de la cadena.
+     *
+     * Existe para que el compositor pueda exigir que el suelo sea el motor de
+     * relay que se le pasa. Sin este accessor, la comprobacion tendria que
+     * deducir el suelo por nombre o por posicion en cada consumidor.
+     */
+    val last: TransportBackend get() = transports.last()
 
     private val attemptObservers = mutableListOf<(ChainAttempt) -> Unit>()
 
@@ -146,6 +164,8 @@ class TransportChain(
      *
      * @param factory crea el establecimiento FRESCO de un medio. Se invoca una
      *   vez por eslabon, y solo si toca intentarlo.
+     * @param timeoutMs presupuesto TOTAL de la ronda, no por fase: se reparte
+     *   entre `negotiate` y `awaitReady` con el mismo reloj.
      */
     fun establish(
         localIdentity: IdentityId,
@@ -157,11 +177,17 @@ class TransportChain(
         // un fallo de la nueva dejaria vivo al ganador viejo.
         releaseSelected()
 
+        // UN deadline para TODA la ronda. Se toma antes del primer eslabon y
+        // se reparte entre las fases que esperan: `negotiate` y `awaitReady`.
+        // Sin esto, `negotiate` (8 s) + `awaitReady` (8 s) podian sumar 16 s y
+        // el fallback dejaba de caber en el presupuesto declarado.
+        val deadlineAt = now() + timeoutMs
+
         val attempts = mutableListOf<EstablishmentAttempt>()
 
         for ((index, backend) in transports.withIndex()) {
             val est = factory(backend)
-            val result = runEstablishment(est, localIdentity, remotePeerId, timeoutMs)
+            val result = runEstablishment(est, localIdentity, remotePeerId, deadlineAt)
             // El nombre que se registra es el del ESTABLECIMIENTO, no el del
             // backend: es el mismo que usa `selected` y `acceptsInbound`. Si se
             // registrara el del backend, el diagnostico podria nombrar un
@@ -201,18 +227,25 @@ class TransportChain(
      * Un `Success` intermedio NO es exito terminal: se sigue hasta
      * [TransportEstablishment.awaitReady], que es el unico que puede afirmar
      * `READY`.
+     *
+     * ## Presupuesto TOTAL
+     *
+     * [deadlineAt] se calcula UNA vez por ronda y cada fase que espera recibe
+     * lo que QUEDA, no el timeout entero. Cuando ya no queda nada se pasa `0`:
+     * un medio que honra el presupuesto vuelve de inmediato (no espera dos
+     * veces), y el relay —cuya condicion es local— responde igual.
      */
     private fun runEstablishment(
         est: TransportEstablishment,
         localIdentity: IdentityId,
         remotePeerId: IdentityId,
-        timeoutMs: Long,
+        deadlineAt: Long,
     ): TransportResult<Unit> {
         val fases: List<() -> TransportResult<Unit>> = listOf(
             { est.initialize() },
             { est.createBinding(localIdentity, remotePeerId) },
-            { est.negotiate() },
-            { est.awaitReady(timeoutMs) },
+            { est.negotiate(remainingMs(deadlineAt)) },
+            { est.awaitReady(remainingMs(deadlineAt)) },
         )
         for (fase in fases) {
             val r = try {
@@ -237,6 +270,14 @@ class TransportChain(
         }
         return TransportResult.Success(Unit)
     }
+
+    /**
+     * Milisegundos que quedan hasta [deadlineAt], nunca negativos.
+     *
+     * Se consulta ANTES de cada fase que espera; el reloj es el mismo con el
+     * que se fijo el deadline, y por eso el total no puede superarlo.
+     */
+    private fun remainingMs(deadlineAt: Long): Long = (deadlineAt - now()).coerceAtLeast(0L)
 
     /**
      * Cierra un establecimiento sin dejar que su fallo se propague.

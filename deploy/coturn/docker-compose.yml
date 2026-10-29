@@ -1,0 +1,46 @@
+# KeyMessage TURN (coturn) — compose
+#
+# `network_mode: host` es DELIBERADO: coturn necesita anunciar el relay con la
+# IP publica del host y abrir el rango UDP 55000-55999. Con la red bridge por
+# defecto habria que publicar cientos de puertos y el candidato `relay` saldria
+# con una IP de contenedor que el par no puede alcanzar.
+#
+# ENTORNO: `/etc/keymessage/turn.env` en 0600, fuera del repo. Ver
+# `docs/developer/p2p.md`. El fichero se MONTA (no se pasa con `env_file`):
+# `docker inspect` muestra el entorno del contenedor, y una credencial no debe
+# estar ahi.
+#
+# Si el host ya tiene un coturn nativo en 3478/5349, este se queda en 3479/5350
+# (los puertos de la plantilla) y no hay conflicto.
+
+services:
+  coturn:
+    image: coturn/coturn:4.6.2-r4
+    container_name: km-coturn
+    restart: unless-stopped
+    network_mode: host
+    entrypoint: ["/bin/sh", "/opt/keymessage/entrypoint.sh"]
+    # El fichero de entorno es 0600: el contenedor tiene que correr con el uid
+    # del dueno (root en un despliegue systemd, o el usuario del host). SIN
+    # esto, `nobody` no puede leerlo y el arranque falla cerrado, que es
+    # preferible a un 0644 con la credencial legible por cualquiera.
+    user: "${KM_TURN_UID:-0}:${KM_TURN_GID:-0}"
+    environment:
+      KM_TURN_ENV_FILE: /run/keymessage-turn.env
+      KM_TURN_TEMPLATE: /etc/coturn/turnserver.conf.template
+      KM_TURN_CONF: /tmp/turnserver.conf
+    volumes:
+      - ./turnserver.conf:/etc/coturn/turnserver.conf.template:ro
+      - ./entrypoint.sh:/opt/keymessage/entrypoint.sh:ro
+      - /etc/keymessage/turn.env:/run/keymessage-turn.env:ro
+      - ./data:/var/lib/coturn
+    healthcheck:
+      test: ["CMD-SHELL", "turnutils_stunclient -p 3479 127.0.0.1 >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

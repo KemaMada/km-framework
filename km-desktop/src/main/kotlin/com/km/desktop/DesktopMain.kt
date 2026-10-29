@@ -10,6 +10,9 @@ import com.km.desktop.client.ExportService
 import com.km.desktop.client.RecoveryService
 import com.km.desktop.config.BootstrapConfig
 import com.km.desktop.core.CoreFactory
+import com.km.desktop.net.P2pMode
+import com.km.desktop.net.P2pPlan
+import com.km.desktop.net.P2pWiring
 import com.km.desktop.platform.ConfigPaths
 import com.km.desktop.platform.OwnerPermissions
 import com.km.desktop.shell.LineModeShell
@@ -35,15 +38,20 @@ import com.km.protocol.ConnectionState
 // que habia aqui en `com.km.desktop` se ELIMINO: dos clientes de wire
 // significarian dos protocolos, dos `MAX_RESEND` y dos vectores de ratchet
 // duplicados. Ver `km-transport/src/main/kotlin/com/km/transport`.
+import com.km.desktop.util.DiagLevel
 import com.km.desktop.util.DiagLog
+import com.km.transport.contact.ContactLogLevel
+import com.km.transport.contact.ContactLogger
 import com.km.identity.LocalDeviceKeyStore
 import com.km.identity.LocalDeviceKeys
+import com.km.node.Medium
 import com.km.desktop.net.EndpointSequence
 import com.km.desktop.net.RelayStackFactory
 import com.km.transport.JvmRelayTransport
 import com.km.transport.RelayClientStack
 import com.km.transport.RelayDataCodec
 import com.km.transport.RelayStatus
+import com.km.transport.p2p.ClientTransportBundle
 import org.jline.reader.LineReader
 import org.jline.reader.LineReaderBuilder
 import org.jline.terminal.Terminal
@@ -193,6 +201,21 @@ sealed class Command {
 }
 
 /**
+ * Lo observable del tier P2P, ya redactado.
+ *
+ * No lleva `IceConfig` a proposito: la pantalla no tiene por que poder llamar
+ * a nada que exponga una credencial. `iceUrls` son las URLs que
+ * `IceConfig.redactedUrls()` ya limpio.
+ */
+data class P2pSnapshot(
+    val mode: String,
+    val reason: String?,
+    val medium: String,
+    val iceUrls: List<String>,
+    val iceHostOnly: Boolean,
+)
+
+/**
  * Estado vivo de la sesion: identidad, pila del rele, core y peers vistos.
  *
  * Existe para que la TUI no tenga ningun campo mutable propio, y para que los
@@ -259,17 +282,54 @@ class Session(
      * operaciones que la necesitan responden con un codigo en vez de inventarla.
      */
     val passphrase: CharArray? = null,
+    /**
+     * La composicion P2P del arranque, o `null` en modo `off`.
+     *
+     * Se guarda entera —y no solo el `transport`— porque al cerrar hay que
+     * soltar el coordinador y los bindings P2P, que no cuelgan del motor del
+     * relay. Un `null` significa exactamente "no se construyo el medio".
+     */
+    val p2p: ClientTransportBundle? = null,
+    /** Modo P2P efectivo de esta ejecucion, para DIAGNOSTICO. */
+    val p2pMode: P2pMode = P2pMode.OFF,
+    /**
+     * Persistencia de contactos, o `null` si esta instancia no persiste.
+     *
+     * Se carga AQUI —al construir la sesion, que es el arranque— y siembra el
+     * [ContactRegistry] de abajo. Un cliente sin ruta (los tests de transporte)
+     * sigue con el registro vacio en memoria, como antes.
+     */
+    val contactStore: ContactStore? = null,
+    /** Volcar `DiagLog` a `km-logs-*.log` al cerrar. La TUI y el modo linea lo activan. */
+    val dumpLogOnClose: Boolean = false,
 ) {
     private val peers = java.util.concurrent.ConcurrentHashMap.newKeySet<IdentityId>()
 
     /**
-     * El registro de contactos del escritorio.
+     * El registro de contactos del escritorio, SEMBRADO desde `contacts.json`.
      *
-     * En MEMORIA y se dice: no hay persistencia de contactos (persist-contact-book
-     * sigue sin apply). El usuario tiene que saber que al cerrar el proceso se
-     * pierden, en vez de descubrirlo.
+     * Antes era solo memoria y al reiniciar se perdia todo: el par seguia
+     * enviando con una sesion que aqui ya no existia y el frame se descartaba.
+     * Ahora la carga ocurre al arrancar; si el fichero no existe se arranca
+     * vacio (primera ejecucion), y si esta corrupto se deja constancia con un
+     * codigo estable sin borrar nada.
      */
-    val contacts: com.km.identity.ContactRegistry = com.km.identity.InMemoryContactRegistry()
+    val contacts: com.km.identity.ContactRegistry = com.km.identity.InMemoryContactRegistry().also { registro ->
+        val store = contactStore ?: return@also
+        val cargados = store.loadInto(registro)
+        if (store.lastError == null) {
+            DiagLog.event("[CONTACT]", "contacts.json cargados=$cargados")
+        } else {
+            // Codigo ESTABLE y sin borrar nada: el operador decide que hacer
+            // con un fichero que no verifica.
+            DiagLog.event(
+                "[CONTACT]",
+                "contacts.json NO cargado codigo=${store.lastError} validos=$cargados " +
+                    "descartados=${store.skipped} (fichero intacto)",
+                DiagLevel.WARN,
+            )
+        }
+    }
 
     private val intake = com.km.identity.ContactIntake(contacts) { localIdentity() }
 
@@ -280,6 +340,12 @@ class Session(
             // El clasificador del wire lo aporta el cliente: km-transport no
             // importa `com.km.frame` (su guard de separacion lo prohibe).
             esPrekey = { wire -> com.km.frame.PrekeyFrame.esPrekey(wire) },
+            // F3 — el sumidero REAL, no `NONE`. Antes un frame de par
+            // desconocido se descartaba sin dejar una sola linea, asi que el
+            // sintoma "el otro no recibe" no tenia rastro. Va por `[SESSION]`
+            // y sin payload: el coordinador nunca recibe el contenido, solo el
+            // tamano y el emisor truncado.
+            logger = loggerDeIntercambio(),
         )
 
     /** Los servicios de contacto: sin terminal y sin protocolo propio. */
@@ -295,6 +361,10 @@ class Session(
         // el contact_exchange registran la clave de firma del contacto aceptado,
         // y el mapa vivo hace que el ACK se autentique sin reconstruir nada.
         peerKeys = { peerKeys },
+        // F2 — persistir contactos en `contacts.json` en cada registro aceptado
+        // (manual e inbound). Sin esto, un reinicio del escritorio perdia el
+        // roster y el par quedaba mudo hasta re-escanear.
+        contactStore = { contactStore },
         onOneTimePreKeyConsumed = { keyId -> deviceKeyStore?.consumeOneTimePreKey(keyId) },
     )
 
@@ -322,6 +392,19 @@ class Session(
     }
 
     private fun localIdentity(): IdentityId? = identity.identityId
+
+    /** F3 — el sumidero del intercambio, sobre el canal `[SESSION]` de [DiagLog]. */
+    private fun loggerDeIntercambio(): ContactLogger = ContactLogger { level, message ->
+        DiagLog.event(
+            "[SESSION]",
+            message,
+            when (level) {
+                ContactLogLevel.INFO -> DiagLevel.INFO
+                ContactLogLevel.WARN -> DiagLevel.WARN
+                ContactLogLevel.ERROR -> DiagLevel.ERROR
+            },
+        )
+    }
 
     /** SHA-256 del `identityId` en hex: la huella corta que muestra `identity`. */
     val identityDigest: String =
@@ -391,6 +474,22 @@ class Session(
     /** Estado del transporte. La TUI no lo interroga por dentro. */
     fun status(): RelayStatus = transport.status()
 
+    /**
+     * Lo que la barra y DIAGNOSTICO pueden decir del tier P2P.
+     *
+     * El medio inicial es `RELAY`: aun no hay enlace P2P establecido, y decir
+     * `P2P` al arrancar seria prometer un medio que todavia no existe. El
+     * motivo es el del modo (`p2p_off`, `p2p_no_ice`) o `null` si hay
+     * configuracion y aun no se intento.
+     */
+    fun p2pSnapshot(): P2pSnapshot = P2pSnapshot(
+        mode = p2pMode.wireName,
+        reason = p2p?.modeReason,
+        medium = Medium.RELAY.name,
+        iceUrls = p2p?.ice?.redactedUrls() ?: emptyList(),
+        iceHostOnly = p2p?.ice?.isHostOnly ?: true,
+    )
+
     /** El registro de sesiones. `peers()` de ahi es lo que muestra `status`. */
     val registry: SecureSessionRegistry get() = core.registry
 
@@ -401,8 +500,36 @@ class Session(
         observadoresInstall.forEach { it() }
         observadoresInstall.clear()
         core.core.stop()
+        // El medio P2P se cierra ANTES que el motor: sus establecimientos
+        // usan el motor para senalizar, y soltar el socket primero los dejaria
+        // sin suelo mientras aun creen tener autoridad.
+        runCatching { p2p?.close() }
         stack.close()
         peers.clear()
+        volcarLogs()
+    }
+
+    /**
+     * F3 — deja `DiagLog` en `km-logs-*.log` junto al almacen, AL SALIR.
+     *
+     * ## POR QUE AL CERRAR Y NO EN CADA LINEA
+     *
+     * Porque el escritorio corre en una terminal que el usuario cierra o corta,
+     * y stderr se pierde con ella. Un volcado unico al salir conserva la traza
+     * de la sesion sin inventar rotacion ni un escritor de log concurrente. El
+     * nombre lleva marca de tiempo (`ExportService.saveLogs`), asi que dos
+     * ejecuciones no se pisan.
+     *
+     * Un fallo de disco NO impide cerrar: se dice por stderr y se sigue.
+     */
+    private fun volcarLogs() {
+        if (!dumpLogOnClose) return
+        runCatching {
+            val ruta = exportService.saveLogs(diagnostics.exportText())
+            System.err.println("logs de la sesion en $ruta")
+        }.onFailure {
+            System.err.println("no se pudieron volcar los logs: ${it.message}")
+        }
     }
 
     /**
@@ -417,6 +544,20 @@ class Session(
      * suscrita al bus.
      */
     fun bind() {
+        // El medio de DATOS se publica como evento y se registra con CODIGO y
+        // URL REDACTADA. Ni candidatos, ni SDP, ni credenciales: el puerto P2P
+        // nunca las entrega aqui, y este es el unico cableado de pantalla.
+        p2p?.onMediumChanged = { peer, medium, reason ->
+            // Canal `[RELAY]`: el escritorio tiene OCHO canales fijados por su
+            // spec y un noveno seria un canal muerto para los filtros. El
+            // prefijo textual distingue el evento del resto del canal.
+            DiagLog.event(
+                "[RELAY]",
+                "medio peer=${DiagLog.truncar(peer.value)} medio=${medium.name} motivo=$reason",
+            )
+            events.emit(ClientEvent.MediumChanged(peer, medium.name, reason))
+        }
+
         // El camino LEGADO se da de alta EXPLICITAMENTE y una sola vez.
         //
         // Sin esto, cablear las dos caras deja el camino en claro sin nada: el
@@ -554,6 +695,28 @@ fun main(args: Array<String>) {
         return
     }
 
+    // ## EL TIER P2P SE RESUELVE ANTES DE TOCAR NADA
+    //
+    // `KM_DESKTOP_P2P` se lee de verdad en la ruta de produccion, no solo en un
+    // test de flags. La configuracion ICE invalida y el modo `on` sin ICE/TURN
+    // son errores de USO (exit 2) y ocurren aqui, antes de abrir el almacen o
+    // el terminal: si el operador pidio P2P obligatorio y no puede haberlo, no
+    // se arranca en silencio por el relay.
+    //
+    // Con `off` NO se parsea `KM_ICE_*`: el rollback tiene que ser
+    // incondicional, y una variable que no se usa no puede tumbar el arranque.
+    val p2pMode = P2pMode.fromEnv()
+    val p2pPlan = try {
+        P2pWiring.planFromEnv()
+    } catch (invalida: IllegalArgumentException) {
+        System.err.println("configuracion ICE invalida: ${invalida.message}")
+        kotlin.system.exitProcess(2)
+    }
+    if (p2pPlan is P2pPlan.Fail) {
+        System.err.println("${p2pPlan.reason}: ${p2pPlan.detail}")
+        kotlin.system.exitProcess(2)
+    }
+
     // La ruta por defecto la decide `ConfigPaths`: XDG en Linux, APPDATA en
     // Windows y ~/Library en macOS. `IdentityKeystore.defaultPath` delega en
     // ella, asi que este arranque y el resto del modulo no pueden discrepar.
@@ -567,6 +730,11 @@ fun main(args: Array<String>) {
     val peersPath = options.peersPath
         ?: keystorePath.toAbsolutePath().parent?.resolve(DesktopOptions.PEERS_FILE_NAME)
         ?: Paths.get(DesktopOptions.PEERS_FILE_NAME)
+    // F2 — `contacts.json` vive junto a `peers.json` (el mismo directorio de
+    // configuracion). Se resuelve del PADRE del keystore, no del cwd: un
+    // escritorio lanzado desde otro directorio tiene que encontrar los suyos.
+    val contactsPath = keystorePath.toAbsolutePath().parent?.resolve(DesktopOptions.CONTACTS_FILE_NAME)
+        ?: Paths.get(DesktopOptions.CONTACTS_FILE_NAME)
     // El directorio que contiene el almacen es material secreto: si ya existe,
     // se asegura antes de escribir nada. Si no existe, lo crea y asegura la
     // primera escritura (`IdentityKeystore.write`).
@@ -583,6 +751,13 @@ fun main(args: Array<String>) {
     if (options.reset && java.nio.file.Files.isRegularFile(peersPath)) {
         java.nio.file.Files.delete(peersPath)
         System.err.println("directorio de peers eliminado: $peersPath")
+    }
+    // `--reset` tambien borra los contactos: un almacen nuevo con el roster del
+    // anterior haria que el escritorio intentara hablar con identidades que ya
+    // no tienen su clave privada.
+    if (options.reset && java.nio.file.Files.isRegularFile(contactsPath)) {
+        java.nio.file.Files.delete(contactsPath)
+        System.err.println("contactos eliminados: $contactsPath")
     }
 
     val terminal = runCatching { TerminalBuilder.builder().build() }.getOrElse {
@@ -675,7 +850,7 @@ fun main(args: Array<String>) {
         val sesion = try {
             gate.run { passphrase ->
                 runCatching {
-                    composeSession(options, keystorePath, peersPath, fuenteFija(passphrase))
+                    composeSession(options, keystorePath, peersPath, contactsPath, fuenteFija(passphrase), p2pMode, p2pPlan)
                 }
             }
         } catch (fallo: Exception) {
@@ -715,7 +890,7 @@ fun main(args: Array<String>) {
         kotlin.system.exitProcess(1)
     }
     val sesion = try {
-        composeSession(options, keystorePath, peersPath, fuente)
+        composeSession(options, keystorePath, peersPath, contactsPath, fuente, p2pMode, p2pPlan)
     } catch (e: KeystoreException) {
         out.println(Ansi.red(e.message ?: "no se pudo abrir el almacen"))
         out.flush()
@@ -773,7 +948,10 @@ private fun composeSession(
     options: DesktopOptions,
     keystorePath: Path,
     peersPath: Path,
+    contactsPath: Path,
     source: PassphraseSource,
+    p2pMode: P2pMode,
+    p2pPlan: P2pPlan,
 ): Session {
     // La frase se pide UNA vez y se conserva SOLO para el adaptador del material
     // de dispositivo: cada guardado de OPK reescribe el contenedor cifrado, y
@@ -794,7 +972,15 @@ private fun composeSession(
         relayIdentity = options.relayIdentity,
         log = relayLog(options),
     )
-    val stack = RelayStackFactory.stackFor(transport)
+    // La composicion P2P decide si el manager va sobre el motor (`off`) o sobre
+    // el router que enruta por el medio del par. En `off` devuelve exactamente
+    // el camino de siempre: manager sobre el motor, `transport = relay`.
+    val bundle: ClientTransportBundle = P2pWiring.compose(
+        relay = transport,
+        identity = identity.identityId,
+        plan = p2pPlan,
+    )
+    val stack = bundle.stack
     val peers = PeerKeyDirectory(peersPath).load()
     if (peers.known().isEmpty()) {
         // stderr y no pantalla: esto ocurre antes de que la TUI (o el REPL)
@@ -808,8 +994,8 @@ private fun composeSession(
     val core = CoreFactory().create(
         localIdentity = identity.identityId,
         localPrivateKey = identity.ed25519PrivateKey,
-        transport = transport,
-        manager = stack.manager,
+        transport = bundle.transport,
+        manager = bundle.manager,
         peerPublicKeyResolver = peers.resolver(),
     )
 
@@ -831,8 +1017,21 @@ private fun composeSession(
         // La MISMA frase que abrio el almacen: restaurar y guardar un OPK
         // reescriben el contenedor y no pueden pedirla por otra via.
         passphrase = fraseDePaso,
+        p2p = bundle,
+        p2pMode = p2pMode,
+        // F2 — el roster verificado sobrevive al proceso. La carga ocurre en el
+        // constructor de la sesion y siembra el registro de contactos.
+        contactStore = ContactStore(contactsPath),
+        // F3 — la traza de la sesion queda en `km-logs-*.log` al salir.
+        dumpLogOnClose = true,
     )
     session.bootstraps = options.bootstraps
+    DiagLog.event(
+        "[RELAY]",
+        "p2p modo=${p2pMode.wireName} motivo=${bundle.modeReason ?: "sin-intento"} " +
+            "ice=${if (bundle.ice.isHostOnly) "host-only" else bundle.ice.redactedUrls().size.toString()} " +
+            "p2p=${if (bundle.p2pEnabled) "compuesto" else "no-construido"}",
+    )
     DiagLog.event("[BOOTSTRAP]", "origen=linea-o-entorno destinos=${options.bootstraps.size}")
     DiagLog.event(
         "[CONTACT]",
@@ -1033,6 +1232,9 @@ class DesktopOptions(
         const val RELAY_ENV: String = "KM_RELAY_URL"
         const val RELAY_IDENTITY_ENV: String = "KM_RELAY_IDENTITY"
         const val PEERS_FILE_NAME: String = "peers.json"
+
+        /** F2 — contactos verificados, junto a `peers.json`. */
+        const val CONTACTS_FILE_NAME: String = "contacts.json"
 
         /** Defecto de `--wheel-rows`: tres filas, como una muesca de X11. */
         const val DEFAULT_WHEEL_ROWS: Int = 3

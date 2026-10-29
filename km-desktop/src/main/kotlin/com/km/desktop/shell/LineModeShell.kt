@@ -382,6 +382,8 @@ class LineModeShell(
                     "peer ${if (event.online) "presente en el rele" else "ausente del rele"}: " +
                         event.peer.value.take(16) + "...",
                 )
+            is ClientEvent.MediumChanged ->
+                Ansi.dim("medio ${event.medium} (motivo ${event.reason}) con " + event.peer.value.take(16) + "...")
         }
         out.println(linea)
     }

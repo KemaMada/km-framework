@@ -64,6 +64,18 @@ class StatusBarTest {
     }
 
     @Test
+    fun `el contador de descartes de par desconocido solo aparece cuando hay`() {
+        val sano = StatusBar.row(estado(), width = 100, ascii = true, nowMs = 0L).text
+        assertFalse(sano.contains(" U0"), "cero descartes no ensucia la barra: $sano")
+
+        val conDescartes = estado().copy(
+            status = estado().status.copy(unknownPeerFrames = 7),
+        )
+        val texto = StatusBar.row(conDescartes, width = 100, ascii = true, nowMs = 0L).text
+        assertTrue(texto.contains("S3 K2 U7"), "el contador es visible: $texto")
+    }
+
+    @Test
     fun `un enlace caido usa DANGER y el texto lo dice`() {
         val fila = StatusBar.row(estado(LinkState.DISCONNECTED), width = 88, ascii = false, nowMs = 0L)
         assertEquals(Style.DANGER, fila.style)

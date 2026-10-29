@@ -223,6 +223,35 @@ class ContactExchangeCoordinatorTest {
     }
 
     @Test
+    fun `un frame de par desconocido que se descarta se CUENTA con codigo estable`() {
+        val lineas = mutableListOf<String>()
+        val coordinador = ContactExchangeCoordinator(
+            conocido = { false },
+            esPrekey = ::esPrekeyDeTest,
+            logger = { _, mensaje -> lineas += mensaje },
+        )
+        val frame = ByteArray(77) { 0x5a }
+
+        assertFalse(coordinador.onPrekey(a, frame) { _, _ -> })
+
+        assertEquals(1, coordinador.unknownDropped(), "un frame descartado, contado")
+        assertEquals(1, lineas.size, lineas.toString())
+        assertTrue(lineas.single().contains(ContactExchangeCoordinator.CODE_UNKNOWN_PEER_FRAME), lineas.toString())
+        assertTrue(lineas.single().contains("bytes=77"), lineas.toString())
+        // Sin payload: el coordinador NUNCA recibe el contenido, pero el test
+        // exige que tampoco lo reemita en la traza.
+        assertFalse(lineas.single().contains("5a5a5a"), "la traza no lleva el cuerpo: ${lineas.single()}")
+    }
+
+    @Test
+    fun `un PREKEY retenido NO cuenta como descarte`() {
+        val coordinador = ContactExchangeCoordinator(conocido = { false }, esPrekey = ::esPrekeyDeTest)
+        coordinador.onPrekey(a, prekeyFrame()) { _, _ -> }
+        assertEquals(1, coordinador.retenidos())
+        assertEquals(0, coordinador.unknownDropped(), "retener es el camino bueno, no un descarte")
+    }
+
+    @Test
     fun `un frame por encima del tope no se retiene`() {
         val coordinador = ContactExchangeCoordinator(conocido = { false }, esPrekey = ::esPrekeyDeTest)
         val grande = prekeyFrame() + ByteArray(ContactExchangeCoordinator.MAX_FRAME_BYTES)

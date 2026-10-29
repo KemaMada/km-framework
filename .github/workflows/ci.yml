@@ -1,0 +1,116 @@
+name: CI
+
+# ---------------------------------------------------------------------------
+# Los CUATRO modulos del tier P2P, en un runner limpio.
+#
+# Orden obligatorio: km-core -> km-webrtc -> km-transport -> km-desktop. Los
+# tres primeros se PUBLICAN a mavenLocal porque los consumidores los declaran
+# POR ARTEFACTO (`com.km:km-*`), no como `project(...)`. Sin la publicacion
+# previa, km-desktop falla al resolver y el job se ve rojo por una causa que no
+# es la que se esta probando.
+#
+# LO QUE ESTE WORKFLOW NO PRUEBA: traversal real (ICE/NAT) ni un TURN publico.
+# No hay dos redes distintas en el runner. Los contratos usan backends falsos y
+# el test de ICE real esta gateado por KM_ICE_IT (se salta por defecto). Ver
+# docs/developer/p2p.md.
+# ---------------------------------------------------------------------------
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  jvm:
+    name: tests (JDK 27 / toolchain 11)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # JDK 27 ejecuta Gradle. Los modulos EMITEN bytecode 11 (`jvmToolchain(11)`)
+      # y foojay aprovisiona ese toolchain: `org.gradle.java.home` y
+      # `jvmToolchain` son ortogonales y confundirlos es el error que este paso
+      # evita.
+      - name: JDK 27 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '27'
+
+      - name: Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Permisos de gradlew
+        run: chmod +x ./gradlew
+
+      # El nativo de webrtc-java entra por `runtimeOnly(variantOf(...))` con el
+      # clasificador de la plataforma. Se comprueba ANTES del build para que un
+      # runner con arquitectura inesperada falle con un mensaje util.
+      - name: Plataforma nativa WebRTC
+        run: |
+          echo "os.arch=$(uname -m)"
+          test "$(uname -m)" = "x86_64" || {
+            echo "::error::este workflow asume linux-x86_64 para el nativo de webrtc-java"
+            exit 1
+          }
+
+      - name: Guardia de secretos TURN
+        run: ./deploy/coturn/check-no-secrets.sh
+
+      # ------------------------------------------------------------------
+      # 1. Publicacion en orden. km-webrtc depende de km-core por artefacto;
+      #    km-transport tambien; km-desktop de los dos.
+      # ------------------------------------------------------------------
+      - name: publishToMavenLocal (core -> webrtc -> transport)
+        run: |
+          ./gradlew --no-daemon --console=plain \
+            :km-core:publishToMavenLocal \
+            :km-webrtc:publishToMavenLocal \
+            :km-transport:publishToMavenLocal
+
+      # ------------------------------------------------------------------
+      # 2. Suites. `--continue` recoge TODOS los rojos de la matriz de modulos
+      #    en una sola pasada; el job sigue fallando si alguno lo esta.
+      # ------------------------------------------------------------------
+      - name: tests km-core
+        run: ./gradlew --no-daemon --console=plain :km-core:test
+
+      - name: tests km-webrtc
+        run: ./gradlew --no-daemon --console=plain :km-webrtc:test
+
+      - name: tests km-transport
+        run: ./gradlew --no-daemon --console=plain :km-transport:test
+
+      - name: tests km-desktop
+        run: ./gradlew --no-daemon --console=plain :km-desktop:test
+
+      # El test de ICE real NO se ejecuta aqui: sin KM_ICE_IT se salta. Este
+      # paso lo deja escrito para que nadie lea "CI verde" como "traversal
+      # probado".
+      - name: Declaracion de alcance
+        run: |
+          echo "CI no prueba ICE/NAT real ni TURN publico." | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "El test de ICE real esta gateado por KM_ICE_IT=1 y se omite." | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Informes de test
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: |
+            km-core/build/reports/tests/test
+            km-webrtc/build/reports/tests/test
+            km-transport/build/reports/tests/test
+            km-desktop/build/reports/tests/test
+          if-no-files-found: warn
+          retention-days: 7

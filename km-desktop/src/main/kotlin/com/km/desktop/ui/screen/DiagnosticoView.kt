@@ -3,6 +3,7 @@ package com.km.desktop.ui.screen
 import com.km.desktop.ui.FocusField
 import com.km.desktop.ui.LogLevel
 import com.km.desktop.ui.MouseIntent
+import com.km.desktop.ui.P2pStatus
 import com.km.desktop.ui.Sanitizer
 import com.km.desktop.ui.ShellReducer
 import com.km.desktop.ui.ShellState
@@ -50,6 +51,30 @@ internal object DiagnosticoView {
                 "  claves " + status.ackKeys,
             style = Style.MUTED,
         )
+        // El MEDIO de datos, separado del glifo del enlace. El motivo es un
+        // codigo estable y las URLs ya vienen redactadas: aqui no se formatea
+        // ninguna credencial.
+        if (status.unknownPeerFrames > 0) {
+            // F3 — el sintoma que antes era invisible: frames de un par que el
+            // escritorio NO conoce. No lleva payload ni claves, solo el numero.
+            cells += BodyRow(
+                "! descartes de par desconocido " + status.unknownPeerFrames +
+                    " (UNKNOWN_PEER_FRAME): el emisor no esta en contacts.json",
+                style = Style.WARNING,
+            )
+        }
+        if (status.p2pMode != null || status.medium != null) {
+            cells += BodyRow(
+                P2pStatus.diagnostic(
+                    mode = status.p2pMode,
+                    reason = status.mediumReason,
+                    medium = status.medium,
+                    urls = status.iceUrls,
+                    hostOnly = status.iceHostOnly,
+                ),
+                style = Style.MUTED,
+            )
+        }
         status.nextRetryInMs?.let {
             cells += BodyRow("proximo intento en " + it + " ms", style = Style.WARNING)
         }

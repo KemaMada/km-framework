@@ -62,6 +62,21 @@ sealed class ClientEvent {
 
     /** Un peer aparece o desaparece del rele (presencia DECLARADA, no disponibilidad). */
     data class PeerPresence(val peer: IdentityId, val online: Boolean) : ClientEvent()
+
+    /**
+     * Cambio del medio de DATOS de un par.
+     *
+     * No es el enlace al relay: el glifo `P2P[o|~|x|?]` sigue significando
+     * "hay socket autenticado con el relay". Este evento dice por donde salen
+     * los bytes de sesion (`P2P` o `relay`) y el motivo estable del ultimo
+     * intento (`p2p_ready`, `p2p_timeout`, ...). El ACK sigue viajando por
+     * relay y este evento NO lo afirma.
+     */
+    data class MediumChanged(
+        val peer: IdentityId,
+        val medium: String,
+        val reason: String,
+    ) : ClientEvent()
 }
 
 /**
@@ -127,6 +142,8 @@ class ClientEvents {
         is ClientEvent.TransportState -> "conexion: ${event.state}"
         is ClientEvent.PeerPresence ->
             "peer ${if (event.online) "presente" else "ausente"}: ${event.peer.value.take(16)}…"
+        is ClientEvent.MediumChanged ->
+            "medio ${event.medium} con ${event.peer.value.take(8)}… motivo=${event.reason}"
     }
 
     companion object {

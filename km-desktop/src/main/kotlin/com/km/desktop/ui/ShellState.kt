@@ -343,6 +343,30 @@ data class StatusLine(
     val localIdentityId: String? = null,
     val sessions: Int = 0,
     val ackKeys: Int = 0,
+    /**
+     * F3 — frames de pares DESCONOCIDOS descartados por el intercambio.
+     *
+     * Es el sintoma de "el par no esta registrado aqui": el frame cifrado no es
+     * un PREKEY, no se puede retener y se tira. Un cero es lo normal; un numero
+     * que crece dice que el escritorio esta perdiendo trafico de un par que no
+     * conoce.
+     */
+    val unknownPeerFrames: Int = 0,
+    /**
+     * Medio de DATOS (`P2P` o `RELAY`), o `null` mientras nadie lo declare.
+     *
+     * Es un campo distinto de [link]: el glifo describe el enlace al relay y
+     * este describe por donde salen los bytes de sesion. El ACK sigue por relay.
+     */
+    val medium: String? = null,
+    /** Motivo estable del ultimo intento P2P (`p2p_ready`, `p2p_timeout`, ...). */
+    val mediumReason: String? = null,
+    /** Modo P2P efectivo (`off`, `auto`, `on`), para DIAGNOSTICO. */
+    val p2pMode: String? = null,
+    /** URLs ICE ya redactadas. Nunca llevan credencial. */
+    val iceUrls: List<String> = emptyList(),
+    /** Si la configuracion ICE es host-only (lista vacia), para decirlo sin inventar. */
+    val iceHostOnly: Boolean = true,
 ) {
     /** El indicador de la cabecera. Nunca se pinta sin etiqueta textual al lado. */
     val glyph: String get() = link.glyph

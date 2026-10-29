@@ -1,0 +1,27 @@
+[Unit]
+Description=KeyMessage TURN (coturn)
+Documentation=file:///opt/keymessage/deploy/coturn/README.md
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# El fichero de entorno es 0600 y NO se pasa como `-e`: se monta dentro del
+# contenedor. `EnvironmentFile` aqui solo aporta la ruta.
+Environment=KM_TURN_ENV_FILE=/run/keymessage-turn.env
+WorkingDirectory=/opt/keymessage/deploy/coturn
+ExecStart=/usr/bin/docker compose up --abort-on-container-exit coturn
+ExecStop=/usr/bin/docker compose down
+Restart=on-failure
+RestartSec=5s
+TimeoutStartSec=60
+# Endurecimiento minimo: el contenedor necesita host network para el relay.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/docker
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

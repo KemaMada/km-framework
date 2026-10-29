@@ -81,6 +81,9 @@ class ManagedWebRtcPeer(
      */
     @Volatile var onTransportData: ((ByteArray) -> Unit)? = null
 
+    @Volatile
+    private var attached = false
+
     private val localSdpLatch = CountDownLatch(1)
     @Volatile private var pendingLocalSdp: String? = null
 
@@ -107,8 +110,18 @@ class ManagedWebRtcPeer(
      * que traducen eventos de WebRTC a acciones sobre el manager.
      */
     fun attach() {
+        // IDEMPOTENTE: `wireTransportEvents` COMPONE sobre los callbacks que ya
+        // haya. Llamarlo dos veces duplicaria la cadena entera y cada byte
+        // inbound se entregaria dos veces (`onApplicationData`, `receivedData`).
+        // El flag es el unico punto que lo impide; el reenganche tras un cierre
+        // real vuelve a construir el peer desde cero.
+        if (attached) return
+        attached = true
         wireTransportEvents()
     }
+
+    /** Si este conductor ya cableo los eventos. Solo lectura. */
+    val isAttached: Boolean get() = attached
 
     /**
      * Traduce los eventos del backend WebRTC a acciones sobre el manager.

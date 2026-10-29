@@ -73,6 +73,22 @@ class ContactExchangeCoordinator(
     private val retenidos = LinkedHashMap<IdentityId, Retenido>()
 
     /**
+     * Frames de un par DESCONOCIDO que se descartaron sin retener.
+     *
+     * ## POR QUE ES UN CONTADOR Y NO SOLO UNA LINEA DE LOG
+     *
+     * Porque el fallo que este contador mide es INVISIBLE: un mensaje cifrado
+     * que llega de un par que el receptor no tiene registrado no es un PREKEY,
+     * asi que no se puede retener, y se tira. Sin un numero en la pantalla, el
+     * sintoma es "el otro no recibe" y no hay nada que mirar. Con el numero, un
+     * operador ve que el escritorio esta descartando frames y sabe que el
+     * problema es de identidad/contactos, no de cifrado.
+     *
+     * Se incrementa bajo [candado], asi que no necesita atomico propio.
+     */
+    private var descartesDesconocidos: Int = 0
+
+    /**
      * EL candado UNICO de la senalizacion: uno para el SIGNAL y para el PREKEY,
      * y la entrega ocurre DENTRO. Con dos candados, un PREKEY y un
      * `contact_exchange` que llegan a la vez podrian cruzarse.
@@ -98,18 +114,20 @@ class ContactExchangeCoordinator(
                 return true
             }
             if (!esPrekey(wire)) {
+                descartesDesconocidos++
                 logger.log(
-                    ContactLogLevel.INFO,
-                    "[SESSION] frame de par desconocido que NO es PREKEY: no se retiene peer=" +
-                        from.value.take(16),
+                    ContactLogLevel.WARN,
+                    "[SESSION] $CODE_UNKNOWN_PEER_FRAME peer=${from.value.take(16)} " +
+                        "bytes=${wire.size} motivo=no-es-prekey",
                 )
                 return false
             }
             if (wire.size > maxFrameBytes) {
+                descartesDesconocidos++
                 logger.log(
                     ContactLogLevel.WARN,
-                    "[SESSION] PREKEY descartado por tamano bytes=${wire.size} " +
-                        "limite=$maxFrameBytes peer=${from.value.take(16)}",
+                    "[SESSION] $CODE_UNKNOWN_PEER_FRAME peer=${from.value.take(16)} " +
+                        "bytes=${wire.size} motivo=prekey-demasiado-grande limite=$maxFrameBytes",
                 )
                 return false
             }
@@ -186,6 +204,21 @@ class ContactExchangeCoordinator(
     }
 
     /**
+     * Frames de pares DESCONOCIDOS descartados desde el arranque.
+     *
+     * Es el contador que se pinta en la barra y en DIAGNOSTICO. No cuenta los
+     * RETENIDOS: retener es el camino bueno de la carrera SIGNAL/PREKEY.
+     */
+    fun unknownDropped(): Int {
+        candado.lock()
+        try {
+            return descartesDesconocidos
+        } finally {
+            candado.unlock()
+        }
+    }
+
+    /**
      * Barrido PEREZOSO: no hay temporizador; lo caducado se va en la siguiente
      * operacion. Basta porque lo unico que importa es que un frame caducado no
      * se entregue, y eso lo garantiza el `barrer()` que precede a toda entrega.
@@ -204,5 +237,13 @@ class ContactExchangeCoordinator(
 
         /** El frame retenido no pasa de 8 KiB. */
         const val MAX_FRAME_BYTES: Int = 8 * 1024
+
+        /**
+         * Codigo ESTABLE del frame de un par desconocido que se descarta.
+         *
+         * Es lo que permite `grep UNKNOWN_PEER_FRAME` en una traza real. Va en
+         * el mensaje y no en un campo aparte porque el sumidero es texto.
+         */
+        const val CODE_UNKNOWN_PEER_FRAME: String = "UNKNOWN_PEER_FRAME"
     }
 }

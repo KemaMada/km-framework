@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <!-- La identidad y el material local NO se respaldan: si se restauraran en
+         otro dispositivo, dos nodos acabarian compartiendo la misma clave de
+         firma, que es justo el fallo que este cambio cierra. Ademas, la clave
+         maestra de EncryptedSharedPreferences vive en el AndroidKeyStore del
+         dispositivo y no se restaura, de modo que un restore parcial corromperia
+         el almacen. -->
+    <exclude domain="sharedpref" path="km_identity.xml"/>
+    <exclude domain="sharedpref" path="km_local_keys.xml"/>
+</full-backup-content>

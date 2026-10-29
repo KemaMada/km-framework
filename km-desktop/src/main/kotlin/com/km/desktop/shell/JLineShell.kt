@@ -175,6 +175,7 @@ class JLineShell(
 
     private fun initialState(nowMs: Long): ShellState {
         val status = session.status()
+        val p2p = session.p2pSnapshot()
         return ShellState(
             viewport = writer.size(),
             nowMs = nowMs,
@@ -190,6 +191,14 @@ class JLineShell(
                 localIdentityId = session.identity.identityId.value,
                 sessions = session.sessionPeers().size,
                 ackKeys = session.peerKeys.known().size,
+                unknownPeerFrames = session.exchange.unknownDropped(),
+                // El medio y su motivo son datos del ARRANQUE; los cambios
+                // llegan como `MediumChanged` y el reducer los sustituye.
+                medium = p2p.medium,
+                mediumReason = p2p.reason,
+                p2pMode = p2p.mode,
+                iceUrls = p2p.iceUrls,
+                iceHostOnly = p2p.iceHostOnly,
             ),
         )
     }
@@ -198,9 +207,17 @@ class JLineShell(
     private fun syncCounters() {
         val sesiones = session.sessionPeers().size
         val claves = session.peerKeys.known().size
-        if (state.status.sessions != sesiones || state.status.ackKeys != claves) {
+        val descartes = session.exchange.unknownDropped()
+        if (state.status.sessions != sesiones ||
+            state.status.ackKeys != claves ||
+            state.status.unknownPeerFrames != descartes
+        ) {
             state = state.copy(
-                status = state.status.copy(sessions = sesiones, ackKeys = claves),
+                status = state.status.copy(
+                    sessions = sesiones,
+                    ackKeys = claves,
+                    unknownPeerFrames = descartes,
+                ),
             )
         }
     }

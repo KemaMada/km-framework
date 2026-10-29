@@ -1,5 +1,27 @@
 plugins {
     alias(libs.plugins.kotlin.jvm)
+    // `km-webrtc` se publica para que `km-desktop` lo consuma POR ARTEFACTO.
+    // Declararlo como `project(":km-webrtc")` desde el escritorio y, a la vez,
+    // enganchar `km-core` por artefacto mete el mismo `group:artifact:version`
+    // dos veces con distinto fichero de clase (`Duplicate class`, M8-b).
+    id("maven-publish")
+}
+
+group = "com.km"
+version = "0.1.0-SNAPSHOT"
+
+publishing {
+    publications {
+        create<MavenPublication>("maven") {
+            groupId = "com.km"
+            artifactId = "km-webrtc"
+            version = "0.1.0-SNAPSHOT"
+            from(components["java"])
+        }
+    }
+    repositories {
+        mavenLocal()
+    }
 }
 
 java {
@@ -60,7 +82,13 @@ logger.lifecycle("km-webrtc: plataforma nativa detectada -> ${nativePlatform.cla
     "(${nativePlatform.osName}/${nativePlatform.osArch})")
 
 dependencies {
-    implementation(project(":km-core"))
+    // POR ARTEFACTO y `api`: la superficie de este modulo expone tipos de
+    // km-core (`TransportBackend`, `P2pProvider`, `IceConfig`), asi que quien
+    // declare solo `com.km:km-webrtc` tiene que poder nombrarlos. Publicar
+    // km-core antes:
+    //
+    //     ./gradlew :km-core:publishToMavenLocal :km-webrtc:publishToMavenLocal
+    api("com.km:km-core:0.1.0-SNAPSHOT")
 
     // Codigo Java puro de webrtc-java (API + JNI bindings).
     implementation(libs.webrtc.java)

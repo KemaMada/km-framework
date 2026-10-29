@@ -232,9 +232,11 @@ class PeerKeyDirectory(
         return this
     }
 
+    /** Si este directorio tiene donde persistir. Un directorio sin ruta es solo memoria. */
+    fun persistent(): Boolean = path != null
+
     /** Escribe el directorio en [path], si lo tiene. Un directorio sin ruta no se guarda. */
-    fun save(): Boolean {
-        val file = path ?: return false
+    fun save(): Boolean {        val file = path ?: return false
         return runCatching {
             val document = buildJsonObject {
                 put("format", FORMAT)

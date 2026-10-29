@@ -77,6 +77,21 @@ interface TransportEstablishment {
     fun negotiate(): TransportResult<Unit>
 
     /**
+     * Negociacion con el presupuesto RESTANTE de la ronda, en milisegundos.
+     *
+     * Existe para que un medio que BLOQUEA en [negotiate] (por ejemplo,
+     * esperando la SDP local de libwebrtc) no consuma el presupuesto entero y
+     * deje a [awaitReady] sin tiempo. El que lo llama es la cadena, con un
+     * unico reloj inyectado.
+     *
+     * La implementacion por defecto ignora el presupuesto y delega en
+     * [negotiate]: los medios cuya negociacion no espera no necesitan cambiar.
+     * Un medio que lo honre debe pasar `min(budgetMs, suPropioMaximo)` a la
+     * espera real.
+     */
+    fun negotiate(budgetMs: Long): TransportResult<Unit> = negotiate()
+
+    /**
      * Espera a la condicion terminal.
      *
      * Devuelve `Success` solo si alcanza [EstablishmentState.READY]. Un medio

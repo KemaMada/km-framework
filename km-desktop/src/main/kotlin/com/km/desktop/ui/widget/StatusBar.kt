@@ -2,6 +2,7 @@ package com.km.desktop.ui.widget
 
 import com.km.desktop.ui.ConversationView
 import com.km.desktop.ui.LinkState
+import com.km.desktop.ui.P2pStatus
 import com.km.desktop.ui.Presence
 import com.km.desktop.ui.Sanitizer
 import com.km.desktop.ui.ShellState
@@ -36,14 +37,24 @@ object StatusBar {
         val corta = fp?.let { if (Sanitizer.width(it) > 9) Sanitizer.truncate(it, 9) else it }
         val endpoint = status.endpoint?.let { Sanitizer.truncate(it, 22) }
         val link = status.glyph + " " + status.link.label
+        // El medio de DATOS va al lado del enlace y con OTRA etiqueta: `P2P[o]`
+        // sigue siendo "hay socket con el relay". El orden de sacrificio lo
+        // conserva casi hasta el final porque es el dato que el usuario no
+        // puede deducir mirando el glifo.
+        val medio = P2pStatus.mediumLabel(status.medium, status.mediumReason)
         val par = "par[" + presencia(state.conversation) + "]"
-        val counters = "S" + status.sessions + " K" + status.ackKeys
+        // El contador de descartes de par desconocido solo aparece cuando hay
+        // alguno: en una sesion sana es 0 y anadir "U0" a la barra seria ruido
+        // en el unico sitio donde cada columna cuenta.
+        val descartes = if (status.unknownPeerFrames > 0) " U" + status.unknownPeerFrames else ""
+        val counters = "S" + status.sessions + " K" + status.ackKeys + descartes
         val volatil = if (ascii) "VOLATIL" else "VOL\u00c1TIL"
         val spinner = if (enVuelo(state)) g.spinner((nowMs / 120).toInt()) + " " else ""
 
         fun junta(identidad: String?, relay: String?): String = buildList {
             add(spinner + "yo " + (identidad ?: "sin identidad"))
             relay?.let { add("relay " + it) }
+            medio?.let { add(it) }
             add(link)
             add(par)
             add(counters)
