@@ -681,7 +681,7 @@ el portátil de validación:
 | Vía | Comando | Salida | Tamaño | Cuándo usarla |
 |-----|---------|--------|--------|---------------|
 | `installDist` | `./gradlew :km-desktop:installDist` | `km-desktop/build/install/km-desktop/bin/km-desktop` | **~22 MB** repartidos en **34 jars** | Ejecutar en local o en desarrollo: es un launcher con su classpath y los jars resueltos por Gradle. |
-| `shadowJar` | `./gradlew :km-desktop:shadowJar` | `km-desktop/build/libs/km-desktop.jar` | **~36 MB** (36.325.298 bytes, medido el 2026-10-30) en un solo fichero | Distribuir o copiar: un único jar con todo dentro, `Main-Class: com.km.desktop.DesktopMainKt`, bytecode major **55** = Java 11. |
+| `shadowJar` | `./gradlew :km-desktop:shadowJar` | `km-desktop/build/libs/km-desktop.jar` | **~36 MB** (medido el 2026-10-30) en un solo fichero | Distribuir o copiar: un único jar con todo dentro, `Main-Class: com.km.desktop.DesktopMainKt`, bytecode major **55** = Java 11. |
 
 Los dos scripts arrancan el mismo `main`, así que `--relay` y el resto de opciones
 valen igual en ambos casos.

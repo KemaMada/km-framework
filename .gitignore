@@ -41,3 +41,8 @@ keymessage-release.jks
 km-daemon.identity
 *.identity
 km-daemon.conf.json
+
+# Los ficheros de proyecto de IDE (`.idea/`) son estado local de cada máquina:
+# rutas absolutas, SDKs y selección de dispositivo. No se versionan; los
+# ficheros locales se conservan en disco.
+.idea/

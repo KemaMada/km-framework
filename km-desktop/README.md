@@ -388,7 +388,7 @@ en el portátil de validación:
 
 | Vía | Salida | Tamaño | Cuándo usarla |
 |-----|--------|--------|---------------|
-| `shadowJar` | `km-desktop/build/libs/km-desktop.jar` | **~36 MB** (36.325.298 bytes, medido el 2026-10-30), un solo fichero | Distribuir o copiar: `Main-Class: com.km.desktop.DesktopMainKt`, bytecode major **55** = Java 11. |
+| `shadowJar` | `km-desktop/build/libs/km-desktop.jar` | **~36 MB** (medido el 2026-10-30), un solo fichero | Distribuir o copiar: `Main-Class: com.km.desktop.DesktopMainKt`, bytecode major **55** = Java 11. |
 | `installDist` | `km-desktop/build/install/km-desktop/bin/km-desktop` | **~22 MB** en **34 jars** | Ejecutar en local o en desarrollo: launcher con su classpath, jars resueltos por Gradle. |
 
 Ninguna es «la recomendada» de forma absoluta: el fat jar es más cómodo de mover,
