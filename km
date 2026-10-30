@@ -27,8 +27,8 @@
 # apareciendo.
 #   KM_GRADLE_JAVA_HOME=<ruta>
 #                           JDK que ejecuta Gradle. Si no se define, se usa
-#                           JAVA_HOME. El build exige JDK 27; el jar corre en
-#                           JRE 11 o superior.
+#                           JAVA_HOME. El build exige JDK 17 o superior; el jar
+#                           corre en JRE 11 o superior.
 #
 # stdout pertenece al cliente: todo lo que imprime el build va a stderr.
 # ---------------------------------------------------------------------------
@@ -116,7 +116,7 @@ if [ "$necesita_build" -eq 1 ]; then
     echo "km: construyendo km-desktop (publishToMavenLocal de km-core/km-transport + shadowJar)..." >&2
     # El build escribe en stderr: stdout es de la TUI.
     if ! construir 1>&2; then
-        echo "km: el build fallo. Gradle necesita JDK 27 (KM_GRADLE_JAVA_HOME o JAVA_HOME);" >&2
+        echo "km: el build fallo. Gradle necesita JDK 17 o superior (KM_GRADLE_JAVA_HOME o JAVA_HOME);" >&2
         echo "    el jar resultante corre en JRE 11 o superior." >&2
         exit 1
     fi

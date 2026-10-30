@@ -2,4 +2,7 @@
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
   <background android:drawable="@color/ic_launcher_background"/>
   <foreground android:drawable="@mipmap/ic_launcher_foreground"/>
+  <!-- Capa monochrome (API 33+ themed icons): silueta de la calavera en blanco
+       sobre transparente, mismo tamano relativo que en el foreground. -->
+  <monochrome android:drawable="@mipmap/ic_launcher_monochrome"/>
 </adaptive-icon>

@@ -19,7 +19,14 @@
 .cxx
 local.properties
 keymessage-release.jks
-/app/
+
+# La app movil SI se versiona: su codigo y sus recursos son parte del
+# producto y deben poder construirse desde un clon limpio. Lo que NO viaja
+# son los artefactos de build (cubiertos por `/build` y `**/build/`), las
+# rutas locales (`local.properties`) ni el keystore de release (arriba).
+/app/build/
+/app/.gradle/
+/app/.kotlin/
 
 # Par Ed25519 del rele. Contiene la semilla PRIVADA en claro y NUNCA debe
 # entrar en el repositorio: versionarlo publica la identidad del relé y

@@ -20,7 +20,7 @@ todo lo que sabe de protocolo lo pide a `km-core` por sus interfaces públicas.
 
 | Requisito | Versión | Cómo se selecciona |
 |-----------|---------|--------------------|
-| JDK para **ejecutar** Gradle | **27** | `JAVA_HOME`, o `-Dorg.gradle.java.home=<ruta>` en la invocación. |
+| JDK para **ejecutar** Gradle | **17 o superior** | `JAVA_HOME`, o `-Dorg.gradle.java.home=<ruta>` en la invocación. Validado con 17.0.2 y con 27: ver [JDK: lo que se midió](#jdk-lo-que-se-midió). |
 | Gradle | **9.5.0** | `gradle/wrapper/gradle-wrapper.properties` de la raíz del mono-repo. **Solo el wrapper**: `./gradlew`. No hay que instalar nada. |
 | Toolchain de **compilación** | **11** | `jvmToolchain(11)`. El build lo descarga solo si la máquina no lo tiene (`foojay-resolver-convention`). |
 | RAM libre | **≥4 GB** (recomendación) | Empírica, de **una** máquina de prueba (3,6 GB, JDK 27); no es un mínimo universal. Ver [RAM y máquinas ajustadas](#ram-y-máquinas-ajustadas). |
@@ -103,8 +103,8 @@ cd km-framework
 
 `./km` no usa `gradlew run`: compila si falta el jar y ejecuta
 `exec java -jar`, así que los argumentos, la señal y el código de salida son los
-del cliente. En Windows, el equivalente es `km.cmd`. Gradle exige **JDK 27**; el
-jar corre en JRE 11 o superior.
+del cliente. En Windows, el equivalente es `km.cmd`. Gradle necesita **JDK 17 o
+superior** (validado con 17 y con 27); el jar corre en JRE 11 o superior.
 
 Los mismos pasos a mano, si prefieres controlar cada fase:
 
@@ -193,13 +193,126 @@ descartan sin verificar. El comando `peer` es lo que la resuelve. Ver
 
 ---
 
+## Install and run the TUI (instalación y ejecución)
+
+De cero a la TUI, y de ahí a la APK Android. Esta sección es la vía práctica y
+autocontenida; el detalle de teclas, pantallas y protocolo está en el resto del
+documento y en el [README de la raíz](../README.md#install-and-run-the-tui-instalación-y-ejecución).
+
+### Requisitos
+
+| Qué | Mínimo | Nota |
+|-----|--------|------|
+| Sistema operativo | Linux, macOS, Windows 10+ | `./km` es `sh` POSIX (Linux/macOS); en Windows, `km.cmd`. **macOS no se ha ejecutado** en la validación: el script es POSIX y el jar es Java puro, pero no está medido. `km.cmd` tampoco se ha ejecutado en un runner Windows. |
+| Terminal | Color, **≥60x20** | La TUI necesita direccionamiento de cursor y ese tamaño. Por debajo, sin tty o con `TERM=dumb`, se avisa y se usa el modo líneas. El **QR** pide **≥85x43** (85x43..88x46 sin marco; 89x47 y 100x50 con chrome completo). **Sin color no hay QR**: se degrada a texto y `.km`. |
+| JDK para compilar | **17 o superior** | Medido con 17.0.2 y con 27. Ver [JDK: lo que se midió](#jdk-lo-que-se-midió). |
+| JRE para ejecutar | **11 o superior** | El fat jar es bytecode major **55** = Java 11. |
+| Gradle | **9.5.0** | Wrapper incluido en la raíz: no hay que instalar Gradle. |
+| RAM libre | ≥4 GB (recomendación) | Ver [RAM y máquinas ajustadas](#ram-y-máquinas-ajustadas). |
+
+#### JDK: lo que se midió
+
+Este documento decía que Gradle «exige JDK 27». Comprobado el 2026-10-30, no es
+así: con `KM_GRADLE_JAVA_HOME=/home/kemamada/jdk-17.0.2 KM_REBUILD=1 ./km --help`
+el build termina con **exit 0**, sin warnings de Gradle ni de Kotlin, y arranca la
+TUI. Gradle **9.5.0**, Kotlin **2.2.10**, toolchain 11, daemon JVM 17, bytecode
+major 55. El mensaje del lanzador que pedía «JDK 27» era una suposición del script
+y ya está corregido.
+
+> **JDK 17+ para compilar; JRE 11+ para ejecutar. Validado también con 27.**
+
+El JDK 17 sirve igual para la app Android; el APK se validó con el 27 porque es el
+que está instalado en la máquina de validación.
+
+### Clonar y arrancar
+
+```sh
+# Linux / macOS
+git clone https://github.com/KemaMada/km-framework.git
+cd km-framework
+./km
+```
+
+```bat
+:: Windows 10+
+git clone https://github.com/KemaMada/km-framework.git
+cd km-framework
+km.cmd
+```
+
+La **primera vez** el lanzador publica `km-core` y `km-transport` en
+`mavenLocal()` (dos invocaciones a propósito), ejecuta `:km-desktop:shadowJar` y
+arranca `java -jar` con tus argumentos. Después solo reconstruye si falta el jar,
+si `KM_REBUILD=1`, o si hay fuentes o ficheros de build más nuevos. La salida del
+build va a **stderr**; stdout es de la TUI.
+
+| Variable | Efecto |
+|----------|--------|
+| `KM_JAVA=<ruta>` | JVM que ejecuta el jar (por defecto `java` del `PATH`). |
+| `KM_GRADLE_JAVA_HOME=<ruta>` | JDK que ejecuta Gradle (por defecto `JAVA_HOME`); 17+. |
+| `KM_REBUILD=1` | Fuerza el build aunque el jar exista. |
+
+### Flags
+
+| Flag | Efecto |
+|------|--------|
+| `--tui` | TUI de pantallas (defecto). |
+| `--accessible` | Salida lineal append-only, sin repintado: lectores de pantalla. |
+| `--no-tui` | REPL de líneas de G1 (scripts y emergencia). |
+| `--ascii` | Sin glifos Unicode ni color. |
+| `--theme <color\|mono>` | `color` (defecto, respeta `NO_COLOR`/`TERM`) o `mono`, sin SGR: el QR se degrada a texto/`.km`. |
+| `--mouse <auto\|on\|off>` | Ratón (clic izquierdo y rueda). `auto` (defecto) solo con TUI viable y terminal con soporte; `off` devuelve la selección nativa; `on` con `--accessible`/`--no-tui` es error de uso (exit 2). |
+| `--wheel-rows <1..10>` | Filas por muesca de rueda (defecto 3). |
+| `--bootstrap <url>` | Bootstrap, **repetible** y en orden. También `KM_BOOTSTRAPS` o `KM_BOOTSTRAP_URL`. |
+
+El detalle de cada opción, y el resto (`--relay`, `--relay-identity`,
+`--keystore`, `--peers`, `--reset`, `--verbose`), en [Opciones](#opciones) y en
+`./km --help`.
+
+### P2P opcional
+
+Relay-only por defecto. `KM_DESKTOP_P2P=off|auto|on`; **`auto` exige TURN** (con
+solo STUN o sin ICE se queda en relay). Las `KM_ICE_*`
+(`KM_ICE_STUN_URLS`, `KM_ICE_TURN_URLS`, `KM_ICE_TURN_SECRET`,
+`KM_ICE_TURN_USERNAME`, `KM_ICE_TURN_CREDENTIAL`, `KM_ICE_TURN_TTL_SECONDS`) y el
+presupuesto de 8 s están en [`docs/developer/p2p.md`](../docs/developer/p2p.md).
+Con `off` no se parsean. Los secretos **nunca** se imprimen.
+
+### APK Android
+
+Desde la raíz del repositorio (`app/` es un build aparte):
+
+```sh
+./gradlew -p app -Dorg.gradle.java.home=/usr/lib/jvm/java-27-openjdk :assembleRelease
+adb install -r app/build/outputs/apk/release/KeyMessageApp-release.apk
+```
+
+`versionCode 2`, `versionName "1.1"`, `minSdk 28`, `targetSdk 36`; firma con la
+config `release` de `app/build.gradle.kts` (keystore `app/keymessage-release.jks`,
+secretos no documentados). Certificado esperado, SHA-256
+`af12fd06fc0945b7e8c778714f7742eb7616cbcb09ea8fae0faec581f0d712d1`. Requiere
+**JDK 17+** para compilar y `sdk.dir` en `app/local.properties`. `adb install -r`
+conserva datos; un `versionCode` menor falla con `INSTALL_FAILED_VERSION_DOWNGRADE`
+y obliga a desinstalar (se pierde el almacén de identidad del teléfono).
+
+### Troubleshooting
+
+| Síntoma | Qué pasa | Qué hacer |
+|---------|----------|-----------|
+| `Unable to resolve host "keymessage.xyz"` | Sin DNS o sin salida 443; el relé por defecto es `wss://keymessage.xyz/km`. | Revisar la red o usar un relé propio: `./km --relay ws://127.0.0.1:8080/km`. |
+| `PASSPHRASE_WRONG` | La frase no abre el almacén de **este** equipo; no es la frase de recuperación. | Repetir la frase de paso; si no se recuerda, `R` restaura con las 24 palabras (**sobrescribe**; contactos y mensajes no vuelven). |
+| El anillo del icono Android sale recortado | El aro es parte del dibujo (88 de 108 px), mayor que la zona segura de 72/108 del icono adaptativo; el launcher lo recorta con su máscara. Con iconos temáticos (Android 13+) se pinta la capa monocroma y el aro desaparece. | Nada: es el comportamiento del icono adaptativo, no un fallo. |
+| Terminal sin color y no hay QR | Con `--theme mono`, `--ascii` o `NO_COLOR` el QR saldría invertido. | Terminal con color; si no, `.km` o el texto que ofrece la pantalla. |
+
+---
+
 ## Construir
 
 `km-core` y `km-transport` se consumen como **artefactos publicados**, no como
 proyectos del build. Por eso el primer paso es publicarlos:
 
 ```bash
-# desde la raiz del mono-repo; Gradle exige JDK 27
+# desde la raiz del mono-repo; Gradle necesita JDK 17+ (aqui, 27)
 ./gradlew -Dorg.gradle.java.home=/usr/lib/jvm/java-27-openjdk \
           :km-core:publishToMavenLocal :km-transport:publishToMavenLocal
 
@@ -239,7 +352,7 @@ en el portátil de validación:
 
 | Vía | Salida | Tamaño | Cuándo usarla |
 |-----|--------|--------|---------------|
-| `shadowJar` | `km-desktop/build/libs/km-desktop.jar` | **~21 MB**, un solo fichero | Distribuir o copiar: `Main-Class: com.km.desktop.DesktopMainKt`, bytecode major **55** = Java 11. |
+| `shadowJar` | `km-desktop/build/libs/km-desktop.jar` | **~36 MB** (36.325.298 bytes, medido el 2026-10-30), un solo fichero | Distribuir o copiar: `Main-Class: com.km.desktop.DesktopMainKt`, bytecode major **55** = Java 11. |
 | `installDist` | `km-desktop/build/install/km-desktop/bin/km-desktop` | **~22 MB** en **34 jars** | Ejecutar en local o en desarrollo: launcher con su classpath, jars resueltos por Gradle. |
 
 Ninguna es «la recomendada» de forma absoluta: el fat jar es más cómodo de mover,
@@ -271,7 +384,7 @@ en **stderr** y el cliente conserva stdout. Variables del lanzador:
 |---|---|
 | `KM_REBUILD=1` | Fuerza el paso de build aunque el jar exista (Gradle decide qué recompilar). |
 | `KM_JAVA=<ruta>` | JVM que ejecuta el jar; por defecto `java` del `PATH`. |
-| `KM_GRADLE_JAVA_HOME=<ruta>` | JDK que ejecuta Gradle; por defecto `JAVA_HOME`. El build exige JDK 27. |
+| `KM_GRADLE_JAVA_HOME=<ruta>` | JDK que ejecuta Gradle; por defecto `JAVA_HOME`. Debe ser **17+**. |
 
 Al arrancar, si no hay identidad, la TUI ofrece crearla (frase de paso nueva,
 dos veces) o recuperarla desde la frase de 24 palabras. Si ya existe, pide la

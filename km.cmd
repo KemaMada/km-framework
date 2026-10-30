@@ -19,13 +19,13 @@ rem                                (Gradle decide que recompilar).
 rem   KM_NO_REBUILD=1              arranca el jar existente SIN comprobar fuentes.
 rem   KM_JAVA=<ruta>               JVM que ejecuta el jar (por defecto java del PATH).
 rem   KM_GRADLE_JAVA_HOME=<ruta>   JDK que ejecuta Gradle. Si no se define, se usa
-rem                                JAVA_HOME. El build exige JDK 27; el jar corre
-rem                                en JRE 11 o superior.
+rem                                JAVA_HOME. El build exige JDK 17 o superior;
+rem                                el jar corre en JRE 11 o superior.
 rem
 rem DIFERENCIA CON EL LANZADOR POSIX (`km`): en Windows no se compara la fecha de
 rem cada .kt con la del jar (forfiles /D no es fiable en todas las versiones).
 rem Por eso, si el jar YA existe, se reconstruye por defecto: Gradle decide que
-rem recompilar. Eso exige JDK 27 en la maquina; quien solo quiera arrancar el
+rem recompilar. Eso exige JDK 17+ en la maquina; quien solo quiera arrancar el
 rem jar ya construido, sin JDK, debe definir KM_NO_REBUILD=1. Asi nunca se
 rem ejecuta en silencio un jar obsoleto, que es el fallo que se esta cerrando.
 rem
@@ -75,7 +75,7 @@ if not exist "%KM_JAR%" (
 goto run
 
 :build_failed
-echo km: el build fallo. Gradle necesita JDK 27 (KM_GRADLE_JAVA_HOME o JAVA_HOME); 1>&2
+echo km: el build fallo. Gradle necesita JDK 17+ (KM_GRADLE_JAVA_HOME o JAVA_HOME); 1>&2
 echo     el jar resultante corre en JRE 11 o superior. 1>&2
 exit /b 1
 
