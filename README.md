@@ -451,6 +451,27 @@ Con `KM_DESKTOP_P2P=off` las `KM_ICE_*` **ni se parsean**: una URL inválida no
 rompe el arranque. El ACK viaja siempre por el relay. Detalle, presupuestos de 8 s
 y rollback en [`docs/developer/p2p.md`](docs/developer/p2p.md).
 
+#### Android
+
+El movil usa la MISMA politica (`P2pMode`/`P2pPlan` viven en `km-core`) y un
+backend distinto (`km-webrtc-android`, sobre `org.webrtc`). El binario arranca en
+`off`; el ajuste y los servidores ICE viven en preferencias, no en el APK:
+
+```bash
+adb shell run-as com.example.keymessage cat shared_prefs/km_p2p.xml
+# mode = off|auto|on
+# turn = turn:host:3479      user = kmdesktop
+# secret = <TURN REST>       (nunca se versiona)
+```
+
+- `auto` exige TURN, igual que escritorio.
+- Solo DataChannel: **sin permisos de cámara ni micrófono**.
+- Release: `arm64-v8a` + `armeabi-v7a`. Debug añade `x86_64` para el emulador.
+- `DependencyOriginTest` prohíbe `dev.onvoid` siempre y permite `org.webrtc` solo
+  con `com.km:km-webrtc-android` en el classpath.
+- Los intentos se rearman con jitter (ANSWERER ~1 s, OFFERER ~5 s) para que dos
+  sesiones establecidas con desfase coincidan.
+
 ### APK Android
 
 La app vive en `app/` y es un **build aparte** (su propio `settings.gradle.kts`,

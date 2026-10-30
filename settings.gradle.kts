@@ -42,3 +42,5 @@ include(":km-daemon")
 include(":km-transport")
 include(":km-desktop")
 include(":km-webrtc")
+// Backend P2P de Android: misma interfaz que :km-webrtc, SDK nativo distinto.
+include(":km-webrtc-android")

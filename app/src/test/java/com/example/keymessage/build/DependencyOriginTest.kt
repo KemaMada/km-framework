@@ -47,7 +47,19 @@ class DependencyOriginTest {
 
     companion object {
         /** Paquetes jamas permitidos en el grafo de la app. */
-        val PAQUETES_PROHIBIDOS: List<String> = listOf("dev/onvoid/webrtc/", "org/webrtc/")
+        val PAQUETES_PROHIBIDOS_SIEMPRE: List<String> = listOf("dev/onvoid/webrtc/")
+
+        /**
+         * Runtime de WebRTC: `org/webrtc`.
+         *
+         * Ya no esta prohibido en si mismo: la app tiene P2P en Android. Lo que
+         * sigue prohibido es que entre por ARRASTRE sin el artefacto que lo
+         * justifica. La puerta es [ARTEFACTO_P2P_ANDROID].
+         */
+        val PAQUETE_WEBRTC: String = "org/webrtc/"
+
+        /** Clase que solo puede venir de `com.km:km-webrtc-android`. */
+        val ARTEFACTO_P2P_ANDROID: String = "com/km/webrtc/android/AndroidP2pProvider.class"
 
         /** Clases del framework que tienen que estar presentes. */
         val CLASES_EXIGIDAS: List<String> = listOf(
@@ -63,9 +75,11 @@ class DependencyOriginTest {
          * recorrido real de jar y directorios vive en [escanearEntrada], que la
          * usa.
          */
-        fun entradasProhibidas(entries: List<String>): List<String> =
-            entries.filter { nombre -> PAQUETES_PROHIBIDOS.any { nombre.contains(it) } }
-                .sorted()
+        fun entradasProhibidas(entries: List<String>, p2pAndroidPresente: Boolean = false): List<String> =
+            entries.filter { nombre ->
+                PAQUETES_PROHIBIDOS_SIEMPRE.any { nombre.contains(it) } ||
+                    (!p2pAndroidPresente && nombre.contains(PAQUETE_WEBRTC))
+            }.sorted()
 
         /** Todas las entradas de la classpath real de la suite. */
         fun classpathReal(): List<File> =
@@ -119,19 +133,27 @@ class DependencyOriginTest {
         val entradas = classpathReal()
         assertTrue(entradas.isNotEmpty(), "java.class.path vacia: no se puede verificar la ausencia")
 
+        val p2pAndroid = DependencyOriginTest::class.java.classLoader
+            .getResource(ARTEFACTO_P2P_ANDROID) != null
+        assertTrue(
+            p2pAndroid,
+            "la app debe declarar com.km:km-webrtc-android: es el unico artefacto que " +
+                "justifica org/webrtc en su classpath",
+        )
+
         val offenders = mutableListOf<String>()
         for (root in entradas) {
             for (nombre in escanearEntrada(root)) {
-                if (PAQUETES_PROHIBIDOS.any { nombre.contains(it) }) {
-                    offenders += "${root.name}!/$nombre"
-                }
+                val prohibido = PAQUETES_PROHIBIDOS_SIEMPRE.any { nombre.contains(it) } ||
+                    (!p2pAndroid && nombre.contains(PAQUETE_WEBRTC))
+                if (prohibido) offenders += "${root.name}!/$nombre"
             }
         }
         assertEquals(
             emptyList<String>(),
             offenders,
-            "FRONTERA VIOLADA: la app arrastra WebRTC (esta version es RELE-ONLY): " +
-                offenders.joinToString(" | "),
+            "FRONTERA VIOLADA: la app arrastra WebRTC de escritorio (o el runtime sin " +
+                "el artefacto que lo justifica): " + offenders.joinToString(" | "),
         )
     }
 
@@ -149,6 +171,26 @@ class DependencyOriginTest {
         assertEquals(2, vistas.size, "debio ver las dos entradas prohibidas: $vistas")
         assertTrue(vistas.any { it.startsWith("dev/onvoid/webrtc/") })
         assertTrue(vistas.any { it.startsWith("org/webrtc/") })
+    }
+
+    // --- Control negativo 3: org/webrtc sin el artefacto sigue siendo fuga ---
+
+    @Test
+    fun `control negativo org webrtc sin el artefacto sigue siendo una fuga`() {
+        val entradas = listOf(
+            "org/webrtc/PeerConnection.class",
+            ARTEFACTO_P2P_ANDROID,
+        )
+        assertEquals(
+            listOf("org/webrtc/PeerConnection.class"),
+            entradasProhibidas(entradas, p2pAndroidPresente = false),
+            "el runtime de WebRTC no puede entrar por arrastre",
+        )
+        assertEquals(
+            emptyList<String>(),
+            entradasProhibidas(entradas, p2pAndroidPresente = true),
+            "con el artefacto declarado, org/webrtc es el backend deliberado",
+        )
     }
 
     // --- Control negativo 2: el escaner ABRE un jar de verdad ---

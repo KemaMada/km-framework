@@ -1,20 +1,25 @@
-# P2P de escritorio (WebRTC + coturn)
+# P2P (WebRTC + coturn): escritorio y Android
 
-Documento del tier P2P de **escritorio**. Android sigue **fuera de alcance** de
-este cambio: la app no se modifica y no gana WebRTC.
+Documento del tier P2P en los DOS clientes. Desde `android-p2p`, el movil
+tambien hace P2P con el mismo `ChainedTransport` y el mismo coordinador; lo
+unico especifico de plataforma es el backend nativo (`dev.onvoid.webrtc` en
+escritorio, `io.github.webrtc-sdk` en Android).
 
 ## Que hay y que no
 
 Hay:
 
 - `km-core` puro: `ChainedTransport`, `P2pProvider`, `PeerSignalPort`,
-  `IceConfig`, motivos estables.
+  `IceConfig`, `P2pMode`/`P2pPlan` (la politica es UNA, compartida), motivos
+  estables.
 - `km-transport`: composicion `[P2P, relay]` por par, coordinador con
-  presupuesto de 8 s y backoff de 60 s, puerto de senalizacion por SIGNAL.
+  presupuesto de 8 s, reintento armado con jitter y puerto de senalizacion por
+  SIGNAL.
 - `km-webrtc`: `RealWebRtcTransport` con `iceServers` reales y
-  `WebRtcP2pProvider` sobre `ManagedWebRtcPeer`.
-- `km-desktop`: lee el modo, compone, y declara el medio en la barra y en
-  DIAGNOSTICO.
+  `WebRtcP2pProvider` sobre `ManagedWebRtcPeer` (escritorio).
+- `km-webrtc-android`: `AndroidWebRtcBackend` + `AndroidP2pProvider` sobre
+  `org.webrtc`; una `PeerConnectionFactory` por proceso, DataChannel unico.
+- `km-desktop` y `app`: leen el modo, componen y declaran el medio.
 
 No hay (ni se promete):
 
@@ -23,9 +28,25 @@ No hay (ni se promete):
 - Seleccion manual de ruta por contacto, multi-dispositivo, store-and-forward,
   Tor/.onion, federacion.
 - Filtro de candidatos ICE. Un candidato `host`/`srflx` puede revelar la IP
-  local o publica del escritorio a su par. `auto` sin TURN **no intenta** P2P
-  precisamente por esto; `on` lo declara.
+  local o publica del par. `auto` sin TURN **no intenta** P2P precisamente por
+  esto; `on` lo declara.
 - Verificacion de traversal en CI (ver abajo).
+
+## Android
+
+- El modo se lee de preferencias (`km_p2p`): `mode`, `turn`, `user`, `secret`
+  (TURN REST). El binario arranca en `off`.
+- `auto` exige TURN, igual que escritorio.
+- El backend se inicializa perezosamente en el primer intento; `dispose` al
+  cerrar la sesion.
+- Solo DataChannel: sin permisos de camara ni microfono.
+- El APK de release incluye `arm64-v8a` + `armeabi-v7a`; el **debug** anade
+  `x86_64` para el emulador.
+- `DependencyOriginTest` prohibe `dev.onvoid` siempre y permite `org.webrtc`
+  solo si `com.km:km-webrtc-android` esta en el classpath.
+- Reintentos: el ANSWERER se re-arma cada ~1 s y el OFFERER cada ~5 s, con
+  jitter. Sin eso, dos sesiones que se establecen con 20 s de diferencia no
+  coinciden nunca en una ventana de 8 s.
 
 ## Modos: `KM_DESKTOP_P2P`
 

@@ -66,6 +66,20 @@ class P2pLinkCoordinator(
     private val timeoutMs: Long = DEFAULT_TIMEOUT_MS,
     /** No reintentar P2P para el mismo par antes de esto. */
     private val backoffMs: Long = DEFAULT_BACKOFF_MS,
+    /**
+     * Reloj de reintentos. Inyectable para que los tests no esperen de verdad.
+     */
+    private val retryScheduler: RetryScheduler = DaemonRetryScheduler,
+    /** Intentos por armado antes de rendirse hasta el proximo trigger. */
+    private val maxAttempts: Int = DEFAULT_MAX_ATTEMPTS,
+    /**
+     * Espera entre intentos. El ANSWERER espera POCO: su trabajo es estar
+     * escuchando cuando llegue la oferta, no ganar una carrera. El OFFERER
+     * espera mas para no inundar de SDP al par.
+     */
+    private val answererRetryMs: Long = DEFAULT_ANSWERER_RETRY_MS,
+    private val offererRetryMs: Long = DEFAULT_OFFERER_RETRY_MS,
+    private val jitterMs: Long = DEFAULT_JITTER_MS,
 ) {
 
     private val inFlight: MutableSet<IdentityId> = ConcurrentHashMap.newKeySet()
@@ -73,18 +87,84 @@ class P2pLinkCoordinator(
     private val lastAttemptAt = ConcurrentHashMap<IdentityId, Long>()
     private val lastReason = ConcurrentHashMap<IdentityId, String>()
 
+    /** Pares con reintento automatico activo mientras esten online. */
+    private val armed: MutableSet<IdentityId> = ConcurrentHashMap.newKeySet()
+    private val cancellations = ConcurrentHashMap<IdentityId, () -> Unit>()
+    private val attemptsThisArm = ConcurrentHashMap<IdentityId, Int>()
+
+    /**
+     * Observador de cada intento. Lo usa el bundle para publicar el medio real
+     * (y el motivo) segun van ocurriendo los reintentos.
+     */
+    @Volatile
+    var observer: ((IdentityId, LinkOutcome) -> Unit)? = null
+
+    /**
+     * Arma el reintento de [remotePeerId] mientras siga online.
+     *
+     * ## Por que asincrono
+     *
+     * `prepare` bloquea hasta 8 s. Llamarlo desde el hilo de presencia o desde
+     * el de sesion retrasaba el relay y hacia que el ANSWERER se rindiera
+     * ANTES de que el OFFERER empezara (los dos establecen sesion en momentos
+     * distintos). Con reintentos armados, el receptor permanece escuchando
+     * aunque el primero falle.
+     */
+    fun arm(remotePeerId: IdentityId) {
+        if (!armed.add(remotePeerId)) return
+        attemptsThisArm[remotePeerId] = 0
+        schedule(remotePeerId, 0L)
+    }
+
+    /** Deja de reintentar con ese par (offline, cierre o exito). */
+    fun disarm(remotePeerId: IdentityId) {
+        armed.remove(remotePeerId)
+        cancellations.remove(remotePeerId)?.invoke()
+        attemptsThisArm.remove(remotePeerId)
+    }
+
+    private fun schedule(remotePeerId: IdentityId, delayMs: Long) {
+        cancellations.remove(remotePeerId)?.invoke()
+        val cancel = retryScheduler.schedule(delayMs) { attempt(remotePeerId, reveal = true) }
+        cancellations[remotePeerId] = cancel
+    }
+
+    private fun attempt(remotePeerId: IdentityId, reveal: Boolean) {
+        if (!armed.contains(remotePeerId)) return
+        val n = (attemptsThisArm[remotePeerId] ?: 0) + 1
+        attemptsThisArm[remotePeerId] = n
+        val outcome = prepare(remotePeerId, force = true)
+        if (reveal) observer?.invoke(remotePeerId, outcome)
+
+        if (outcome is LinkOutcome.Ready) {
+            disarm(remotePeerId)
+            return
+        }
+        val retriable = outcome.reason == P2pReason.TIMEOUT ||
+            outcome.reason == P2pReason.FAILED ||
+            outcome.reason == P2pReason.IN_FLIGHT
+        if (!retriable || n >= maxAttempts) {
+            disarm(remotePeerId)
+            return
+        }
+        val role = P2pRole.forPair(localIdentity, remotePeerId)
+        val base = if (role == P2pRole.ANSWERER) answererRetryMs else offererRetryMs
+        val jitter = if (jitterMs <= 0L) 0L else (now() % (jitterMs + 1))
+        schedule(remotePeerId, base + jitter)
+    }
+
     /**
      * Intenta P2P para [remotePeerId].
      *
      * Nunca lanza: un fallo del medio es un [LinkOutcome], no una excepcion.
      */
-    fun prepare(remotePeerId: IdentityId): LinkOutcome {
+    fun prepare(remotePeerId: IdentityId, force: Boolean = false): LinkOutcome {
         if (!inFlight.add(remotePeerId)) {
             return LinkOutcome.Skipped(P2pReason.IN_FLIGHT)
         }
         try {
             val previous = lastAttemptAt[remotePeerId]
-            if (previous != null && now() - previous < backoffMs) {
+            if (!force && previous != null && now() - previous < backoffMs) {
                 return LinkOutcome.Skipped(P2pReason.BACKOFF).also {
                     lastReason[remotePeerId] = P2pReason.BACKOFF
                 }
@@ -187,6 +267,7 @@ class P2pLinkCoordinator(
 
     /** El par desaparecio: suelta su medio y permite un intento limpio al volver. */
     fun close(remotePeerId: IdentityId) {
+        disarm(remotePeerId)
         chainFor(remotePeerId)?.releaseSelected()
         lastAttemptAt.remove(remotePeerId)
         inFlight.remove(remotePeerId)
@@ -197,6 +278,7 @@ class P2pLinkCoordinator(
     fun closeAll() {
         // No hay `chains()` en el contrato: el coordinador solo conoce los pares
         // que intento. Un par sin intento no tiene medio que soltar.
+        armed.toList().forEach { disarm(it) }
         lastAttemptAt.keys.toList().forEach { close(it) }
     }
 
@@ -215,6 +297,43 @@ class P2pLinkCoordinator(
 
         /** Backoff por par entre intentos P2P. */
         const val DEFAULT_BACKOFF_MS: Long = 60_000L
+
+        /** Intentos por armado; despues se espera a un trigger nuevo. */
+        const val DEFAULT_MAX_ATTEMPTS: Int = 10
+
+        /** El ANSWERER casi no espera: su trabajo es estar escuchando. */
+        const val DEFAULT_ANSWERER_RETRY_MS: Long = 1_000L
+
+        /** El OFFERER espera mas para no inundar de SDP al par. */
+        const val DEFAULT_OFFERER_RETRY_MS: Long = 5_000L
+
+        /** Jitter para que dos pares no se sincronicen permanentemente. */
+        const val DEFAULT_JITTER_MS: Long = 1_000L
+    }
+}
+
+/**
+ * Reloj de reintentos.
+ *
+ * Se inyecta para que los tests sean deterministas: un test puede ejecutar la
+ * tarea inmediatamente sin dormir. En produccion usa un hilo daemon propio, de
+ * modo que un reintento pendiente no impide cerrar la app.
+ */
+fun interface RetryScheduler {
+    /** Programa [action] y devuelve la funcion que la cancela. */
+    fun schedule(delayMs: Long, action: () -> Unit): () -> Unit
+}
+
+/** Implementacion de produccion: un solo hilo daemon compartido. */
+object DaemonRetryScheduler : RetryScheduler {
+
+    private val pool = java.util.concurrent.Executors.newSingleThreadScheduledExecutor { r ->
+        Thread(r, "km-p2p-retry").apply { isDaemon = true }
+    }
+
+    override fun schedule(delayMs: Long, action: () -> Unit): () -> Unit {
+        val future = pool.schedule({ action() }, delayMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+        return { future.cancel(false) }
     }
 }
 

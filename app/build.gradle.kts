@@ -53,6 +53,15 @@ android {
     }
 
     buildTypes {
+        debug {
+            // El emulador es x86_64: sin esta ABI, `System.loadLibrary` falla y
+            // P2P cae a relay sin decir por que. Solo debug; el release lleva
+            // las dos de telefono.
+            ndk {
+                abiFilters.clear()
+                abiFilters.addAll(listOf("x86_64", "arm64-v8a", "armeabi-v7a"))
+            }
+        }
         release {
             signingConfig = signingConfigs.getByName("release")
             isMinifyEnabled = false
@@ -70,6 +79,19 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
+    }
+
+    defaultConfig {
+        // El modo P2P por defecto del binario. `off` conserva el camino actual;
+        // se puede cambiar en tiempo de ejecucion desde los ajustes de la app.
+        buildConfigField("String", "KM_P2P_DEFAULT", "\"off\"")
+
+        // Android WebRTC trae .so por ABI. Se incluyen solo las de telefono:
+        // x86_64 queda para builds de emulador concretos, no para la descarga.
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        }
     }
 
     testOptions {
@@ -137,6 +159,9 @@ dependencies {
     //     ./gradlew :km-core:publishToMavenLocal :km-transport:publishToMavenLocal
     implementation("com.km:km-core:0.1.0-SNAPSHOT")
     implementation("com.km:km-transport:0.1.0-SNAPSHOT")
+    // Backend P2P de Android. Se consume por artefacto, como el resto del
+    // framework: la app no aloja WebRTC ni la politica del medio.
+    implementation("com.km:km-webrtc-android:0.1.0-SNAPSHOT")
 
     // km-core y km-transport declaran Jackson como `implementation`, asi que su
     // API NO se filtra al classpath de compilacion de la app. `JsonRelayControlCodec`

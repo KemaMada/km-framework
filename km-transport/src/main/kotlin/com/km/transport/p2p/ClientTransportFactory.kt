@@ -97,6 +97,23 @@ class ClientTransportBundle internal constructor(
     /** Motivo del modo, independiente de que haya pares. */
     val modeReason: String? get() = initialReason
 
+    /**
+     * Intenta P2P AHORA para [remotePeerId], saltandose el backoff.
+     *
+     * Lo llama el cliente cuando hay una razon NUEVA para intentarlo: acaba de
+     * establecerse la sesion tras escanear un QR, o la red volvio. Sin esto, un
+     * intento fallido temprano (el par aun no estaba autenticado) dejaba al par
+     * en relay hasta que el backoff expirase, aunque el contacto ya existiera.
+     *
+     * Con `p2p` apagado no hace nada. Nunca lanza.
+     */
+    fun requestP2p(remotePeerId: IdentityId) {
+        val coord = coordinator ?: return
+        // Arma el reintento en vez de bloquear el hilo de sesion hasta 8 s.
+        // El primer intento sale de inmediato y los siguientes con jitter.
+        coord.arm(remotePeerId)
+    }
+
     /** Cuantas cadenas por par se han montado. Solo lectura, para diagnostico. */
     fun mountedChains(): Int = chains.size
 
@@ -215,7 +232,10 @@ class ClientTransportFactory(
         lateinit var bundle: ClientTransportBundle
         val links = object : ChainedLinks {
             override fun onPeerOnline(remotePeerId: IdentityId) {
-                report(remotePeerId, coordinator.prepare(remotePeerId))
+                // No bloquea: el intento corre en el hilo de reintentos. Un
+                // handler de presencia que se quede 8 s esperando retrasa al
+                // relay y hacia que el ANSWERER se rindiera antes de tiempo.
+                coordinator.arm(remotePeerId)
             }
 
             override fun onPeerOffline(remotePeerId: IdentityId) {
@@ -227,11 +247,13 @@ class ClientTransportFactory(
                 coordinator.closeAll()
                 chains.values.forEach { runCatching { it.releaseSelected() } }
             }
+        }
 
-            private fun report(remotePeerId: IdentityId, outcome: LinkOutcome) {
-                val medium = if (outcome is LinkOutcome.Ready) Medium.P2P else Medium.RELAY
-                bundle.reportMedium(remotePeerId, medium, outcome.reason)
-            }
+        // El medio se publica en CADA intento (tambien en los reintentos), no
+        // solo en el primero.
+        coordinator.observer = { remotePeerId, outcome ->
+            val medium = if (outcome is LinkOutcome.Ready) Medium.P2P else Medium.RELAY
+            bundle.reportMedium(remotePeerId, medium, outcome.reason)
         }
 
         val chained = ChainedTransport(

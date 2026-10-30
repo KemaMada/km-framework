@@ -9,6 +9,8 @@ import com.km.desktop.ui.StatusLine
 import com.km.desktop.ui.widget.StatusBar
 import com.km.model.IdentityId
 import com.km.node.ChainedTransport
+import com.km.node.P2pMode
+import com.km.node.P2pPlan
 import com.km.transport.JvmRelayTransport
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse

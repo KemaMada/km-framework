@@ -5,6 +5,8 @@ import com.km.model.IdentityId
 import com.km.node.ChainedTransport
 import com.km.node.EstablishmentState
 import com.km.node.Medium
+import com.km.node.P2pMode
+import com.km.node.P2pPlan
 import com.km.node.P2pProvider
 import com.km.node.P2pReason
 import com.km.node.P2pRole

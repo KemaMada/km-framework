@@ -1,5 +1,6 @@
 package com.km.desktop.net
 
+import com.km.node.P2pMode
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue

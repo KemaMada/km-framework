@@ -10,8 +10,8 @@ import com.km.desktop.client.ExportService
 import com.km.desktop.client.RecoveryService
 import com.km.desktop.config.BootstrapConfig
 import com.km.desktop.core.CoreFactory
-import com.km.desktop.net.P2pMode
-import com.km.desktop.net.P2pPlan
+import com.km.node.P2pMode
+import com.km.node.P2pPlan
 import com.km.desktop.net.P2pWiring
 import com.km.desktop.platform.ConfigPaths
 import com.km.desktop.platform.OwnerPermissions

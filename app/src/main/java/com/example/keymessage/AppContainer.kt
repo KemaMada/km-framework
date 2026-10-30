@@ -6,6 +6,7 @@ import androidx.room.Room
 import com.km.protocol.ConnectionState
 import com.km.transport.JvmRelayTransport
 import com.km.transport.RelayClientStack
+import com.km.transport.p2p.ClientTransportBundle
 import com.km.transport.RelaySignalSink
 import com.km.transport.SignalDelivery
 import com.km.transport.SignalOutcome
@@ -45,6 +46,7 @@ import com.example.keymessage.contact.VerifiedContact
 import com.example.keymessage.net.EndpointSequence
 import com.example.keymessage.net.ArranqueUnico
 import com.example.keymessage.net.AndroidNetworkMonitor
+import com.example.keymessage.net.AndroidP2p
 import com.example.keymessage.net.NetworkWatch
 import com.example.keymessage.net.RelayEndpointsExhausted
 import com.example.keymessage.net.RelayStackFactory
@@ -286,6 +288,16 @@ class AppContainer(application: Application) {
 
     @Volatile
     private var stack: RelayClientStack? = null
+
+    /**
+     * La composicion del medio (relay puro o cadena `[P2P, relay]`).
+     *
+     * Se guarda junto a [stack] porque el nucleo debe usar `bundle.transport` y
+     * `bundle.manager`, no los del motor de relay: en modo P2P el manager de la
+     * pila enruta datos y el del bundle es el que ve el core.
+     */
+    @Volatile
+    private var transportBundle: ClientTransportBundle? = null
 
     /**
      * R14 — UN SOLO NUCLEO VIVO POR IDENTIDAD.
@@ -665,6 +677,9 @@ class AppContainer(application: Application) {
             "PREKEY abierto y entregado peer=${KMLog.truncar(contacto.identityRoot.value, 16)} " +
                 "opk=${iniciada.usedOneTimePreKeyId ?: "ninguno"} bytes=${iniciada.prekeyFrame.size}",
         )
+        // Sesion lista: intenta P2P ya, sin esperar al primer mensaje.
+        transportBundle?.requestP2p(contacto.identityRoot)
+        Unit
     }.onFailure {
         KMLog.event("[SESSION]", "fallo abriendo/entregando PREKEY: ${it.message}", KMLog.Level.ERROR)
     }
@@ -844,6 +859,10 @@ class AppContainer(application: Application) {
                 "PREKEY aceptado peer=${KMLog.truncar(emisor.value, 16)} " +
                     "opk=${it.consumedOneTimePreKeyId ?: "ninguno"}",
             )
+            // La sesion acaba de nacer: es el momento correcto para intentar
+            // P2P. Antes de esto no hay PeerContext autenticado y el intento
+            // solo puede fallar.
+            transportBundle?.requestP2p(emisor)
         }
     }
 
@@ -928,8 +947,18 @@ class AppContainer(application: Application) {
     }
 
     /** Intenta UN endpoint. Falla con un `Result`, que es lo que espera la secuencia. */
-    private fun connectWith(endpoint: String): Result<RelayClientStack> = runCatching {
-        val candidate = RelayStackFactory.stackFor(identity, endpoint)
+    private fun connectWith(endpoint: String): Result<RelayClientStack> {
+        var compuesto: ClientTransportBundle? = null
+        return runCatching {
+            val relay = RelayStackFactory.engine(identity, endpoint)
+            val bundle = AndroidP2p.compose(relay, identity.identityId, app) { peer ->
+                // El contexto vive en el manager del BUNDLE (el que ve el core),
+                // no en el manager P2P. El bundle se asigna justo despues de
+                // componer; el lambda se evalua mucho mas tarde.
+                transportBundle?.manager?.getBinding(identity.identityId, peer)?.peerContext
+            }
+            compuesto = bundle
+            val candidate = bundle.stack
         // F5 — RELAY empieza ANTES de conectar: la fase cubre el intento de
         // enlace (DNS, socket, handshake), no solo su desenlace.
         trazaArranque.iniciar(FaseArranque.RELAY, nota = "endpoint=${KMLog.truncar(endpoint)}")
@@ -946,6 +975,17 @@ class AppContainer(application: Application) {
         }
         candidate
     }.onSuccess { pila ->
+        val bundle = requireNotNull(compuesto) { "sin bundle de transporte tras conectar" }
+        transportBundle = bundle
+        // El medio de DATOS no se veia en ningun log: la cadena decide P2P o
+        // relay por par y el cliente solo lo pintaba. Se registra con codigo
+        // estable y sin IPs ni credenciales.
+        bundle.onMediumChanged = { peer, medium, reason ->
+            KMLog.event(
+                "[CONFIG]",
+                "medio peer=${KMLog.truncar(peer.value)} via=${medium.linkName} motivo=$reason",
+            )
+        }
         // R14 — EL REEMPLAZO ES ATOMICO Y ORDENADO: close(viejo) -> build(nuevo)
         // -> swap -> hooks. Todo dentro del mismo candado para que la UI nunca
         // vea un nucleo a medias ni dos emisores compitiendo por la misma
@@ -972,8 +1012,8 @@ class AppContainer(application: Application) {
             val nucleo = coreFactory.create(
                 localIdentity = identity.identityId,
                 localPrivateKey = identity.keyPair.privateKey,
-                transport = pila.transport,
-                manager = pila.manager,
+                transport = bundle.transport,
+                manager = bundle.manager,
                 messageStore = messageStore,
                 offlineQueue = offlineQueue,
                 duplicateStore = duplicateStore,
@@ -993,7 +1033,7 @@ class AppContainer(application: Application) {
             // donde un frame PREKEY entrante deja de ser bytes sin dueno y se
             // convierte en sesion: sin esta suscripcion, la mitad receptora del
             // establecimiento no existe y ningun PREKEY se acepta nunca.
-            pila.manager.onData { from, wire -> aceptarPrekeyEntrante(from, wire) }
+            bundle.manager.onData { from, wire -> aceptarPrekeyEntrante(from, wire) }
             // La senalizacion: el portador del EMISOR llega por aqui. Sin esta
             // suscripcion, el receptor no sabe quien es el emisor y el PREKEY se
             // queda retenido hasta que expire (o para siempre, si no hay TTL).
@@ -1012,6 +1052,7 @@ class AppContainer(application: Application) {
         // sigue vivo y anunciar DISCONNECTED seria mentir sobre el.
         publicarFallo(failure.message)
         throw failure
+    }
     }
 
     /** El nucleo con sus piezas de sesion, o excepcion mientras no haya conexion. */
@@ -1081,6 +1122,7 @@ class AppContainer(application: Application) {
             core = null
             coreBundle = null
             stack = null
+            transportBundle = null
             c to p
         }
         // R14: `close()` (no `stop()`) es lo que cancela la suscripcion, apaga
