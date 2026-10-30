@@ -320,7 +320,7 @@ adb install -r app/build/outputs/apk/release/KeyMessageApp-release.apk
 credenciales falla en `validateSigningRelease` con un mensaje que explica cómo
 definirlas (sin imprimir valores). Es esperado; para probar usa `:assembleDebug`.
 
-`versionCode 2`, `versionName "1.1"`, `minSdk 28`, `targetSdk 36`. Certificado
+`versionCode 3`, `versionName "1.2"`, `minSdk 28`, `targetSdk 36`. Certificado
 esperado, SHA-256 `af12fd06fc0945b7e8c778714f7742eb7616cbcb09ea8fae0faec581f0d712d1`
 (rotar la contraseña no cambia la clave ni el certificado). `adb install -r`
 conserva datos; un `versionCode` menor falla con `INSTALL_FAILED_VERSION_DOWNGRADE`
