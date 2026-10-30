@@ -115,6 +115,34 @@ Lo que sí hay, y es real:
 | **El protocolo no aplica, documenta.** Si alguien despliega un relé que almacene o descifre mensajes, el protocolo no lo impide: lo prohíbe por especificación y no lo fuerza por mecanismo. | `docs/rfc/KM-0000`, §Relay |
 | **Sin resistencia a DoS.** Declarado fuera del modelo de seguridad. | `docs/rfc/KM-0001`, §16 |
 
+## Clave de firma de la app Android
+
+El keystore de release (`app/keymessage-release.jks`) **no se versiona** y sus
+credenciales **no viven en el repositorio**: `app/build.gradle.kts` las lee de
+`KM_RELEASE_STORE_PASSWORD` / `KM_RELEASE_KEY_PASSWORD` (gradle property en
+`~/.gradle/gradle.properties`, modo 600, o variable de entorno), con
+`KM_RELEASE_KEY_ALIAS` opcional (default `keymessage`).
+
+**Rotación del 2026-10-30.** Una versión anterior de `app/build.gradle.kts`
+llevaba la contraseña del keystore **en claro**, y quedó publicada en GitHub
+(commit `8a2f188`). Se rotó con `keytool -storepasswd` sobre el mismo keystore:
+
+- la clave y el certificado **no cambian** (mismo SHA-256,
+  `af12fd06fc0945b7e8c778714f7742eb7616cbcb09ea8fae0faec581f0d712d1`), así que
+  las actualizaciones siguen instalándose encima;
+- la contraseña anterior **sigue en el historial de git**, pero **ya no abre la
+  clave**: el keystore es PKCS12, así que `-storepasswd` re-cifra también la
+  clave privada con la contraseña nueva. Rotarla otra vez no cambia el
+  certificado.
+
+El keystore es PKCS12: una sola contraseña para el store y para la clave. Para
+rotarla:
+
+```sh
+keytool -storepasswd -keystore app/keymessage-release.jks
+# despues, actualizar KM_RELEASE_STORE_PASSWORD y KM_RELEASE_KEY_PASSWORD
+```
+
 ## Si una dependencia tiene un CVE
 
 Las dependencias de `km-core` y `km-webrtc` se declaran explícitamente en los

@@ -92,19 +92,31 @@ gradle_tareas() {
     fi
 }
 
-# DOS invocaciones, y en este orden: primero publicar, después compilar.
+# CUATRO invocaciones separadas y en este orden:
+# core -> webrtc -> transport -> desktop.
 #
-# `publishToMavenLocal` NO es dependencia de `:km-desktop:compileKotlin`, así
-# que al pedir las tres tareas en la MISMA invocación Gradle puede compilar
-# km-desktop mientras reescribe `~/.m2/.../km-core` y `.../km-transport`. El
-# compilador Kotlin mapea esos jars en memoria y muere con un error interno
-# del compilador (`newPosition > limit`) al leer un jar a medio escribir.
-# Con dos invocaciones, el segundo proceso sólo arranca cuando el primero
-# (y por tanto la publicación) ya terminó.
+# Dos motivos distintos, y los dos exigen procesos separados:
+#
+#  1. ORDEN DE PUBLICACION. `km-webrtc` y `km-transport` declaran
+#     `api("com.km:km-core:...")`, y `km-desktop` consume los TRES artefactos.
+#     `publishToMavenLocal` NO es dependencia de los `compileKotlin` del mismo
+#     build, asi que si se piden juntas, Gradle puede compilar un consumidor
+#     ANTES de que `:km-core:publishToMavenLocal` haya dejado el artefacto en
+#     mavenLocal: la resolucion falla con "Could not find com.km:km-core"
+#     (reproducido con mavenLocal vacio). `km-webrtc` se publica aqui porque
+#     `km-desktop` lo declara como artefacto (tier P2P); sin el, con mavenLocal
+#     vacio, `:km-desktop:compileKotlin` falla con "Could not find
+#     com.km:km-webrtc" aunque core y transport esten publicados. Publicar core,
+#     LUEGO webrtc y transport, y solo despues compilar desktop, elimina la
+#     carrera por construccion.
+#
+#  2. ESCRITURA DE JARS. Si publicacion y compilacion comparten invocacion, el
+#     compilador Kotlin puede leer un jar a medio escribir y morir con un error
+#     interno (`newPosition > limit`).
 construir() {
-    gradle_tareas \
-        :km-core:publishToMavenLocal \
-        :km-transport:publishToMavenLocal || return 1
+    gradle_tareas :km-core:publishToMavenLocal || return 1
+    gradle_tareas :km-webrtc:publishToMavenLocal || return 1
+    gradle_tareas :km-transport:publishToMavenLocal || return 1
     gradle_tareas :km-desktop:shadowJar
 }
 
@@ -113,7 +125,7 @@ if [ "$necesita_build" -eq 1 ]; then
         echo "km: falta $ORIGEN/gradlew o no es ejecutable; no se puede compilar" >&2
         exit 1
     fi
-    echo "km: construyendo km-desktop (publishToMavenLocal de km-core/km-transport + shadowJar)..." >&2
+    echo "km: construyendo km-desktop (publishToMavenLocal de km-core/km-webrtc/km-transport + shadowJar)..." >&2
     # El build escribe en stderr: stdout es de la TUI.
     if ! construir 1>&2; then
         echo "km: el build fallo. Gradle necesita JDK 17 o superior (KM_GRADLE_JAVA_HOME o JAVA_HOME);" >&2

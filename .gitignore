@@ -28,6 +28,13 @@ keymessage-release.jks
 /app/.gradle/
 /app/.kotlin/
 
+# `**/build/` de arriba tambien casa con un PAQUETE de codigo llamado `build`
+# (app/src/test/java/com/example/keymessage/build/), y eso dejaria fuera del
+# repositorio cualquier test nuevo de esa carpeta. Se niega SOLO esa ruta de
+# codigo: los directorios de build de Gradle siguen ignorados.
+!app/src/test/java/**/build/
+!app/src/test/java/**/build/**
+
 # Par Ed25519 del rele. Contiene la semilla PRIVADA en claro y NUNCA debe
 # entrar en el repositorio: versionarlo publica la identidad del relé y
 # permite firmar AUTH_OK en su nombre. Se genera en el primer arranque.

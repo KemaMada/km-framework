@@ -45,23 +45,37 @@ rem evita el build cuando solo se quiere arrancar el jar existente.
 echo km: jar existente; se recompila por defecto en Windows (KM_NO_REBUILD=1 lo evita)... 1>&2
 goto build
 
-rem DOS invocaciones, y en este orden: primero publicar, despues compilar.
-rem publishToMavenLocal NO es dependencia de :km-desktop:compileKotlin, asi que
-rem pedir las tres tareas en la MISMA invocacion deja que Gradle compile
-rem km-desktop mientras reescribe los jars de km-core/km-transport en
-rem mavenLocal, y el compilador Kotlin muere con un error interno
-rem (newPosition > limit) al leer un jar a medio escribir.
+rem CUATRO invocaciones separadas y en este orden:
+rem core -> webrtc -> transport -> desktop.
+rem Dos motivos, y los dos exigen procesos separados:
+rem  1. ORDEN DE PUBLICACION. km-webrtc y km-transport declaran
+rem     api(com.km:km-core:...) y km-desktop consume los TRES artefactos.
+rem     publishToMavenLocal NO es dependencia de los compileKotlin del mismo
+rem     build: pedidas juntas, Gradle puede compilar un consumidor antes de que
+rem     km-core este en mavenLocal y falla con "Could not find com.km:km-core".
+rem     km-webrtc tambien se publica porque km-desktop lo declara por artefacto:
+rem     sin el, con mavenLocal vacio, falla "Could not find com.km:km-webrtc".
+rem  2. ESCRITURA DE JARS. Compartir invocacion deja que el compilador Kotlin
+rem     lea un jar a medio escribir (error interno newPosition > limit).
 :build
-echo km: construyendo km-desktop (publishToMavenLocal de km-core/km-transport + shadowJar)... 1>&2
+echo km: construyendo km-desktop (publishToMavenLocal de km-core/km-webrtc/km-transport + shadowJar)... 1>&2
 if defined KM_GRADLE_JAVA_HOME goto build_with_java
-call "%KM_ROOT%gradlew.bat" --quiet :km-core:publishToMavenLocal :km-transport:publishToMavenLocal 1>&2
+call "%KM_ROOT%gradlew.bat" --quiet :km-core:publishToMavenLocal 1>&2
+if errorlevel 1 goto build_failed
+call "%KM_ROOT%gradlew.bat" --quiet :km-webrtc:publishToMavenLocal 1>&2
+if errorlevel 1 goto build_failed
+call "%KM_ROOT%gradlew.bat" --quiet :km-transport:publishToMavenLocal 1>&2
 if errorlevel 1 goto build_failed
 call "%KM_ROOT%gradlew.bat" --quiet :km-desktop:shadowJar 1>&2
 if errorlevel 1 goto build_failed
 goto check_jar
 
 :build_with_java
-call "%KM_ROOT%gradlew.bat" "-Dorg.gradle.java.home=%KM_GRADLE_JAVA_HOME%" --quiet :km-core:publishToMavenLocal :km-transport:publishToMavenLocal 1>&2
+call "%KM_ROOT%gradlew.bat" "-Dorg.gradle.java.home=%KM_GRADLE_JAVA_HOME%" --quiet :km-core:publishToMavenLocal 1>&2
+if errorlevel 1 goto build_failed
+call "%KM_ROOT%gradlew.bat" "-Dorg.gradle.java.home=%KM_GRADLE_JAVA_HOME%" --quiet :km-webrtc:publishToMavenLocal 1>&2
+if errorlevel 1 goto build_failed
+call "%KM_ROOT%gradlew.bat" "-Dorg.gradle.java.home=%KM_GRADLE_JAVA_HOME%" --quiet :km-transport:publishToMavenLocal 1>&2
 if errorlevel 1 goto build_failed
 call "%KM_ROOT%gradlew.bat" "-Dorg.gradle.java.home=%KM_GRADLE_JAVA_HOME%" --quiet :km-desktop:shadowJar 1>&2
 if errorlevel 1 goto build_failed

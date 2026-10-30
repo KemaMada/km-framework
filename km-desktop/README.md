@@ -31,17 +31,18 @@ todo lo que sabe de protocolo lo pide a `km-core` por sus interfaces públicas.
 
 ```sh
 # Opción A: exportar el JDK una vez por terminal
-export JAVA_HOME=/usr/lib/jvm/java-27-openjdk
+export JAVA_HOME=/ruta/a/tu/jdk-17-o-superior
 ./gradlew :km-core:publishToMavenLocal
 
 # Opción B: pasar el JDK solo en esa invocación
-./gradlew -Dorg.gradle.java.home=/usr/lib/jvm/java-27-openjdk \
+./gradlew -Dorg.gradle.java.home=/ruta/a/tu/jdk-17-o-superior \
           :km-core:publishToMavenLocal
 ```
 
-El JDK que **ejecuta** Gradle (27) y el toolchain que **produce** el bytecode
-(11) son dos requisitos distintos. El jar que sale corre sobre un JRE 11 o
-superior; el 27 solo hace falta para lanzar el build.
+El JDK que **ejecuta** Gradle (**17 o superior**; en la máquina de validación era
+el 27, pero 17 también sirve) y el toolchain que **produce** el bytecode (11) son
+dos requisitos distintos. El jar que sale corre sobre un JRE 11 o superior; el 27
+no es obligatorio para lanzar el build.
 
 `gradle.properties` **no** fija `org.gradle.java.home`, y es a propósito: es una
 ruta absoluta que no viaja entre máquinas. Para no pasar `-D` en cada comando,
@@ -109,14 +110,17 @@ superior** (validado con 17 y con 27); el jar corre en JRE 11 o superior.
 Los mismos pasos a mano, si prefieres controlar cada fase:
 
 ```sh
-# 2. Publicar km-core y km-transport en mavenLocal. NO es opcional: este módulo
-#    los consume como artefactos publicados (0.1.0-SNAPSHOT), no como proyectos
-#    del build. Sin este paso, el paso 3 no resuelve las dependencias.
-./gradlew -Dorg.gradle.java.home=/usr/lib/jvm/java-27-openjdk \
-          :km-core:publishToMavenLocal :km-transport:publishToMavenLocal
+# 2. Publicar km-core, km-webrtc y km-transport en mavenLocal. NO es opcional:
+#    este módulo los consume como artefactos publicados (0.1.0-SNAPSHOT), no como
+#    proyectos del build. En TRES invocaciones y en este orden: webrtc y transport
+#    dependen de core, y publicar juntos deja compilar un consumidor antes de que
+#    core exista en mavenLocal.
+./gradlew -Dorg.gradle.java.home=/ruta/a/tu/jdk-17-o-superior :km-core:publishToMavenLocal
+./gradlew -Dorg.gradle.java.home=/ruta/a/tu/jdk-17-o-superior :km-webrtc:publishToMavenLocal
+./gradlew -Dorg.gradle.java.home=/ruta/a/tu/jdk-17-o-superior :km-transport:publishToMavenLocal
 
 # 3. Compilar el fat jar de un solo fichero
-./gradlew -Dorg.gradle.java.home=/usr/lib/jvm/java-27-openjdk \
+./gradlew -Dorg.gradle.java.home=/ruta/a/tu/jdk-17-o-superior \
           :km-desktop:shadowJar
 
 # 4. Arrancar la TUI. Sin argumentos usa el relé desplegado.
@@ -127,7 +131,7 @@ Contra un relé propio, en vez del desplegado:
 
 ```sh
 # En una terminal: el relé
-./gradlew -Dorg.gradle.java.home=/usr/lib/jvm/java-27-openjdk \
+./gradlew -Dorg.gradle.java.home=/ruta/a/tu/jdk-17-o-superior \
           :km-daemon:installDist
 ./km-daemon/build/install/km-daemon/bin/km-daemon
 
@@ -240,11 +244,11 @@ cd km-framework
 km.cmd
 ```
 
-La **primera vez** el lanzador publica `km-core` y `km-transport` en
-`mavenLocal()` (dos invocaciones a propósito), ejecuta `:km-desktop:shadowJar` y
-arranca `java -jar` con tus argumentos. Después solo reconstruye si falta el jar,
-si `KM_REBUILD=1`, o si hay fuentes o ficheros de build más nuevos. La salida del
-build va a **stderr**; stdout es de la TUI.
+La **primera vez** el lanzador publica `km-core`, `km-webrtc` y `km-transport` en
+`mavenLocal()` (tres invocaciones a propósito, en ese orden), ejecuta
+`:km-desktop:shadowJar` y arranca `java -jar` con tus argumentos. Después solo
+reconstruye si falta el jar, si `KM_REBUILD=1`, o si hay fuentes o ficheros de
+build más nuevos. La salida del build va a **stderr**; stdout es de la TUI.
 
 | Variable | Efecto |
 |----------|--------|
@@ -280,18 +284,45 @@ Con `off` no se parsean. Los secretos **nunca** se imprimen.
 
 ### APK Android
 
-Desde la raíz del repositorio (`app/` es un build aparte):
+Desde la raíz del repositorio (`app/` es un build aparte). Primero el SDK, con
+`ANDROID_HOME` o un `app/local.properties` **no versionado**:
 
 ```sh
-./gradlew -p app -Dorg.gradle.java.home=/usr/lib/jvm/java-27-openjdk :assembleRelease
+export ANDROID_HOME="$HOME/Android/Sdk"
+# o: printf 'sdk.dir=%s\n' "$HOME/Android/Sdk" > app/local.properties
+```
+
+**Desarrollo (sin firma)**: no necesita keystore ni credenciales.
+
+```sh
+./gradlew -p app -Dorg.gradle.java.home=/ruta/a/tu/jdk-17-o-superior :assembleDebug
+adb install -r app/build/outputs/apk/debug/KeyMessageApp-debug.apk
+```
+
+**Release firmado**: necesita el keystore `app/keymessage-release.jks` (PKCS12,
+alias `keymessage`), que **no se versiona ni se distribuye**, y las credenciales
+fuera del repo (`~/.gradle/gradle.properties` con modo 600, o variables de
+entorno): `KM_RELEASE_STORE_PASSWORD`, `KM_RELEASE_KEY_PASSWORD` y, opcional,
+`KM_RELEASE_KEY_ALIAS`.
+
+```sh
+cp /ruta/privada/keymessage-release.jks app/keymessage-release.jks && chmod 600 app/keymessage-release.jks
+
+# publicar core y transport ANTES de la app, en orden e invocaciones separadas
+./gradlew -Dorg.gradle.java.home=/ruta/a/tu/jdk-17-o-superior :km-core:publishToMavenLocal
+./gradlew -Dorg.gradle.java.home=/ruta/a/tu/jdk-17-o-superior :km-transport:publishToMavenLocal
+
+./gradlew -p app -Dorg.gradle.java.home=/ruta/a/tu/jdk-17-o-superior :assembleRelease
 adb install -r app/build/outputs/apk/release/KeyMessageApp-release.apk
 ```
 
-`versionCode 2`, `versionName "1.1"`, `minSdk 28`, `targetSdk 36`; firma con la
-config `release` de `app/build.gradle.kts` (keystore `app/keymessage-release.jks`,
-secretos no documentados). Certificado esperado, SHA-256
-`af12fd06fc0945b7e8c778714f7742eb7616cbcb09ea8fae0faec581f0d712d1`. Requiere
-**JDK 17+** para compilar y `sdk.dir` en `app/local.properties`. `adb install -r`
+**`:assembleRelease` no funciona en un clon ajeno**: sin el `.jks` ni las
+credenciales falla en `validateSigningRelease` con un mensaje que explica cómo
+definirlas (sin imprimir valores). Es esperado; para probar usa `:assembleDebug`.
+
+`versionCode 2`, `versionName "1.1"`, `minSdk 28`, `targetSdk 36`. Certificado
+esperado, SHA-256 `af12fd06fc0945b7e8c778714f7742eb7616cbcb09ea8fae0faec581f0d712d1`
+(rotar la contraseña no cambia la clave ni el certificado). `adb install -r`
 conserva datos; un `versionCode` menor falla con `INSTALL_FAILED_VERSION_DOWNGRADE`
 y obliga a desinstalar (se pierde el almacén de identidad del teléfono).
 
@@ -312,12 +343,16 @@ y obliga a desinstalar (se pierde el almacén de identidad del teléfono).
 proyectos del build. Por eso el primer paso es publicarlos:
 
 ```bash
-# desde la raiz del mono-repo; Gradle necesita JDK 17+ (aqui, 27)
-./gradlew -Dorg.gradle.java.home=/usr/lib/jvm/java-27-openjdk \
-          :km-core:publishToMavenLocal :km-transport:publishToMavenLocal
+# desde la raiz del mono-repo; Gradle necesita JDK 17+ (en la maquina de
+# validacion era el 27, pero 17 tambien sirve). TRES invocaciones, en este orden:
+# webrtc y transport dependen de core; publicar juntos (o saltarse webrtc) rompe
+# el arranque en frio.
+./gradlew -Dorg.gradle.java.home=/ruta/a/tu/jdk-17-o-superior :km-core:publishToMavenLocal
+./gradlew -Dorg.gradle.java.home=/ruta/a/tu/jdk-17-o-superior :km-webrtc:publishToMavenLocal
+./gradlew -Dorg.gradle.java.home=/ruta/a/tu/jdk-17-o-superior :km-transport:publishToMavenLocal
 
 # luego, el cliente
-./gradlew -Dorg.gradle.java.home=/usr/lib/jvm/java-27-openjdk \
+./gradlew -Dorg.gradle.java.home=/ruta/a/tu/jdk-17-o-superior \
           :km-desktop:shadowJar
 ```
 
@@ -328,9 +363,10 @@ km-desktop/build/libs/km-desktop.jar
 java -jar km-desktop/build/libs/km-desktop.jar
 ```
 
-Desde la raíz, `./km` hace esos dos pasos solo si falta el jar. El módulo también
+Desde la raíz, `./km` hace esos pasos (publicar core, webrtc, transport;
+compilar) solo si falta el jar y siempre en ese orden. El módulo también
 se compila **aislado**, sin el resto del mono-repo, gracias a su propio
-`settings.gradle.kts`, pero **solo después** de publicar los dos artefactos:
+`settings.gradle.kts`, pero **solo después** de publicar los tres artefactos:
 
 ```bash
 # Con un Gradle 9.5.0 en el PATH, no con el wrapper: este settings.gradle.kts

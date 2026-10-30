@@ -230,12 +230,16 @@ Lo mínimo para clonar este repositorio y construir el cliente de escritorio.
 
 ```sh
 # Opción A: exportar el JDK una vez por terminal
-export JAVA_HOME=/usr/lib/jvm/java-27-openjdk
+export JAVA_HOME=/ruta/a/tu/jdk-17-o-superior
 ./gradlew build
 
 # Opción B: pasar el JDK solo en esa invocación
-./gradlew -Dorg.gradle.java.home=/usr/lib/jvm/java-27-openjdk build
+./gradlew -Dorg.gradle.java.home=/ruta/a/tu/jdk-17-o-superior build
 ```
+
+> Los ejemplos de este README usan `/ruta/a/tu/jdk-17-o-superior` como marcador.
+> En la máquina de validación ese JDK estaba en `/usr/lib/jvm/java-27-openjdk`,
+> pero **27 no es obligatorio**: 17 también compila y arranca (ver la tabla).
 
 Los dos números de versión que más se confunden son **el JDK que ejecuta Gradle
 (17 o superior)** y **el toolchain que compila el bytecode (11)**. No son el mismo
@@ -279,14 +283,19 @@ En una máquina ajustada, lo que funcionó fue:
   SSH no mate el build a medias.
 
 ```sh
-setsid nohup ./gradlew \
-    -Dorg.gradle.java.home=/usr/lib/jvm/java-27-openjdk \
-    -Pkotlin.compiler.execution.strategy=in-process \
-    --max-workers=1 \
-    -Dorg.gradle.jvmargs="-Xmx1300m -Dfile.encoding=UTF-8" \
-    :km-core:publishToMavenLocal :km-desktop:shadowJar \
-    > /tmp/km-build.log 2>&1 &
+# Una invocacion por tarea, en este orden: publicar core, publicar transport,
+# compilar desktop. Ver "Clonar y arrancar" para el porque.
+for tarea in :km-core:publishToMavenLocal :km-transport:publishToMavenLocal :km-desktop:shadowJar; do
+    ./gradlew \
+        -Dorg.gradle.java.home=/ruta/a/tu/jdk-17-o-superior \
+        -Pkotlin.compiler.execution.strategy=in-process \
+        --max-workers=1 \
+        -Dorg.gradle.jvmargs="-Xmx1300m -Dfile.encoding=UTF-8" \
+        "$tarea" || break
+done
 ```
+
+(Para lanzarlo desacoplado, envuelve el bucle con `setsid nohup sh -c '...' > /tmp/km-build.log 2>&1 &`.)
 
 `gradle.properties` **no** se toca: su `-Xmx2048m` se mantiene, porque en una
 máquina con RAM de sobra es la configuración correcta.
@@ -344,7 +353,7 @@ el JDK 17.0.2 del portátil de validación:
 $ /home/kemamada/jdk-17.0.2/bin/java -version
 openjdk version "17.0.2" 2022-01-18
 $ KM_GRADLE_JAVA_HOME=/home/kemamada/jdk-17.0.2 KM_REBUILD=1 ./km --help
-km: construyendo km-desktop (publishToMavenLocal de km-core/km-transport + shadowJar)...
+km: construyendo km-desktop (publishToMavenLocal de km-core/km-webrtc/km-transport + shadowJar)...
 km-desktop — cliente TUI de KeyMessage
 ...                                   # exit 0
 ```
@@ -374,16 +383,30 @@ El 17 sirve igual para la app Android (`app/`); el APK de abajo se validó con e
 | Linux / macOS | `git clone https://github.com/KemaMada/km-framework.git`<br>`cd km-framework`<br>`./km` |
 | Windows 10+ | `git clone https://github.com/KemaMada/km-framework.git`<br>`cd km-framework`<br>`km.cmd` |
 
-La **primera vez** no hay jar, y el lanzador hace tres cosas:
+La **primera vez** no hay jar, y el lanzador hace cuatro cosas, **cada una en su
+propio proceso de Gradle y en este orden**:
 
-1. publica `com.km:km-core` y `com.km:km-transport` `0.1.0-SNAPSHOT` en
-   `mavenLocal()` (`publishToMavenLocal`, en **dos** invocaciones a propósito:
-   compilar a la vez que se reescribe un artefacto hace morir al compilador de
-   Kotlin con `newPosition > limit`);
-2. ejecuta `:km-desktop:shadowJar` y deja **un** fichero,
+1. publica `com.km:km-core` `0.1.0-SNAPSHOT` en `mavenLocal()`
+   (`:km-core:publishToMavenLocal`);
+2. publica `com.km:km-webrtc` (`:km-webrtc:publishToMavenLocal`), el tier P2P que
+   `km-desktop` consume **por artefacto**;
+3. publica `com.km:km-transport` (`:km-transport:publishToMavenLocal`);
+4. ejecuta `:km-desktop:shadowJar` y deja **un** fichero,
    `km-desktop/build/libs/km-desktop.jar` (~36 MB, `Main-Class:
-   com.km.desktop.DesktopMainKt`);
-3. arranca con `exec java -jar` y tus argumentos tal cual.
+   com.km.desktop.DesktopMainKt`),
+5. arranca con `exec java -jar` y tus argumentos tal cual.
+
+Las cuatro invocaciones son deliberadas. `km-webrtc` y `km-transport` declaran
+`api("com.km:km-core:…")` y `km-desktop` consume los **tres** artefactos, pero
+`publishToMavenLocal` **no** es dependencia de los `compileKotlin` del mismo
+build: pedidas juntas, Gradle puede compilar un consumidor antes de que
+`km-core` exista en `mavenLocal` y falla con `Could not find com.km:km-core`
+(reproducido con `mavenLocal` vacío). Publicar solo core y transport **tampoco
+basta** en un `mavenLocal` vacío: `km-desktop` declara `com.km:km-webrtc` y el
+build falla con `Could not find com.km:km-webrtc`. Compartir invocación además
+deja al compilador de Kotlin leer un jar a medio escribir
+(`newPosition > limit`). Publicar core, **luego** webrtc y transport, y compilar
+después, quita las dos carreras.
 
 Después de eso solo reconstruye si falta el jar, si `KM_REBUILD=1`, o si hay
 fuentes o ficheros de build más nuevos que el jar. La salida del build va a
@@ -431,23 +454,67 @@ y rollback en [`docs/developer/p2p.md`](docs/developer/p2p.md).
 ### APK Android
 
 La app vive en `app/` y es un **build aparte** (su propio `settings.gradle.kts`,
-que no está incluido en el de la raíz):
+que no está incluido en el de la raíz).
+
+#### 1. SDK de Android
+
+Hace falta `ANDROID_HOME` o un `app/local.properties` (**no versionado**) con la
+ruta del SDK:
 
 ```sh
-# compilar (JDK 17+, aquí validado con 27)
-./gradlew -p app -Dorg.gradle.java.home=/usr/lib/jvm/java-27-openjdk :assembleRelease
+export ANDROID_HOME="$HOME/Android/Sdk"                 # opcion A
+# opcion B: app/local.properties (lo ignora git)
+printf 'sdk.dir=%s\n' "$HOME/Android/Sdk" > app/local.properties
+```
 
-# instalar en un dispositivo o emulador conectado
+Sin ninguno de los dos el build de la app falla con `SDK location not found`; el
+del framework **no** lo necesita.
+
+#### 2. Build de desarrollo (sin firma, sin keystore)
+
+```sh
+./gradlew -p app -Dorg.gradle.java.home=/ruta/a/tu/jdk-17-o-superior :assembleDebug
+adb install -r app/build/outputs/apk/debug/KeyMessageApp-debug.apk
+```
+
+`:assembleDebug` **no** pide keystore ni credenciales: es la vía para cualquier
+clon.
+
+#### 3. Release firmado (keystore propio, no distribuido)
+
+El release se firma con `app/keymessage-release.jks`, que **no se versiona ni se
+distribuye** (PKCS12, alias `keymessage`). Sin ese fichero no hay APK de release.
+
+```sh
+# 1) keystore en su sitio (solo quien lo tenga)
+cp /ruta/privada/keymessage-release.jks app/keymessage-release.jks
+chmod 600 app/keymessage-release.jks
+
+# 2) credenciales FUERA del repo: ~/.gradle/gradle.properties (modo 600) o
+#    variables de entorno. NUNCA en app/build.gradle.kts.
+#      KM_RELEASE_STORE_PASSWORD=...
+#      KM_RELEASE_KEY_PASSWORD=...      (PKCS12: el mismo valor)
+#      KM_RELEASE_KEY_ALIAS=keymessage  (opcional; es el default)
+
+# 3) publicar core y transport ANTES de la app: en ese orden y en invocaciones
+#    separadas, por el mismo motivo de orden que el lanzador
+./gradlew -Dorg.gradle.java.home=/ruta/a/tu/jdk-17-o-superior :km-core:publishToMavenLocal
+./gradlew -Dorg.gradle.java.home=/ruta/a/tu/jdk-17-o-superior :km-transport:publishToMavenLocal
+
+# 4) APK firmada
+./gradlew -p app -Dorg.gradle.java.home=/ruta/a/tu/jdk-17-o-superior :assembleRelease
 adb install -r app/build/outputs/apk/release/KeyMessageApp-release.apk
 ```
 
+- **`:assembleRelease` no funciona en un clon ajeno**: sin el `.jks` (y sin las
+  credenciales) falla en `validateSigningRelease` con un mensaje que dice cómo
+  definirlos, y **no imprime valores**. Es esperado, no un bug: para probar la
+  app desde un clon usa `:assembleDebug`.
 - `versionCode 2`, `versionName "1.1"`, `minSdk 28`, `targetSdk 36`.
-- Firma con la config `release` ya declarada en `app/build.gradle.kts`
-  (keystore `app/keymessage-release.jks`; los secretos **no** se documentan aquí).
-  El certificado esperado tiene SHA-256
-  `af12fd06fc0945b7e8c778714f7742eb7616cbcb09ea8fae0faec581f0d712d1`.
-- El SDK de Android se toma de `app/local.properties` (`sdk.dir`). Sin él, el
-  build de la app falla; el del framework **no** lo necesita.
+- Certificado esperado, SHA-256
+  `af12fd06fc0945b7e8c778714f7742eb7616cbcb09ea8fae0faec581f0d712d1`. Rotar la
+  contraseña (`keytool -storepasswd`) **no** cambia la clave ni el certificado,
+  así que las actualizaciones siguen instalándose encima.
 - `adb install -r` conserva los datos. Instalar un `versionCode` **menor** que el
   instalado falla con `INSTALL_FAILED_VERSION_DOWNGRADE`: hay que desinstalar
   antes, y eso borra el almacén cifrado de identidad del teléfono.
@@ -492,19 +559,21 @@ Los mismos pasos a mano, sin el lanzador:
 git clone https://github.com/KemaMada/km-framework.git
 cd km-framework
 
-# 2. Publicar km-core y km-transport en mavenLocal. NO es opcional: km-desktop
-#    los consume como artefactos publicados (com.km:km-core y com.km:km-transport
-#    versión 0.1.0-SNAPSHOT), no como proyectos del build. Sin este paso, el
-#    paso 3 falla al resolver las dependencias.
-./gradlew -Dorg.gradle.java.home=/usr/lib/jvm/java-27-openjdk \
-          :km-core:publishToMavenLocal :km-transport:publishToMavenLocal
+# 2. Publicar km-core, km-webrtc y km-transport en mavenLocal. NO es opcional:
+#    km-desktop los consume como artefactos publicados (0.1.0-SNAPSHOT), no como
+#    proyectos del build. En TRES invocaciones y en este orden: webrtc y transport
+#    dependen de core, y publicar juntos deja al scheduler compilar un consumidor
+#    antes de que core exista en mavenLocal.
+./gradlew -Dorg.gradle.java.home=/ruta/a/tu/jdk-17-o-superior :km-core:publishToMavenLocal
+./gradlew -Dorg.gradle.java.home=/ruta/a/tu/jdk-17-o-superior :km-webrtc:publishToMavenLocal
+./gradlew -Dorg.gradle.java.home=/ruta/a/tu/jdk-17-o-superior :km-transport:publishToMavenLocal
 
 # 3. Compilar el cliente de escritorio: un único jar con todo dentro.
-./gradlew -Dorg.gradle.java.home=/usr/lib/jvm/java-27-openjdk \
+./gradlew -Dorg.gradle.java.home=/ruta/a/tu/jdk-17-o-superior \
           :km-desktop:shadowJar
 
 # 4. Arrancar un relé propio. installDist deja un launcher con su classpath.
-./gradlew -Dorg.gradle.java.home=/usr/lib/jvm/java-27-openjdk \
+./gradlew -Dorg.gradle.java.home=/ruta/a/tu/jdk-17-o-superior \
           :km-daemon:installDist
 ./km-daemon/build/install/km-daemon/bin/km-daemon
 
@@ -524,10 +593,11 @@ handshake WebSocket en cualquier path, así que `/km` y `/ws` funcionan igual.
 | Windows 10+ | `km.cmd` (batch, CRLF) | JDK 17+ para compilar; JRE 11+ para ejecutar |
 
 Los dos hacen lo mismo: si `km-desktop/build/libs/km-desktop.jar` no existe (o si
-`KM_REBUILD=1`), publican `km-core` y `km-transport` en `mavenLocal` y ejecutan
-`:km-desktop:shadowJar`; después lanzan `exec java -jar` con los argumentos tal
-cual y devuelven el mismo código de salida. La salida del build va a **stderr**,
-para que stdout siga siendo de la interfaz.
+`KM_REBUILD=1`), publican `km-core`, `km-webrtc`, `km-transport` y ejecutan
+`:km-desktop:shadowJar` —**cuatro invocaciones separadas, en ese orden**—;
+después lanzan `exec java -jar` con los argumentos tal cual y devuelven el mismo
+código de salida. La salida del build va a **stderr**, para que stdout siga
+siendo de la interfaz.
 
 ```sh
 ./km --help                                  # ayuda completa, exit 0

@@ -4,6 +4,33 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
+// ---------------------------------------------------------------------------
+// Credenciales de firma release: NUNCA en este fichero.
+// ---------------------------------------------------------------------------
+//
+// Se leen, por este orden, de:
+//
+//   1. gradle property      -> ~/.gradle/gradle.properties (modo 600) o `-P`.
+//   2. variable de entorno  -> KM_RELEASE_STORE_PASSWORD / KM_RELEASE_KEY_PASSWORD
+//
+// `KM_RELEASE_KEY_ALIAS` es opcional (default `keymessage`).
+//
+// Sin credenciales, `assembleDebug` funciona igual: la configuracion de firma
+// solo se USA en release. `assembleRelease` falla en `validateSigningRelease`
+// con un mensaje que dice como definirlas (guard mas abajo), nunca imprimiendo
+// valores. El keystore (`app/keymessage-release.jks`, PKCS12) tampoco se
+// versiona: un clon ajeno puede compilar debug, no firmar un release.
+val kmStorePassword =
+    providers.gradleProperty("KM_RELEASE_STORE_PASSWORD")
+        .orElse(providers.environmentVariable("KM_RELEASE_STORE_PASSWORD"))
+val kmKeyPassword =
+    providers.gradleProperty("KM_RELEASE_KEY_PASSWORD")
+        .orElse(providers.environmentVariable("KM_RELEASE_KEY_PASSWORD"))
+val kmKeyAlias =
+    providers.gradleProperty("KM_RELEASE_KEY_ALIAS")
+        .orElse(providers.environmentVariable("KM_RELEASE_KEY_ALIAS"))
+        .orElse("keymessage")
+
 android {
     namespace = "com.example.keymessage"
     compileSdk = 36
@@ -19,9 +46,9 @@ android {
     signingConfigs {
         create("release") {
             storeFile = file("keymessage-release.jks")
-            storePassword = "keymessage"
-            keyAlias = "keymessage"
-            keyPassword = "keymessage"
+            storePassword = kmStorePassword.orNull
+            keyAlias = kmKeyAlias.get()
+            keyPassword = kmKeyPassword.orNull
         }
     }
 
@@ -52,6 +79,37 @@ android {
             // `android.jar` sin stub LANZE `RuntimeException("Stub!")`: lo que
             // se prueba aqui es logica, no el framework de Android.
             isReturnDefaultValues = true
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Guard de firma: un mensaje util, sin imprimir credenciales.
+// ---------------------------------------------------------------------------
+//
+// Solo afecta a `validateSigningRelease`, del que cuelga `assembleRelease`:
+// `assembleDebug` no pasa por aqui. Se comprueba en tiempo de EJECUCION para
+// que configurar el build (IDE, `tasks`, `assembleDebug`) no exija secretos.
+val kmKeystore = file("keymessage-release.jks")
+
+tasks.matching { it.name == "validateSigningRelease" }.configureEach {
+    doFirst {
+        if (kmStorePassword.orNull.isNullOrBlank() || kmKeyPassword.orNull.isNullOrBlank()) {
+            throw GradleException(
+                "Falta la firma de release de KeyMessage: define KM_RELEASE_STORE_PASSWORD y " +
+                    "KM_RELEASE_KEY_PASSWORD como gradle property (~/.gradle/gradle.properties, " +
+                    "modo 600) o variable de entorno. KM_RELEASE_KEY_ALIAS es opcional (default " +
+                    "keymessage). El keystore no se distribuye: copia keymessage-release.jks en " +
+                    "app/. Para compilar sin firma usa :assembleDebug.",
+            )
+        }
+        if (!kmKeystore.isFile) {
+            throw GradleException(
+                "No existe el keystore de release app/keymessage-release.jks: no se versiona ni se " +
+                    "distribuye. Copialo en app/ (PKCS12, alias keymessage). Las credenciales se leen " +
+                    "de KM_RELEASE_STORE_PASSWORD / KM_RELEASE_KEY_PASSWORD. Para compilar sin firma " +
+                    "usa :assembleDebug.",
+            )
         }
     }
 }
